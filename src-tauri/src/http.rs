@@ -1,0 +1,114 @@
+//! 访问本机 CLI 的 HTTP 客户端。
+//!
+//! 放在 lib 而不是 Tauri 命令里，是为了让无头自检程序（`deveco-selftest`）
+//! 能对真实的 `deveco serve` 跑一遍 UI 实际使用的读写路径。
+
+use anyhow::{bail, Context, Result};
+use serde_json::Value;
+use std::time::Duration;
+
+fn client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .context("构建 HTTP client 失败")
+}
+
+/// 极简 percent-encoding：只需处理会出现在路径/查询里的字符。
+pub fn urlencode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn build_url(base: &str, path: &str, query: &[(String, String)]) -> String {
+    let mut url = format!("{base}{path}");
+    let pairs: Vec<String> = query
+        .iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(key, value)| format!("{}={}", urlencode(key), urlencode(value)))
+        .collect();
+    if !pairs.is_empty() {
+        url.push('?');
+        url.push_str(&pairs.join("&"));
+    }
+    url
+}
+
+/// 发一个请求并把响应解析成 JSON。非 2xx 会带上响应体前 400 字返回错误。
+pub async fn send(
+    base: &str,
+    auth: Option<&str>,
+    method: &str,
+    path: &str,
+    query: &[(String, String)],
+    body: Option<&Value>,
+) -> Result<Value> {
+    let url = build_url(base, path, query);
+    let client = client()?;
+    let mut request = match method.to_ascii_uppercase().as_str() {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "PATCH" => client.patch(&url),
+        "PUT" => client.put(&url),
+        "DELETE" => client.delete(&url),
+        other => bail!("不支持的 method：{other}"),
+    };
+    if let Some(auth) = auth {
+        request = request.basic_auth("deveco", Some(auth));
+    }
+    if let Some(body) = body {
+        if !body.is_null() {
+            request = request.json(body);
+        }
+    }
+
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("请求 {url} 失败"))?;
+    let status = response.status();
+    let text = response.text().await.context("读取响应失败")?;
+    if !status.is_success() {
+        let snippet: String = text.chars().take(400).collect();
+        bail!("HTTP {}：{}", status.as_u16(), snippet);
+    }
+    if text.trim().is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_str(&text).context("解析响应 JSON 失败")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 编码查询参数() {
+        assert_eq!(urlencode("/Users/example/x"), "/Users/example/x");
+        assert_eq!(urlencode("a b&c"), "a%20b%26c");
+        assert_eq!(urlencode("中文"), "%E4%B8%AD%E6%96%87");
+    }
+
+    #[test]
+    fn 拼接查询串时跳过空值() {
+        let url = build_url(
+            "http://127.0.0.1:1",
+            "/session",
+            &[
+                ("directory".into(), "/tmp/a b".into()),
+                ("empty".into(), String::new()),
+            ],
+        );
+        // 查询串里的 `/` 保持原样即可（与 CLI 自身解析一致），空格必须编码
+        assert_eq!(url, "http://127.0.0.1:1/session?directory=/tmp/a%20b");
+    }
+}
