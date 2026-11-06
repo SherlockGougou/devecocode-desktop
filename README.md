@@ -15,7 +15,7 @@ src-tauri/
   src/main.rs             Tauri 主进程：托盘、单实例、通知、信号处理
   src/ipc.rs              前端 ↔ CLI 的命令桥（server_request / open_classic_view）
   src/http.rs             访问 CLI 的 HTTP 客户端（lib，自检程序复用）
-  src/cli.rs              定位 debevo：配置 → 环境变量 → 常见路径 → login shell → PATH
+  src/cli.rs              定位 deveco：配置 → 环境变量 → 常见路径 → login shell → PATH
   src/server.rs           拉起 serve、解析 listening、健康检查、进程组回收
   src/sse.rs              text/event-stream 解析与订阅
   src/events.rs           事件分类（授权/空闲/错误/阶段）与通知文案
