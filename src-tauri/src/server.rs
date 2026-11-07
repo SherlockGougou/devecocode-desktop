@@ -5,6 +5,7 @@
 //! 因此这里不假设固定端口，而是解析这一行——这是「跟随官方更新」里最稳的接口之一。
 
 use anyhow::{anyhow, bail, Context, Result};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -39,6 +40,29 @@ fn signal_group(pid: u32, signal: i32) {
     // 负 pid 表示进程组；忽略错误（进程可能已退出）
     unsafe {
         libc::kill(-(pid as i32), signal);
+    }
+}
+
+/// 最近一次拉起的 serve 进程组 id。
+///
+/// 进程内的兜底回收（信号处理、应用退出）只依赖这个值：`Backend::boot` 在
+/// 健康检查通过之前就会把子进程拉起来，如果等到启动完成才登记，这段窗口里被
+/// 强杀就会留下孤儿 serve。
+static ACTIVE_PGID: AtomicI32 = AtomicI32::new(0);
+
+/// 当前登记的 serve 进程组（健康检查阶段也可见）
+pub fn active_pgid() -> Option<i32> {
+    let pid = ACTIVE_PGID.load(Ordering::SeqCst);
+    (pid > 0).then_some(pid)
+}
+
+/// 兜底回收：杀掉登记的整个进程组（launcher + 原生二进制）
+pub fn kill_active_group() {
+    let pid = ACTIVE_PGID.swap(0, Ordering::SeqCst);
+    if pid > 0 {
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
     }
 }
 
@@ -118,6 +142,22 @@ impl DevEcoServer {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("无法启动 {}", spec.bin.display()))?;
+        // spawn 后立刻登记：健康检查期间被强杀也要能收掉
+        let child_pid = child.id();
+        if let Some(pid) = child_pid {
+            ACTIVE_PGID.store(pid as i32, Ordering::SeqCst);
+        }
+
+        // 启动失败时必须按进程组清理：`kill_on_drop` 只回收 launcher，
+        // 161MB 的原生二进制会变成孤儿继续占着 CLI 数据库。
+        let cleanup = |message: String| -> anyhow::Error {
+            if let Some(pid) = child_pid {
+                #[cfg(unix)]
+                signal_group(pid, libc::SIGKILL);
+            }
+            ACTIVE_PGID.store(0, Ordering::SeqCst);
+            anyhow!(message)
+        };
         let stdout = child
             .stdout
             .take()
@@ -140,11 +180,15 @@ impl DevEcoServer {
         let base_url = loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                bail!(
-                    "等待 deveco serve 就绪超时（{}s）。最近的输出：\n{}",
-                    START_TIMEOUT.as_secs(),
+                let detail = if tail.is_empty() {
+                    "（无输出）".to_string()
+                } else {
                     tail.join("\n")
-                );
+                };
+                return Err(cleanup(format!(
+                    "等待 deveco serve 就绪超时（{}s）。最近的输出：{detail}",
+                    START_TIMEOUT.as_secs()
+                )));
             }
             match tokio::time::timeout(remaining, lines.next_line()).await {
                 Ok(Ok(Some(line))) => {
@@ -158,9 +202,16 @@ impl DevEcoServer {
                     }
                 }
                 Ok(Ok(None)) => {
-                    bail!("deveco serve 启动后立即退出。输出：\n{}", tail.join("\n"))
+                    let detail = if tail.is_empty() {
+                        "（无输出）".to_string()
+                    } else {
+                        tail.join("\n")
+                    };
+                    return Err(cleanup(format!("deveco serve 启动后立即退出，输出：{detail}")));
                 }
-                Ok(Err(err)) => bail!("读取 deveco serve 输出失败：{err}"),
+                Ok(Err(err)) => {
+                    return Err(cleanup(format!("读取 deveco serve 输出失败：{err}")));
+                }
                 Err(_) => continue,
             }
         };
@@ -194,6 +245,7 @@ impl DevEcoServer {
     }
 
     pub async fn stop(&mut self) {
+        ACTIVE_PGID.store(0, Ordering::SeqCst);
         if let Some(mut child) = self.child.take() {
             let Some(pid) = child.id() else { return };
             #[cfg(unix)]
@@ -216,6 +268,7 @@ impl DevEcoServer {
 
 impl Drop for DevEcoServer {
     fn drop(&mut self) {
+        ACTIVE_PGID.store(0, Ordering::SeqCst);
         if let Some(mut child) = self.child.take() {
             // 应用退出/任务结束时不留下孤儿进程
             #[cfg(unix)]

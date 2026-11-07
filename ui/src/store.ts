@@ -3,6 +3,7 @@ import { api } from "./api";
 import type {
   AgentInfo,
   Attachment,
+  BackendPhase,
   CommandInfo,
   FileDiff,
   FileNode,
@@ -82,6 +83,8 @@ export interface AppState {
   streaming: boolean;
   sseOk: boolean;
   sseCount: number;
+  /** 后端（本机 deveco serve）状态：自愈过程对用户可见 */
+  backend: BackendPhase;
   rightOpen: boolean;
   settingsOpen: boolean;
   shortcutsOpen: boolean;
@@ -115,6 +118,9 @@ export interface AppState {
   stop(): Promise<void>;
   replyPermission(id: string, reply: "once" | "always" | "reject"): Promise<void>;
   onSse(raw: string): void;
+  onBackend(phase: BackendPhase): void;
+  retryBackend(): Promise<void>;
+  refreshAfterReconnect(): Promise<void>;
   toggleRight(): void;
   openSettings(): void;
   closeSettings(): void;
@@ -169,6 +175,7 @@ export const useApp = create<AppState>()((set, get) => ({
   streaming: false,
   sseOk: false,
   sseCount: 0,
+  backend: { state: "starting", attempt: 0, detail: null },
   rightOpen: false,
   settingsOpen: false,
   shortcutsOpen: false,
@@ -371,6 +378,54 @@ export const useApp = create<AppState>()((set, get) => ({
       await api.replyPermission(directory, id, reply);
     } catch (error) {
       set({ error: `授权回复失败：${String(error)}` });
+    }
+  },
+
+  onBackend(phase) {
+    // 主进程刚启动时可能还没广播，忽略不完整载荷，保持启动态
+    if (!phase || !phase.state) return;
+    const previous = get().backend.state;
+    set({ backend: phase });
+    if (phase.state === "ready") {
+      // 事件流刚恢复：重连期间事件会丢，重新拉一次当前会话的权威数据
+      if (previous !== "ready" && !get().booting) {
+        void get().refreshAfterReconnect();
+      }
+      return;
+    }
+    // 断线/重建期间不再宣称「已连接」，避免状态栏给出错误信息
+    set({ sseOk: false });
+  },
+
+  async retryBackend() {
+    // 先给即时反馈，真正结果等主进程广播
+    set({ backend: { ...get().backend, state: "recovering" } });
+    try {
+      await api.retryBackend();
+    } catch (error) {
+      set({ error: `重试后端失败：${String(error)}` });
+    }
+  },
+
+  async refreshAfterReconnect() {
+    const { directory, sessionID } = get();
+    if (!directory) return;
+    try {
+      const sessions = await api.sessions(directory);
+      sessions.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
+      set({ sessions: { ...get().sessions, [directory]: sessions } });
+      if (sessionID) {
+        const [messages, permissions] = await Promise.all([
+          api.messages(directory, sessionID),
+          api.permissions(directory).catch(() => []),
+        ]);
+        set({ messages, permissions });
+        void get().refreshDiff();
+      }
+    } catch (error) {
+      // 断线场景下请求失败是预期内的：提示条已经说明状态，等下一次 ready 再刷新，
+      // 不要用红色 toast 打断用户（真实原因保留在控制台便于排查）。
+      console.warn("重连后刷新失败", error);
     }
   },
 

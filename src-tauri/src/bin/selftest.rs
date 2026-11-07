@@ -5,7 +5,6 @@
 //! 退出码 0 表示全部通过。
 
 use deveco_desktop::{
-    backend::Backend,
     cli,
     config::Config,
     events::{classify, render, unwrap_global as events_unwrap, Notice},
@@ -13,6 +12,7 @@ use deveco_desktop::{
     notify::{should_notify, Debouncer, DEBOUNCE_WINDOW},
     server,
     sse::{self, SseEvent},
+    supervise::Supervisor,
 };
 use std::time::{Duration, Instant};
 
@@ -65,12 +65,16 @@ async fn main() {
         Err(err) => report.fail("发现 deveco CLI", format!("{err}")),
     }
 
-    // 2. 拉起后端
-    let mut cfg = Config::default();
+    // 2. 启动失败清理：用假 CLI 走一遍「serve 起不来」的路径，验证报错与进程清理
+    self_check_failed_boot(&mut report).await;
+
+    // 3. 拉起后端（走与桌面端完全相同的 Supervisor 路径）
+    let cfg = Config::default();
+    let mut supervisor = Supervisor::new(cfg);
     let started = Instant::now();
-    let booted = Backend::boot(&mut cfg, |message| println!("  · {message}")).await;
-    let mut backend = match booted {
-        Ok(backend) => {
+    match supervisor.ensure().await {
+        Ok(()) => {
+            let backend = supervisor.backend().expect("ensure 成功后必须有后端");
             report.pass(
                 "拉起 deveco serve",
                 format!(
@@ -80,16 +84,19 @@ async fn main() {
                     backend.server.origin
                 ),
             );
-            backend
         }
         Err(err) => {
-            report.fail("拉起 deveco serve", format!("{err:#}"));
+            report.fail("拉起 deveco serve", err);
             finish(report);
         }
-    };
+    }
+
+    let base = supervisor
+        .base_url()
+        .expect("ensure 成功后必须有 base_url")
+        .to_string();
 
     // 3. 健康检查
-    let base = backend.server.base_url.clone();
     report.check(
         "健康检查 /api/health",
         server::health(&base, None).await,
@@ -97,13 +104,13 @@ async fn main() {
     );
 
     // 4. 项目目录（通知文案里会用）
+    let project_dir = supervisor
+        .backend()
+        .and_then(|backend| backend.project_dir.clone());
     report.check(
         "读取 /api/location",
-        backend.project_dir.is_some(),
-        backend
-            .project_dir
-            .clone()
-            .unwrap_or_else(|| "未返回 project.directory".into()),
+        project_dir.is_some(),
+        project_dir.clone().unwrap_or_else(|| "未返回 project.directory".into()),
     );
 
     // 5. UI 实际使用的读写路径：建会话 → 写消息 → 读消息 → 删会话
@@ -113,26 +120,30 @@ async fn main() {
     }
 
     // 6. 事件流
-    match wait_for_connected(&backend.server.global_event_url()).await {
+    let event_url = supervisor
+        .global_event_url()
+        .expect("ensure 成功后必须有事件流地址");
+    match wait_for_connected(&event_url).await {
         Ok(elapsed) => report.pass(
             "订阅 /global/event 并收到 server.connected",
             format!("{:.0}ms", elapsed.as_secs_f32() * 1000.0),
         ),
-        Err(err) => report.fail(
-            "订阅 /global/event 并收到 server.connected",
-            format!("{err}"),
-        ),
+        Err(err) => report.fail("订阅 /global/event 并收到 server.connected", err),
     }
 
-    // 6. 通知链路（用真实事件格式构造，覆盖分类 → 文案 → 策略 → 去抖）
+    // 7. 通知链路（用真实事件格式构造，覆盖分类 → 文案 → 策略 → 去抖）
     self_check_notifications(&mut report);
 
-    // 7. 进程回收
+    // 8. 崩溃自愈：直接 SIGKILL 进程组，验证监管者能自己把后端拉回来
+    self_check_recovery(&mut report, &mut supervisor, &base).await;
+
+    // 9. 进程回收
     let stopped = Instant::now();
-    backend.server.stop().await;
+    let final_base = supervisor.base_url().unwrap_or_default().to_string();
+    supervisor.shutdown().await;
     let mut gone = false;
     for _ in 0..40 {
-        if !server::health(&base, None).await {
+        if !server::health(&final_base, None).await {
             gone = true;
             break;
         }
@@ -148,6 +159,49 @@ async fn main() {
     );
 
     finish(report);
+}
+
+/// 杀掉 serve 进程组，确认 Supervisor 能重建后端并恢复健康。
+async fn self_check_recovery(report: &mut Report, supervisor: &mut Supervisor, base: &str) {
+    const NAME: &str = "崩溃自愈（SIGKILL → 自动重建）";
+    let Some(pgid) = supervisor.pgid() else {
+        report.fail(NAME, "拿不到 serve 进程组 id");
+        return;
+    };
+
+    let old_base = base.to_string();
+    let killed = Instant::now();
+    // 负 pid 表示整个进程组：launcher 与 161MB 原生二进制一起消失，等价于真实崩溃
+    unsafe {
+        libc::kill(-pgid, libc::SIGKILL);
+    }
+
+    let mut down = false;
+    for _ in 0..50 {
+        if !server::health(&old_base, None).await {
+            down = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if !down {
+        report.fail(NAME, "SIGKILL 后旧实例仍在响应，无法验证自愈");
+        return;
+    }
+
+    let rebuilt = supervisor.ensure().await;
+    let new_base = supervisor.base_url().unwrap_or_default().to_string();
+    let healthy = server::health(&new_base, None).await;
+    let elapsed = killed.elapsed().as_secs_f32();
+
+    report.check(
+        NAME,
+        rebuilt.is_ok() && healthy,
+        match rebuilt {
+            Ok(()) => format!("{old_base} → {new_base}，{elapsed:.1}s 恢复"),
+            Err(err) => format!("重建失败：{err}"),
+        },
+    );
 }
 
 /// 复现 UI 的请求链路：走 lib 里同一份 HTTP 客户端
@@ -298,6 +352,58 @@ fn self_check_notifications(report: &mut Report) {
         first && !second,
         format!("first={first} second={second}"),
     );
+}
+
+/// 用假 CLI 验证「serve 起不来」时的行为：失败要快、原因要能看懂、进程组登记要清掉。
+///
+/// 真实场景对应：CLI 路径写错、CLI 被删、锁屏导致 CLI 挂住、端口被占等。
+async fn self_check_failed_boot(report: &mut Report) {
+    const NAME: &str = "启动失败清理（假 CLI 立即退出）";
+
+    let dir = std::env::temp_dir().join(format!("deveco-selftest-{}", std::process::id()));
+    let script = dir.join("deveco");
+    let body = "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 0.2.5; exit 0; fi\necho 'boom' >&2\nexit 1\n";
+
+    let setup = std::fs::create_dir_all(&dir)
+        .and_then(|_| std::fs::write(&script, body))
+        .and_then(|_| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        });
+    if let Err(err) = setup {
+        report.fail(NAME, format!("准备假 CLI 失败：{err}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+
+    let mut cfg = Config::default();
+    cfg.cli_path = Some(script.to_string_lossy().to_string());
+    let mut supervisor = Supervisor::new(cfg);
+    let started = Instant::now();
+    let result = supervisor.ensure().await;
+    let elapsed = started.elapsed();
+
+    let has_reason = result
+        .as_ref()
+        .err()
+        .map(|reason| reason.contains("立即退出"))
+        .unwrap_or(false);
+    let cleaned = server::active_pgid().is_none();
+    let failed_fast = elapsed < Duration::from_secs(15);
+
+    report.check(
+        NAME,
+        has_reason && cleaned && failed_fast,
+        match &result {
+            Err(reason) => format!(
+                "{:.1}s 内失败（原因可读={has_reason}，进程组已清理={cleaned}）：{reason}",
+                elapsed.as_secs_f32()
+            ),
+            Ok(()) => format!("假 CLI 竟然启动了（{:.1}s）", elapsed.as_secs_f32()),
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn finish(report: Report) -> ! {

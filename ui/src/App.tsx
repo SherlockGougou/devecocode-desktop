@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { api } from "./api";
 import { useApp } from "./store";
+import type { BackendPhase } from "./types";
 import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import Composer from "./components/Composer";
@@ -39,6 +40,16 @@ export default function App() {
         useApp.setState({ bootMessage: event.payload.message });
       }
     }).then((un) => unlisteners.push(un));
+    // 后端自愈状态：启动阶段的广播可能早于前端挂载，先同步一次当前值
+    listen<BackendPhase>("deveco://backend", (event) => {
+      useApp.getState().onBackend(event.payload);
+    }).then((un) => unlisteners.push(un));
+    void api
+      .backendState()
+      .then((phase) => useApp.getState().onBackend(phase))
+      .catch(() => {
+        // 命令缺失时保持启动态，不影响主流程
+      });
     // 原生菜单动作
     listen<string>("deveco://menu", (event) => {
       const state = useApp.getState();
@@ -100,6 +111,15 @@ export default function App() {
     };
   }, [boot, onSse]);
 
+  // 启动阶段后端就失败时不要一直卡在启动页（原来要等 60s 轮询超时）：
+  // 直接进主界面，用提示条给出原因与「重试 / 诊断」出口。
+  const backendState = useApp((s) => s.backend);
+  useEffect(() => {
+    if (!booting || backendState.state !== "failed") return;
+    // 原因由提示条展示，不再叠一条 toast（重复且挡视线）
+    useApp.setState({ booting: false });
+  }, [booting, backendState.state, backendState.detail]);
+
   // 窗口标题跟随会话
   const sessions = useApp((s) => s.sessions);
   const directory = useApp((s) => s.directory);
@@ -155,6 +175,7 @@ export default function App() {
         }}
       />
       <main className="main">
+        <BackendBanner />
         <ChatView />
         <Composer />
         <StatusBar />
@@ -175,7 +196,10 @@ export default function App() {
 function TitleBar() {
   const rightOpen = useApp((s) => s.rightOpen);
   const toggleRight = useApp((s) => s.toggleRight);
-  const sseOk = useApp((s) => s.sseOk);
+  const backend = useApp((s) => s.backend);
+  const connOk = backend.state === "ready";
+  const connBad = backend.state === "failed";
+  const connText = connOk ? "已连接" : connBad ? "后端不可用" : "重连中";
 
   return (
     <header className="titlebar" data-tauri-drag-region>
@@ -186,8 +210,17 @@ function TitleBar() {
       </div>
       <div className="titlebar-drag" data-tauri-drag-region />
       <div className="titlebar-actions">
-        <span className={`conn ${sseOk ? "ok" : ""}`} title={sseOk ? "事件流已连接" : "事件流未连接"}>
-          {sseOk ? "已连接" : "连接中"}
+        <span
+          className={`conn ${connOk ? "ok" : ""} ${connBad ? "bad" : ""}`}
+          title={
+            connOk
+              ? "事件流已连接"
+              : connBad
+                ? `本地服务已停止：${backend.detail ?? "原因未知"}`
+                : "正在重连本地服务"
+          }
+        >
+          {connText}
         </span>
         <button
           className={`icon-btn ${rightOpen ? "active" : ""}`}
@@ -198,5 +231,43 @@ function TitleBar() {
         </button>
       </div>
     </header>
+  );
+}
+
+/** 后端断线/重建提示条：只在非就绪态出现，失败时给可操作出口。 */
+function BackendBanner() {
+  const backend = useApp((s) => s.backend);
+  const retryBackend = useApp((s) => s.retryBackend);
+  const openSettings = useApp((s) => s.openSettings);
+  if (backend.state === "ready" || backend.state === "starting") return null;
+
+  const failed = backend.state === "failed";
+  const title = failed
+    ? "本地服务已停止"
+    : backend.state === "recovering"
+      ? `正在重启本地服务（第 ${backend.attempt} 次）`
+      : `与本地服务的连接中断（第 ${backend.attempt} 次重连）`;
+  const detail = failed
+    ? backend.detail ?? "可能是 CLI 崩溃或被升级替换，可手动重试。"
+    : "正在自动恢复，期间消息可能延迟；恢复后会重新同步当前会话。";
+
+  return (
+    <div className={`backend-banner ${failed ? "bad" : "warn"}`}>
+      <span className="dot" />
+      <div className="backend-text">
+        <strong>{title}</strong>
+        <span title={detail}>{detail}</span>
+      </div>
+      {failed && (
+        <>
+          <button className="ghost-btn" onClick={() => void retryBackend()}>
+            立即重试
+          </button>
+          <button className="ghost-btn" onClick={openSettings}>
+            诊断
+          </button>
+        </>
+      )}
+    </div>
   );
 }

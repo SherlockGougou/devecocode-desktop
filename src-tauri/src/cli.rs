@@ -5,7 +5,14 @@
 //! 「显式配置 → 环境变量 → 常见安装路径 → login shell → PATH」的顺序探测。
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// `deveco --version` 的等待上限。
+///
+/// 实测：另一个 serve 实例占着 CLI 数据锁时，`--version` 会一直不返回。
+/// 探测版本只是「锦上添花」，不能因为没有超时把整个启动流程卡死。
+const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub const ENV_OVERRIDE: &str = "DEVECO_BIN_PATH";
 
@@ -40,6 +47,8 @@ pub enum CliError {
     },
     #[error("读取 deveco 版本失败")]
     VersionUnavailable,
+    #[error("deveco --version 超过 {0:?} 没有返回")]
+    VersionTimeout(Duration),
 }
 
 /// 解析 `deveco --version` 的输出，容忍 `v` 前缀与预发布后缀。
@@ -134,13 +143,47 @@ fn from_path_env() -> Option<PathBuf> {
 }
 
 pub fn read_version(path: &Path) -> Result<Version, CliError> {
-    let output = Command::new(path)
+    let mut command = Command::new(path);
+    command
         .arg("--version")
-        .output()
-        .map_err(|source| CliError::NotExecutable {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // 独立进程组：`deveco` 是 node launcher，超时只杀 launcher 会留下 161MB 的
+    // 原生二进制继续占着 CLI 数据库（实测会让下一次探测直接卡死）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|source| CliError::NotExecutable {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    let deadline = Instant::now() + VERSION_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                // 卡住的探测进程必须整组收掉，否则它自己会变成新的孤儿占住资源
+                let pid = child.id();
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+                let _ = child.wait();
+                return Err(CliError::VersionTimeout(VERSION_TIMEOUT));
+            }
+            Err(_) => return Err(CliError::VersionUnavailable),
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|_| CliError::VersionUnavailable)?;
     let mut text = String::from_utf8_lossy(&output.stdout).to_string();
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     parse_version(&text).ok_or(CliError::VersionUnavailable)

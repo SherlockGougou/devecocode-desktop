@@ -7,9 +7,15 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::time::Duration;
 
+/// 单次请求上限。
+///
+/// 本机 CLI 正常时全部在毫秒级；卡住通常是 CLI 自身被阻塞（例如锁屏时访问
+/// 钥匙串）。300s 会让界面无限转圈，30s 能把「卡住」变成界面上看得见的错误。
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
+        .timeout(REQUEST_TIMEOUT)
         .connect_timeout(Duration::from_secs(5))
         .build()
         .context("构建 HTTP client 失败")

@@ -3,7 +3,7 @@ import { useApp } from "../store";
 
 export default function StatusBar() {
   const messages = useApp((s) => s.messages);
-  const sseOk = useApp((s) => s.sseOk);
+  const backend = useApp((s) => s.backend);
   const directory = useApp((s) => s.directory);
   const streaming = useApp((s) => s.streaming);
   const mcpCount = useApp((s) => s.mcpCount);
@@ -36,11 +36,15 @@ export default function StatusBar() {
   return (
     <footer className="statusbar">
       <span
-        className={`status-item ${sseOk ? "ok" : "warn"}`}
+        className={`status-item ${backend.state === "ready" ? "ok" : backend.state === "failed" ? "bad" : "warn"}`}
         title={`已接收 ${sseCount} 条实时事件`}
       >
         <span className="dot" />
-        {sseOk ? "事件流已连接" : "事件流未连接"}
+        {backend.state === "ready"
+          ? "事件流已连接"
+          : backend.state === "failed"
+            ? "本地服务不可用"
+            : "正在重连本地服务"}
       </span>
       <span className="status-sep">·</span>
       <span className="status-item">{project}</span>

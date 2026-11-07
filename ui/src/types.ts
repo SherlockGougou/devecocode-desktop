@@ -166,3 +166,12 @@ export interface Attachment {
   url: string;
   size: number;
 }
+
+/** 后端状态：主进程自愈过程广播给界面的状态机 */
+export type BackendState = "starting" | "ready" | "reconnecting" | "recovering" | "failed";
+
+export interface BackendPhase {
+  state: BackendState;
+  attempt: number;
+  detail: string | null;
+}

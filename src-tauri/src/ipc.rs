@@ -40,6 +40,8 @@ pub async fn server_request(
 ) -> Result<Value, String> {
     let base = conn.base().ok_or("后端尚未就绪")?;
     let auth = conn.auth();
+    let started = std::time::Instant::now();
+    log::debug!("proxy → {method} {path}");
 
     let pairs: Vec<(String, String)> = query
         .unwrap_or_default()
@@ -54,7 +56,7 @@ pub async fn server_request(
         })
         .collect();
 
-    http::send(
+    let result = http::send(
         &base,
         auth.as_deref(),
         &method,
@@ -63,7 +65,74 @@ pub async fn server_request(
         body.as_ref(),
     )
     .await
-    .map_err(|err| format!("{err:#}"))
+    .map_err(|err| format!("{err:#}"));
+    log::debug!(
+        "proxy ← {method} {path} {:?}（{}ms）",
+        result.as_ref().map(|_| "ok").map_err(|err| err.clone()),
+        started.elapsed().as_millis()
+    );
+    result
+}
+
+// ---------------------------------------------------------------------------
+// 后端状态：自愈过程对界面可见，并允许用户手动触发重试
+// ---------------------------------------------------------------------------
+
+/// 后端监管者与界面之间的控制面。
+///
+/// `retry` 用来打断退避等待：界面点「重试」后主循环立刻再尝试一次；
+/// `phase` 保存最近一次状态，避免前端在启动竞态里拿不到当前值。
+#[derive(Clone)]
+pub struct BackendCtl {
+    pub retry: std::sync::Arc<tokio::sync::Notify>,
+    pub phase: std::sync::Arc<Mutex<serde_json::Value>>,
+}
+
+impl Default for BackendCtl {
+    fn default() -> Self {
+        Self {
+            retry: Default::default(),
+            // 未收到第一次广播前前端就可能来查，必须是合法初值而不是 null
+            phase: std::sync::Arc::new(Mutex::new(serde_json::json!({
+                "state": "starting",
+                "attempt": 0,
+                "detail": null,
+            }))),
+        }
+    }
+}
+
+impl BackendCtl {
+    pub fn set_phase(&self, phase: serde_json::Value) {
+        if let Ok(mut current) = self.phase.lock() {
+            *current = phase;
+        }
+    }
+
+    pub fn phase(&self) -> serde_json::Value {
+        self.phase
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_else(|_| serde_json::json!({ "state": "starting" }))
+    }
+
+    /// 唤醒主循环的退避等待（没有等待者时是空操作，下一次等待会立刻通过）
+    pub fn request_retry(&self) {
+        self.retry.notify_one();
+    }
+}
+
+/// 当前后端状态（前端挂载时同步一次，避免错过启动阶段的广播）
+#[tauri::command]
+pub fn backend_state(ctl: tauri::State<'_, BackendCtl>) -> Value {
+    ctl.phase()
+}
+
+/// 用户手动重试：立即打断退避，重新探测/重建后端
+#[tauri::command]
+pub fn retry_backend(ctl: tauri::State<'_, BackendCtl>) {
+    log::info!("用户请求重试后端");
+    ctl.request_retry();
 }
 
 /// 启动目录提示：`DEVECO_DESKTOP_DIR` 指定时优先打开该工作区。

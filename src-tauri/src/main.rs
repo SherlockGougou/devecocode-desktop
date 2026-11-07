@@ -6,11 +6,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use deveco_desktop::{
-    backend::Backend,
     config::Config,
     events::{classify, render, Notice},
     notify::{should_notify, Debouncer, DEBOUNCE_WINDOW},
+    server,
     sse::{self, SseEvent},
+    supervise::{self, Phase, Supervisor},
 };
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -38,6 +39,7 @@ fn main() {
         .manage(ServerGroup::default())
         .manage(ipc::ServerConn::default())
         .manage(ipc::SettingsState::default())
+        .manage(ipc::BackendCtl::default())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             focus_main(app);
         }))
@@ -55,13 +57,15 @@ fn main() {
             ipc::open_path,
             ipc::restart_app,
             ipc::export_session,
-            ipc::set_window_title
+            ipc::set_window_title,
+            ipc::backend_state,
+            ipc::retry_backend
         ])
         .setup(|app| {
             build_menu(app.handle())?;
             build_tray(app.handle())?;
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move { boot(handle).await });
+            tauri::async_runtime::spawn(async move { run_backend(handle).await });
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -82,122 +86,203 @@ fn main() {
         // 应用退出（含 Cmd+Q / AppleScript quit）时兜底回收 serve 进程组，
         // 这类退出路径不会走到 Rust 的 Drop。
         if let tauri::RunEvent::Exit = event {
+            SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
             shutdown_server(handle);
         }
     });
 }
 
-async fn boot(app: AppHandle) {
+/// 后端主循环：自愈 + 事件流。
+///
+/// 状态机：Starting →（ensure）Ready →（流断开）Reconnecting →（健康检查失败）
+/// Recovering →（重建成功）Ready /（失败）Failed →（退避或用户重试）Recovering …
+///
+/// 关键点：`Supervisor` 一直持有后端，重建时先停旧进程再拉起新进程；
+/// 连接信息（base_url / auth）重建后重新写回 IPC 状态，前端无需感知端口变化。
+/// 退出闸门：RunEvent::Exit 时置位，监管循环看到后立刻停手。
+///
+/// 没有这个闸门，退出流程杀掉 serve 后，监管循环会把「事件流中断」当成崩溃，
+/// 在进程退出前又拉起一个新的 serve——留下孤儿进程并占住 CLI 的数据锁。
+static SHUTTING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn shutting_down() -> bool {
+    SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+async fn run_backend(app: AppHandle) {
     let config_path = Config::default_path();
-    let mut cfg = match &config_path {
+    let loaded = match &config_path {
         Some(path) => Config::load(path),
         None => Config::default(),
     };
+    let ctl = app.state::<ipc::BackendCtl>().clone();
+    let mut supervisor = Supervisor::new(loaded.clone());
+    let mut attempt: u32 = 0;
+    let mut ready_once = false;
 
-    let status_app = app.clone();
-    let started = Instant::now();
-    let result = Backend::boot(&mut cfg, move |message| {
-        emit_status(&status_app, message.to_string(), None, false);
-    })
-    .await;
-
-    let backend = match result {
-        Ok(backend) => backend,
-        Err(err) => {
-            let detail = format!("{err:#}");
-            log::error!("启动失败：{detail}");
-            emit_status(&app, "启动失败".to_string(), Some(detail), true);
-            return;
-        }
-    };
-
-    if let Some(path) = &config_path {
-        if let Err(err) = cfg.save(path) {
-            log::warn!("保存配置失败：{err}");
-        }
-    }
-
-    log::info!(
-        "后端就绪（{:.1}s）：{} · CLI {}",
-        started.elapsed().as_secs_f32(),
-        backend.server.base_url,
-        backend.cli.path.display()
-    );
-
-    app.state::<ServerGroup>().set(backend.server.pgid());
-    SERVER_PGID.store(
-        backend.server.pgid().unwrap_or(0),
-        std::sync::atomic::Ordering::SeqCst,
-    );
-
-    let base_url = backend.server.base_url.clone();
-    let event_url = backend.server.global_event_url();
-    let auth = backend.auth.clone();
-    let project = backend.project_label();
-
-    // 前端通过 Rust 代理访问 CLI；连接信息不出现在 WebView 里
-    app.state::<ipc::ServerConn>()
-        .set(base_url.clone(), auth.clone());
-    {
-        let settings = app.state::<ipc::SettingsState>().clone();
-        if let Ok(mut current) = settings.config.lock() {
-            *current = cfg.clone();
-        }
-        if let Ok(mut path) = settings.config_path.lock() {
-            *path = config_path.clone();
-        }
-        if let Ok(mut runtime) = settings.runtime.lock() {
-            runtime.app_version = env!("CARGO_PKG_VERSION").to_string();
-            runtime.base_url = Some(base_url.clone());
-            runtime.cli_path = Some(backend.cli.path.to_string_lossy().to_string());
-            runtime.cli_version = backend.cli.version.map(|version| version.to_string());
-            runtime.config_path = config_path
-                .as_ref()
-                .map(|path| path.to_string_lossy().to_string());
-            runtime.log_dir = ipc::logs_dir().map(|path| path.to_string_lossy().to_string());
-            runtime.data_dir = ipc::data_dir().map(|path| path.to_string_lossy().to_string());
-        };
-    }
-    emit_status(&app, "就绪".to_string(), None, false);
-
-    // 排查用：启动后立刻投递一条系统通知，验证通知权限与通道
-    if std::env::var_os("DEVECO_DESKTOP_NOTIFY_TEST").is_some() {
-        send_test_notification(&app);
-    }
-
-    tauri::async_runtime::spawn(async move {
-        // 保活：DevEcoServer 被 drop 时会回收子进程
-        let _keep_alive = backend;
-        listen_events(app, event_url, auth, project).await;
-    });
-}
-
-async fn listen_events(app: AppHandle, url: String, auth: Option<String>, project: String) {
-    let mut debouncer = Debouncer::new(DEBOUNCE_WINDOW);
-    let mut failures: u32 = 0;
+    publish_phase(&app, Phase::Starting);
 
     loop {
+        if shutting_down() {
+            log::info!("应用正在退出，停止后端监管");
+            supervisor.shutdown().await;
+            return;
+        }
+        if let Err(reason) = supervisor.ensure().await {
+            attempt = attempt.saturating_add(1);
+            publish_phase(&app, Phase::Failed { reason, attempt });
+            let wait = supervise::backoff(attempt);
+            log::warn!("{}s 后重试重建后端（第 {attempt} 次）", wait.as_secs());
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = ctl.retry.notified() => log::info!("用户要求立即重试后端"),
+            }
+            continue;
+        }
+
+        apply_backend(&app, &supervisor, &loaded, config_path.as_ref(), &mut ready_once);
+
+        let Some(url) = supervisor.global_event_url() else {
+            attempt = attempt.saturating_add(1);
+            publish_phase(
+                &app,
+                Phase::Failed {
+                    reason: "后端未提供事件流地址".into(),
+                    attempt,
+                },
+            );
+            continue;
+        };
+        let auth = supervisor.auth();
+        let project = supervisor.project_label();
+        let base = supervisor.base_url().unwrap_or_default().to_string();
+
+        stream_until_down(&app, &url, auth.as_deref(), &project, &base).await;
+
+        if shutting_down() {
+            log::info!("应用正在退出，跳过重建");
+            supervisor.shutdown().await;
+            return;
+        }
+        // 走到这里说明事件流断开且健康检查失败：交给下一轮 ensure 重建
+        log::warn!("后端不可用，进入重建流程");
+        publish_phase(&app, Phase::Recovering { attempt: 1 });
+        attempt = 1;
+    }
+}
+
+/// 后端就绪后同步连接信息、运行信息，并广播 `ready`。
+fn apply_backend(
+    app: &AppHandle,
+    supervisor: &Supervisor,
+    loaded: &Config,
+    config_path: Option<&std::path::PathBuf>,
+    ready_once: &mut bool,
+) {
+    let Some(backend) = supervisor.backend() else {
+        return;
+    };
+
+    if let Some(pgid) = backend.server.pgid() {
+        app.state::<ServerGroup>().set(Some(pgid));
+        SERVER_PGID.store(pgid, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    // 前端所有请求走 IPC 代理：重建后把新的 base_url 写回去即可继续工作
+    app.state::<ipc::ServerConn>()
+        .set(backend.server.base_url.clone(), backend.auth.clone());
+
+    {
+        let settings = app.state::<ipc::SettingsState>().clone();
+        if let Ok(mut runtime) = settings.runtime.lock() {
+            runtime.app_version = env!("CARGO_PKG_VERSION").to_string();
+            runtime.base_url = Some(backend.server.base_url.clone());
+            runtime.cli_path = Some(backend.cli.path.to_string_lossy().to_string());
+            runtime.cli_version = backend.cli.version.map(|version| version.to_string());
+            runtime.config_path = config_path.map(|path| path.to_string_lossy().to_string());
+            runtime.log_dir = ipc::logs_dir().map(|path| path.to_string_lossy().to_string());
+            runtime.data_dir = ipc::data_dir().map(|path| path.to_string_lossy().to_string());
+        }
+        // 先把 Arc 与 guard 绑定成变量：if let 里的临时借用活不过 settings 的作用域
+        let config_handle = settings.config.clone();
+        let config_guard = config_handle.lock();
+        if let Ok(mut current) = config_guard {
+            // 用磁盘上加载的配置覆盖初始默认值：否则设置页读到的是默认值，
+            // 首次保存还会把用户自己的配置（CLI 路径、通知开关）冲掉。
+            *current = loaded.clone();
+            if let Some(path) = config_path {
+                if let Err(err) = current.save(path) {
+                    log::warn!("保存配置失败：{err}");
+                }
+            }
+        }
+    }
+
+    publish_phase(app, Phase::Ready);
+    emit_status(app, "就绪".to_string(), None, false);
+
+    if !*ready_once {
+        *ready_once = true;
+        log::info!(
+            "后端就绪：{} · CLI {}",
+            backend.server.base_url,
+            backend.cli.path.display()
+        );
+        // 排查用：启动后立刻投递一条系统通知，验证通知权限与通道
+        if std::env::var_os("DEVECO_DESKTOP_NOTIFY_TEST").is_some() {
+            send_test_notification(app);
+        }
+    }
+}
+
+fn publish_phase(app: &AppHandle, phase: Phase) {
+    let payload = phase.payload();
+    if let Some(ctl) = app.try_state::<ipc::BackendCtl>() {
+        ctl.set_phase(payload.clone());
+    }
+    if let Err(err) = app.emit("deveco://backend", payload) {
+        log::warn!("广播后端状态失败：{err}");
+    }
+}
+
+/// 订阅事件流，直到确认后端已不可用（能自愈的断线在这里退避重连，不回到外层）。
+async fn stream_until_down(
+    app: &AppHandle,
+    url: &str,
+    auth: Option<&str>,
+    project: &str,
+    base: &str,
+) {
+    let mut debouncer = Debouncer::new(DEBOUNCE_WINDOW);
+    let mut attempts: u32 = 0;
+
+    loop {
+        let started = Instant::now();
         let inner_app = app.clone();
-        let inner_project = project.clone();
-        let result = sse::stream_once(&url, auth.as_deref(), |event| {
+        let inner_project = project.to_string();
+        let result = sse::stream_once(url, auth, |event| {
             handle_event(&inner_app, &inner_project, &mut debouncer, &event);
         })
         .await;
 
-        match result {
-            Ok(()) => {
-                log::warn!("事件流已关闭，准备重连");
-                failures = 0;
-            }
-            Err(err) => {
-                failures = failures.saturating_add(1);
-                log::warn!("事件流中断：{err}");
-            }
+        // 连接活得够久说明刚才只是短暂抖动，重新计数，避免退避越拖越长
+        if started.elapsed() > Duration::from_secs(30) {
+            attempts = 0;
         }
-        let _ = app.emit("deveco://reconnecting", failures);
-        // 指数退避，上限 15s，避免 server 未就绪时打爆日志
-        let backoff = Duration::from_secs(1u64 << failures.min(4)).min(Duration::from_secs(15));
-        tokio::time::sleep(backoff).await;
+        attempts = attempts.saturating_add(1);
+        match result {
+            Ok(()) => log::warn!("事件流已关闭（第 {attempts} 次），准备重连"),
+            Err(err) => log::warn!("事件流中断（第 {attempts} 次）：{err}"),
+        }
+
+        publish_phase(app, Phase::Reconnecting { attempts });
+        let _ = app.emit("deveco://reconnecting", attempts);
+
+        if !server::health(base, auth).await {
+            log::warn!("健康检查未通过，交给监管者重建：{base}");
+            return;
+        }
+        tokio::time::sleep(supervise::backoff(attempts)).await;
     }
 }
 
@@ -407,7 +492,13 @@ impl ServerGroup {
 
 fn shutdown_server(app: &AppHandle) {
     let group = app.state::<ServerGroup>();
-    let Some(pgid) = group.take() else { return };
+    let Some(pgid) = group.take() else {
+        // 启动阶段（健康检查中）还没有发布 pgid，用 lib 侧登记的兜底
+        server::kill_active_group();
+        return;
+    };
+    // 给监管循环一个调度窗口，避免它在回收之后又拉起新实例
+    std::thread::sleep(Duration::from_millis(50));
     log::info!("退出：回收 serve 进程组 {pgid}");
     unsafe {
         libc::kill(-pgid, libc::SIGTERM);
@@ -429,6 +520,8 @@ extern "C" fn handle_termination(_signal: libc::c_int) {
             libc::kill(-pgid, libc::SIGKILL);
         }
     }
+    // 启动窗口期（pgid 尚未发布）也要带走 serve，否则会留下孤儿占端口
+    server::kill_active_group();
     unsafe { libc::_exit(0) };
 }
 

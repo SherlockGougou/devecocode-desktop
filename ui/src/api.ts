@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentInfo,
   AppConfig,
+  BackendPhase,
   CommandInfo,
   McpServerInfo,
   CliConfigSummary,
@@ -100,4 +101,6 @@ export const api = {
     request<{ type?: string; content?: string }>("GET", "/file/content", { directory, path }),
   startupDirectory: () => invoke<string | null>("startup_directory"),
   pathExists: (path: string) => invoke<boolean>("path_exists", { path }),
+  backendState: () => invoke<BackendPhase>("backend_state"),
+  retryBackend: () => invoke<void>("retry_backend"),
 };
