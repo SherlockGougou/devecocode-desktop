@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useApp } from "../store";
+import { Icon } from "./Icon";
 import { getThemeChoice, setThemeChoice, type ThemeChoice } from "../theme";
 import type { AppConfig, CliConfigSummary, RuntimeInfo } from "../types";
 
@@ -121,8 +122,8 @@ export default function Settings() {
       >
         <header className="settings-head">
           <span>设置</span>
-          <button className="settings-close" onClick={close} title="关闭 (Esc)">
-            ✕
+          <button className="settings-close" onClick={close} title="关闭 (Esc)" aria-label="关闭">
+            <Icon name="close" size={16} />
           </button>
         </header>
 

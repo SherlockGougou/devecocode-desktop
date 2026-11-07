@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../store";
+import { Icon } from "./Icon";
 
 function basename(path: string) {
   const parts = path.split("/").filter(Boolean);
@@ -70,11 +71,14 @@ export default function Sidebar() {
   return (
     <aside className="sidebar">
       <button className="new-session" onClick={() => void newSession()} disabled={!directory}>
-        <span className="plus">+</span> 新会话
+        <Icon name="plus" size={16} strokeWidth={2} />
+        新会话
       </button>
 
       <div className="search">
-        <span className="search-icon">⌕</span>
+        <span className="search-icon">
+          <Icon name="search" size={16} />
+        </span>
         <input
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
@@ -100,7 +104,7 @@ export default function Sidebar() {
             <div key={`search-${dir}`} className="project">
               <div className="project-row">
                 <span className="chevron-btn open" aria-hidden>
-                  ›
+                  <Icon name="chevron-right" size={15} />
                 </span>
                 <button className="project-name" onClick={() => void selectProject(dir)} title={dir}>
                   {basename(dir)}
@@ -149,7 +153,7 @@ export default function Sidebar() {
                   onClick={() => void toggleProject(dir)}
                   title={isOpen ? "折叠" : "展开"}
                 >
-                  ›
+                  <Icon name="chevron-right" size={15} strokeWidth={2} />
                 </button>
                 <button className="project-name" onClick={() => void selectProject(dir)} title={dir}>
                   {basename(dir)}
@@ -200,7 +204,7 @@ export default function Sidebar() {
                           <span className="session-confirm">
                             <span>删除？</span>
                             <button
-                              className="mini-btn danger"
+                              className="mini-btn text danger"
                               onClick={() => {
                                 setConfirming(null);
                                 void deleteSession(session.id);
@@ -208,7 +212,10 @@ export default function Sidebar() {
                             >
                               确认
                             </button>
-                            <button className="mini-btn" onClick={() => setConfirming(null)}>
+                            <button
+                              className="mini-btn text"
+                              onClick={() => setConfirming(null)}
+                            >
                               取消
                             </button>
                           </span>
@@ -218,23 +225,26 @@ export default function Sidebar() {
                             <button
                               className="mini-btn"
                               title="重命名"
+                              aria-label="重命名会话"
                               onClick={() => setEditing({ id: session.id, value: session.title ?? "" })}
                             >
-                              ✎
+                              <Icon name="pencil" size={15} />
                             </button>
                             <button
                               className="mini-btn"
                               title={session.time?.archived ? "取消归档" : "归档会话"}
+                              aria-label={session.time?.archived ? "取消归档" : "归档会话"}
                               onClick={() => void archiveSession(session.id, !session.time?.archived)}
                             >
-                              {session.time?.archived ? "↩" : "⇩"}
+                              <Icon name={session.time?.archived ? "unarchive" : "archive"} size={15} />
                             </button>
                             <button
                               className="mini-btn danger"
                               title="删除会话"
+                              aria-label="删除会话"
                               onClick={() => setConfirming(session.id)}
                             >
-                              ✕
+                              <Icon name="trash" size={15} />
                             </button>
                           </span>
                         )}
@@ -252,8 +262,13 @@ export default function Sidebar() {
       <div className="sidebar-footer">
         <span className="dot" />
         <span className="footer-text">本机 CLI</span>
-        <button className="footer-btn" onClick={() => openSettings()} title="设置 (⌘,)">
-          ⚙
+        <button
+          className="footer-btn"
+          onClick={() => openSettings()}
+          title="设置 (⌘,)"
+          aria-label="打开设置"
+        >
+          <Icon name="sliders" size={16} />
         </button>
       </div>
     </aside>

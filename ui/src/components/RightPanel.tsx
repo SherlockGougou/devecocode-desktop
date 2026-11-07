@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useApp } from "../store";
+import { Icon } from "./Icon";
 
 export default function RightPanel() {
   const open = useApp((s) => s.rightOpen);
@@ -39,6 +40,7 @@ export default function RightPanel() {
           {diff.map((entry) => (
             <details key={entry.file} className="diff-entry">
               <summary>
+                <Icon name="chevron-right" size={14} className="caret" />
                 <span className="diff-file">{entry.file}</span>
                 <span className="diff-stat">
                   {entry.additions ? <em className="add">+{entry.additions}</em> : null}
@@ -54,8 +56,13 @@ export default function RightPanel() {
       {tab === "files" && preview && (
         <div className="right-body preview">
           <div className="preview-head">
-            <button className="mini-btn" onClick={closePreview} title="返回文件列表">
-              ←
+            <button
+              className="mini-btn"
+              onClick={closePreview}
+              title="返回文件列表"
+              aria-label="返回文件列表"
+            >
+              <Icon name="arrow-left" size={15} />
             </button>
             <span className="preview-path" title={preview.path}>
               {preview.path}
@@ -79,8 +86,14 @@ export default function RightPanel() {
           />
           {!fileQuery.trim() && (
             <div className="file-crumbs">
-              <button className="mini-btn" onClick={() => void goUpDir()} disabled={!filePath} title="上一级">
-                ↑
+              <button
+                className="mini-btn"
+                onClick={() => void goUpDir()}
+                disabled={!filePath}
+                title="上一级"
+                aria-label="上一级目录"
+              >
+                <Icon name="folder-up" size={15} />
               </button>
               <span className="crumb-path" title={filePath || "根目录"}>
                 {filePath || "根目录"}
@@ -97,10 +110,14 @@ export default function RightPanel() {
                   file.type === "directory" ? void enterDir(file.path) : void openPreview(file.path)
                 }
               >
-                <span className="file-name">
-                  {file.type === "directory" ? "▸ " : ""}
-                  {file.name}
+                <span className="file-kind">
+                  <Icon
+                    name={file.type === "directory" ? "folder" : "file"}
+                    size={15}
+                    className="file-icon"
+                  />
                 </span>
+                <span className="file-name">{file.name}</span>
                 {file.ignored && <span className="file-tag">ignored</span>}
               </button>
             ))}

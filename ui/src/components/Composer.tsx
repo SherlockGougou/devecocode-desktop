@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment } from "../types";
 import { api } from "../api";
 import { useApp } from "../store";
+import { Icon } from "./Icon";
 
 export default function Composer() {
   const send = useApp((s) => s.send);
@@ -212,13 +213,15 @@ export default function Composer() {
           <div className="attachment-row">
             {attachments.map((file) => (
               <span className="attachment-chip" key={file.id} title={`${file.name} · ${Math.round(file.size / 1024)}KB`}>
-                {file.mime.startsWith("image/") ? "🖼" : "📄"} {file.name}
+                <Icon name={file.mime.startsWith("image/") ? "image" : "file"} size={14} />
+                {file.name}
                 <button
                   className="chip-remove"
                   onClick={() => setAttachments((current) => current.filter((item) => item.id !== file.id))}
                   title="移除"
+                  aria-label={`移除 ${file.name}`}
                 >
-                  ✕
+                  <Icon name="close" size={13} />
                 </button>
               </span>
             ))}
@@ -326,7 +329,7 @@ export default function Composer() {
               title="添加附件（最多 4 个，单个不超过 8MB）"
               disabled={!directory}
             >
-              +
+              <Icon name="paperclip" size={17} />
             </button>
             <div className="agent-picker">
               <button
@@ -377,7 +380,7 @@ export default function Composer() {
               >
                 <span className="model-dot" />
                 {modelLabel}
-                <span className="model-caret">⌄</span>
+                <Icon name="chevron-down" size={14} className="model-caret" />
               </button>
               {pickerOpen && (
                 <div className="model-pop">
@@ -416,6 +419,7 @@ export default function Composer() {
           </div>
           {streaming ? (
             <button className="stop-btn" onClick={() => void stop()}>
+              <Icon name="stop" size={12} />
               停止
             </button>
           ) : (
@@ -423,8 +427,10 @@ export default function Composer() {
               className="send-btn"
               onClick={submit}
               disabled={(!text.trim() && attachments.length === 0) || !directory}
+              title="发送（Enter）"
+              aria-label="发送"
             >
-              ↑
+              <Icon name="arrow-up" size={18} strokeWidth={2} />
             </button>
           )}
         </div>

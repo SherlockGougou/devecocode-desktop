@@ -11,6 +11,7 @@ import StatusBar from "./components/StatusBar";
 import RightPanel from "./components/RightPanel";
 import Settings from "./components/Settings";
 import Shortcuts from "./components/Shortcuts";
+import { Icon } from "./components/Icon";
 
 export default function App() {
   const booted = useRef(false);
@@ -226,8 +227,9 @@ function TitleBar() {
           className={`icon-btn ${rightOpen ? "active" : ""}`}
           onClick={toggleRight}
           title="切换右侧面板"
+          aria-label="切换右侧面板"
         >
-          ◫
+          <Icon name="panel-right" size={18} />
         </button>
       </div>
     </header>

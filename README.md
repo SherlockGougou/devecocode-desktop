@@ -9,6 +9,7 @@
 ui/                       React + TypeScript 前端（Vite）
   src/App.tsx             标题栏 + 三栏骨架
   src/components/         Sidebar / ChatView / Composer / StatusBar / RightPanel
+  src/components/Icon.tsx 统一图标集（线性 SVG，1.75 描边，currentColor 跟随主题）
   src/store.ts            zustand：会话、消息、权限、SSE 合并
   src/theme.ts            主题：按系统外观写入 <html data-theme>
   src/api.ts              invoke 包装（全部走 Rust 代理）
@@ -46,6 +47,7 @@ graph LR
 | 状态栏 | 事件流状态 · 当前工作区 · 轮次 · 步数 · token 输入/输出 · 成本 |
 | 右栏 | 可折叠：变更（按文件 diff）/ 文件（目录浏览 + 搜索 + 内容预览） |
 | 主题 | 跟随系统，或在设置页显式选「亮色 / 暗色」（暗色为设计基准，亮色只覆盖 CSS 变量；选择存 localStorage） |
+| 图标 | 统一线性 SVG（`components/Icon.tsx`）：同一视框与描边、`currentColor` 跟随主题；尺寸按层级 14（行内）/ 15–16（常规按钮）/ 18（主操作） |
 | 设置页 | `⌘,` 打开：运行状态 / CLI 路径 / 服务端口与口令 / 通知开关 / CLI 配置只读 / 诊断（日志、配置文件、经典界面、重启） |
 | 原生菜单 | `⌘N` 新建会话、`⌘,` 设置、`⌘⇧B` 切换右栏、`⌘⇧C` 经典界面、`⌘R` 重载界面，含标准编辑菜单与窗口菜单 |
 | 窗口 | 大小/位置自动记忆；标题跟随「会话 · 项目」 |
@@ -129,7 +131,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin deveco-selftest   # 端到�
 ## 会话与文件
 
 - **工作区懒加载**：展开某个工作区时才拉它的会话列表，切换工作区不会卡。
-- **会话管理**：悬停显示 `✎` 重命名（也可双击标题）、`✕` 删除（行内二次确认，删当前会话会清空视图）。
+- **会话管理**：悬停显示重命名 / 归档 / 删除三个图标按钮（重命名也可双击标题；删除为行内二次确认，删当前会话会清空视图）。
 - **模型选择**：composer 左下角的模型胶囊，支持搜索与切换；选定后新消息带上该模型。
 - **Agent 切换**：`build / plan / debug …` 胶囊（`/agent` 的 primary 列表），选中后新消息带 `agent`。
 - **推理强度**：模型带 variants 时出现档位胶囊（如 `max`），点击循环切换，随消息带 `variant`。

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useApp } from "../store";
+import { Icon } from "./Icon";
 
 const GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
@@ -47,8 +48,8 @@ export default function Shortcuts() {
       <div className="shortcuts-panel" onClick={(event) => event.stopPropagation()}>
         <header className="settings-head">
           <span>快捷键</span>
-          <button className="settings-close" onClick={close} title="关闭 (Esc)">
-            ✕
+          <button className="settings-close" onClick={close} title="关闭 (Esc)" aria-label="关闭">
+            <Icon name="close" size={16} />
           </button>
         </header>
         <div className="shortcuts-body">

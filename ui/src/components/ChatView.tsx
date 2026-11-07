@@ -3,6 +3,7 @@ import { api } from "../api";
 import { useApp } from "../store";
 import type { Message, Part } from "../types";
 import Markdown from "./Markdown";
+import { Icon } from "./Icon";
 
 const MAX_PREVIEW = 4000;
 
@@ -38,6 +39,7 @@ function ToolCard({ part }: { part: Part }) {
   return (
     <details className={`tool ${status}`}>
       <summary>
+        <Icon name="chevron-right" size={14} className="caret" />
         <span className="tool-dot" />
         <span className="tool-name">{part.tool ?? "tool"}</span>
         <span className={`tool-status ${status}`}>{label[status] ?? status}</span>
@@ -76,7 +78,10 @@ function AssistantBlocks({ parts }: { parts: Part[] }) {
             time?.start && time?.end ? Math.max(0.1, (time.end - time.start) / 1000).toFixed(1) : null;
           return (
             <details key={part.id} className="reasoning" open={running}>
-              <summary>{running ? "思考中…" : `思考过程${seconds ? ` · ${seconds}s` : ""}`}</summary>
+              <summary>
+                <Icon name="chevron-right" size={14} className="caret" />
+                {running ? "思考中…" : `思考过程${seconds ? ` · ${seconds}s` : ""}`}
+              </summary>
               <div className="reasoning-body">{part.text}</div>
             </details>
           );
@@ -160,9 +165,11 @@ export default function ChatView() {
             disabled={!sessionID}
             title="导出当前会话 (⌘E)"
           >
+            <Icon name="download" size={15} />
             导出
           </button>
           <button className="ghost-btn" onClick={() => void api.openClassicView()}>
+            <Icon name="external" size={15} />
             经典界面
           </button>
         </div>
@@ -170,7 +177,9 @@ export default function ChatView() {
 
       {findOpen && (
         <div className="findbar">
-          <span className="find-icon">⌕</span>
+          <span className="find-icon">
+            <Icon name="search" size={16} />
+          </span>
           <input
             autoFocus
             value={findQuery}
@@ -184,14 +193,14 @@ export default function ChatView() {
           <span className="find-count">
             {findQuery.trim() ? `${matches.length === 0 ? 0 : Math.min(findIndex + 1, matches.length)}/${matches.length}` : ""}
           </span>
-          <button className="mini-btn" onClick={() => stepFind(-1)} title="上一个">
-            ↑
+          <button className="mini-btn" onClick={() => stepFind(-1)} title="上一个" aria-label="上一个匹配">
+            <Icon name="arrow-up" size={15} />
           </button>
-          <button className="mini-btn" onClick={() => stepFind(1)} title="下一个">
-            ↓
+          <button className="mini-btn" onClick={() => stepFind(1)} title="下一个" aria-label="下一个匹配">
+            <Icon name="arrow-down" size={15} />
           </button>
-          <button className="mini-btn" onClick={closeFind} title="关闭">
-            ✕
+          <button className="mini-btn" onClick={closeFind} title="关闭" aria-label="关闭查找">
+            <Icon name="close" size={15} />
           </button>
         </div>
       )}
@@ -211,6 +220,7 @@ export default function ChatView() {
             <h2>开始一个会话</h2>
             <p>在下方输入需求，或从左侧选择一个已有会话。</p>
             <button className="primary-btn" onClick={() => void newSession()} disabled={!directory}>
+              <Icon name="plus" size={15} strokeWidth={2} />
               新建会话
             </button>
           </div>
@@ -232,6 +242,7 @@ export default function ChatView() {
         {pending.map((permission) => (
           <div className="permission" key={permission.id}>
             <div className="permission-head">
+              <Icon name="alert" size={15} className="permission-icon" />
               <span className="permission-badge">需要授权</span>
               <span className="permission-name">{permission.permission}</span>
             </div>
@@ -283,7 +294,10 @@ function MessageRow({ message }: { message: Message }) {
             <div className="bubble-files">
               {files.map((part) => (
                 <span className="attachment-chip" key={part.id} title={String(part.filename ?? "")}>
-                  {String(part.mime ?? "").startsWith("image/") ? "🖼" : "📄"}{" "}
+                  <Icon
+                    name={String(part.mime ?? "").startsWith("image/") ? "image" : "file"}
+                    size={14}
+                  />
                   {String(part.filename ?? "附件")}
                 </span>
               ))}
@@ -342,6 +356,7 @@ function CopyButton({ text }: { text: string }) {
         }
       }}
     >
+      <Icon name={done ? "check" : "copy"} size={14} />
       {done ? "已复制" : "复制"}
     </button>
   );

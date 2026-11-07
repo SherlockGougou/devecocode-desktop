@@ -140,6 +140,21 @@ textarea {
   outline: none;
 }
 
+/* 图标：统一线性 SVG（components/Icon.tsx）。display:block 让它不参与文字基线，
+   避免不同字号的按钮里图标上下抖动。 */
+.ico {
+  flex: none;
+  display: block;
+}
+/* 可折叠块（工具卡、思考、变更）的展开指示 */
+.caret {
+  color: var(--muted);
+  transition: transform 0.14s ease;
+}
+details[open] > summary .caret {
+  transform: rotate(90deg);
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -274,11 +289,13 @@ textarea {
   background: var(--ok);
 }
 .icon-btn {
-  width: 26px;
-  height: 24px;
-  border-radius: 6px;
+  width: 32px;
+  height: 26px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
   color: var(--muted);
-  font-size: 12px;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 .icon-btn:hover {
   background: var(--panel-2);
@@ -304,7 +321,7 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 7px;
   height: 34px;
   border-radius: 9px;
   background: var(--btn-bg);
@@ -319,23 +336,20 @@ textarea {
   opacity: 0.4;
   cursor: not-allowed;
 }
-.plus {
-  font-size: 14px;
-  line-height: 1;
-}
 .search {
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 9px;
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px;
   border-radius: 8px;
   background: var(--panel);
   border: 1px solid var(--border-soft);
 }
 .search-icon {
+  display: flex;
+  align-items: center;
   color: var(--muted);
-  font-size: 13px;
 }
 .search input {
   flex: 1;
@@ -374,15 +388,6 @@ textarea {
 }
 .project-row.active {
   color: var(--text);
-}
-.chevron {
-  width: 10px;
-  color: var(--muted);
-  transition: transform 0.12s ease;
-  display: inline-block;
-}
-.chevron.open {
-  transform: rotate(90deg);
 }
 .project-name {
   flex: 1;
@@ -485,12 +490,20 @@ textarea {
   margin-left: 6px;
 }
 .ghost-btn {
-  height: 26px;
-  padding: 0 10px;
+  height: 28px;
+  padding: 0 11px;
   border-radius: 7px;
-  font-size: 11.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
   color: var(--text-dim);
   border: 1px solid var(--border);
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.ghost-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .ghost-btn:hover {
   background: var(--panel);
@@ -539,6 +552,10 @@ textarea {
   height: 30px;
   padding: 0 14px;
   border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   background: var(--btn-bg);
   color: var(--btn-fg);
   font-size: 12px;
@@ -614,12 +631,16 @@ textarea {
 .tool > summary {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   padding: 7px 10px;
   cursor: pointer;
   list-style: none;
   font-size: 12px;
   color: var(--text-dim);
+  transition: background 0.12s ease;
+}
+.tool > summary:hover {
+  background: var(--panel-2);
 }
 .tool > summary::-webkit-details-marker {
   display: none;
@@ -690,10 +711,16 @@ textarea {
   font-size: 12px;
 }
 .reasoning > summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   cursor: pointer;
   list-style: none;
   font-size: 11.5px;
   color: var(--muted);
+}
+.reasoning > summary:hover {
+  color: var(--text-dim);
 }
 .reasoning-body {
   margin-top: 6px;
@@ -712,6 +739,9 @@ textarea {
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+}
+.permission-icon {
+  color: var(--warn);
 }
 .permission-badge {
   font-size: 10.5px;
@@ -861,13 +891,14 @@ textarea {
   color: var(--muted);
 }
 .send-btn {
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
   background: var(--btn-bg);
   color: var(--btn-fg);
-  font-size: 14px;
-  line-height: 1;
+  transition: background 0.12s ease, opacity 0.12s ease;
 }
 .send-btn:disabled {
   background: var(--control-bg);
@@ -875,12 +906,16 @@ textarea {
   cursor: not-allowed;
 }
 .stop-btn {
-  height: 26px;
+  height: 30px;
   padding: 0 12px;
   border-radius: 8px;
   border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-dim);
-  font-size: 11.5px;
+  font-size: 12px;
+  transition: color 0.12s ease, border-color 0.12s ease;
 }
 .stop-btn:hover {
   color: var(--danger);
@@ -939,8 +974,8 @@ textarea {
   border-bottom: 1px solid var(--border-soft);
 }
 .right-tabs button {
-  height: 24px;
-  padding: 0 9px;
+  height: 26px;
+  padding: 0 10px;
   border-radius: 6px;
   font-size: 11.5px;
   color: var(--muted);
@@ -979,8 +1014,9 @@ textarea {
 }
 .diff-entry > summary {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   padding: 6px 9px;
   cursor: pointer;
   list-style: none;
@@ -990,6 +1026,8 @@ textarea {
   display: none;
 }
 .diff-file {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1027,14 +1065,24 @@ textarea {
 }
 .file-row {
   display: flex;
-  flex-direction: column;
-  padding: 4px 7px;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
   border-radius: 6px;
   font-size: 11.5px;
   color: var(--text-dim);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.file-kind {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+}
+.file-row:hover .file-kind {
+  color: var(--text-dim);
 }
 .file-row:hover {
   background: var(--panel);
@@ -1086,6 +1134,10 @@ textarea {
   align-items: center;
   justify-content: center;
 }
+.settings-panel:focus,
+.shortcuts-panel:focus {
+  outline: none;
+}
 .settings-panel {
   width: min(780px, calc(100vw - 120px));
   max-height: min(760px, calc(100vh - 120px));
@@ -1109,11 +1161,13 @@ textarea {
   font-weight: 600;
 }
 .settings-close {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
   color: var(--muted);
-  font-size: 12px;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 .settings-close:hover {
   background: var(--panel-2);
@@ -1287,11 +1341,13 @@ textarea {
 
 .footer-btn {
   margin-left: auto;
-  width: 24px;
-  height: 22px;
-  border-radius: 6px;
+  width: 28px;
+  height: 26px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
   color: var(--muted);
-  font-size: 12px;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 .footer-btn:hover {
   background: var(--panel);
@@ -1303,13 +1359,14 @@ textarea {
   padding-right: 4px;
 }
 .chevron-btn {
-  width: 16px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   flex: none;
+  display: grid;
+  place-items: center;
   color: var(--muted);
-  font-size: 12px;
-  border-radius: 4px;
-  transition: transform 0.12s ease;
+  border-radius: 5px;
+  transition: transform 0.14s ease, background 0.12s ease, color 0.12s ease;
 }
 .chevron-btn:hover {
   background: var(--panel-2);
@@ -1369,12 +1426,19 @@ textarea {
   white-space: nowrap;
 }
 .mini-btn {
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.mini-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .mini-btn:hover {
   background: var(--panel-2);
@@ -1382,6 +1446,12 @@ textarea {
 }
 .mini-btn.danger:hover {
   color: var(--danger);
+}
+/* 文字型行内按钮（确认/取消）不要被方形图标按钮的固定宽度限制 */
+.mini-btn.text {
+  width: auto;
+  padding: 0 7px;
+  font-size: 11px;
 }
 .session-rename {
   flex: 1;
@@ -1408,7 +1478,7 @@ textarea {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 26px;
+  height: 28px;
   padding: 0 8px;
   border-radius: 7px;
   border: 1px solid var(--border);
@@ -1433,7 +1503,7 @@ textarea {
 }
 .model-caret {
   color: var(--muted);
-  font-size: 10px;
+  margin-left: -1px;
 }
 .model-pop {
   position: absolute;
@@ -1545,10 +1615,6 @@ textarea {
   border-radius: 4px;
   padding: 0 4px;
 }
-.file-row {
-  display: flex;
-  align-items: baseline;
-}
 
 /* ---------- 消息操作 ---------- */
 .bubble-wrap {
@@ -1577,9 +1643,12 @@ textarea {
 }
 .copy-btn {
   width: auto;
-  padding: 0 6px;
-  height: 20px;
-  font-size: 10.5px;
+  padding: 0 7px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
   background: var(--panel);
   border: 1px solid var(--border);
 }
@@ -1738,13 +1807,14 @@ kbd {
   background: var(--bg-soft);
 }
 .find-icon {
+  display: flex;
+  align-items: center;
   color: var(--muted);
-  font-size: 12px;
 }
 .findbar input {
   flex: 1;
-  height: 26px;
-  font-size: 12px;
+  height: 28px;
+  font-size: 12.5px;
 }
 .find-count {
   font-size: 11px;
@@ -1782,13 +1852,14 @@ kbd {
   display: none;
 }
 .attach-btn {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
   border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
   color: var(--text-dim);
-  font-size: 15px;
-  line-height: 1;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 .attach-btn:hover {
   background: var(--panel-2);
@@ -1807,9 +1878,10 @@ kbd {
 .attachment-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   max-width: 260px;
-  padding: 2px 8px;
+  padding: 3px 7px 3px 8px;
+  line-height: 1.5;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--panel);
@@ -1820,10 +1892,18 @@ kbd {
   white-space: nowrap;
 }
 .chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: -3px;
+  border-radius: 5px;
   color: var(--muted);
-  font-size: 10px;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 .chip-remove:hover {
+  background: var(--panel-2);
   color: var(--danger);
 }
 .bubble-files {
@@ -1845,7 +1925,7 @@ kbd {
   background: var(--link);
 }
 .variant-chip {
-  height: 26px;
+  height: 28px;
   padding: 0 8px;
   border-radius: 7px;
   border: 1px solid var(--border);
