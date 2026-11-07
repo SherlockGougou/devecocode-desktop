@@ -967,7 +967,9 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 
 验证：
 
-- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 在本节改动完成时通过；
+  之后并行的设置页重构改动了 `Settings.tsx` / `types.ts`，当前全量 UI build 暂时被其类型错误阻塞，
+  与本节侧栏改动无关。
 - 退出重开后加载真实 `.app`，默认 1512×898 下工具组左右分布、推理紧邻发送：
   `.agent-temp/composer-redesign/21-final-light.png`。
 - 三个菜单逐一打开核对锚点、勾选和层级：
@@ -1201,3 +1203,495 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
   现有 `send()` lazy-create 链路和「已有内容会话隐藏选择器」的实测共同确认，未做完整自动化断言。
 - 未用全新的临时目录验证本地工作区名单跨重启恢复；本次原生面板选择的是已存在工作区，
   只验证了目录选择、路径规范化和去重分支。
+
+### 22.28 设置页双栏重构（2026-11-07）
+
+需求：设置页从单列长滚动改为左侧固定分类导航、右侧详情独立滚动，避免运行状态、CLI 配置和诊断
+入口被一串通知开关埋在下方。
+
+实现：
+
+- 面板由 780×760 单列扩为最大 960×720 的双栏对话框：左侧 200px 分类导航固定，右侧详情独立滚动，
+  顶部标题与底部保存栏跨两栏常驻。
+- 分类收口为「外观 / CLI / 服务 / 通知 / 诊断」：外观保留主题；CLI 合并可执行文件与只读配置；
+  服务保留端口与口令；通知保留全部开关；诊断合并运行状态与维护操作。
+- 分类页写入 `store.settingsPage`；底部设置入口保留上次分类，后端异常提示的「诊断」按钮通过
+  `openSettings("diagnostics")` 直接定位诊断页。
+- 切换分类时右侧滚回顶部，未保存的 `draft` 不重建，跨分类修改会保留到底栏统一保存。
+  焦点陷阱补上 `select / textarea`，并跳过禁用控件。
+- 导航图标新增太阳、终端、服务器、铃铛与活动线条五个同视框 SVG，继续跟随主题 `currentColor`。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）通过。
+- 在真实 `.app` 中依次切换五个分类，确认左栏固定、右侧切换、底栏保存状态与按钮位置正常：
+  `.agent-temp/settings-appearance.png`、`settings-cli.png`、`settings-service.png`、
+  `settings-notifications.png`、`settings-diagnostics.png`。
+- 用最新前端产物 + 假 IPC 在 1440×900 复核最终亮/暗色样式与去除冗余小标题后的间距：
+  `.agent-temp/settings-final-light.png`、`settings-final-dark.png`。
+
+未验证：
+
+- 本轮没有重新执行保存写盘与完整 Tab 循环；保存逻辑沿用原有路径，焦点列表仅增加可输入控件。
+- 暗色主题只在真实组件 + 假 IPC 的浏览器环境中核对，未在真实 `.app` 内切换暗色复核。
+
+### 22.29 侧栏工作区移除（2026-11-07）
+
+需求：侧栏会长期保留 CLI `/project` 注册表里的历史探测目录（如 `/tmp`、`/private/tmp`），需要能在桌面端移除。
+
+实现：
+
+- `store.ts` 新增 `removeWorkspace` 与 `deveco.desktop.removedWorkspaces` 持久化名单；启动时合并 `/project`
+  与本地工作区记录后统一过滤隐藏项。通过「新建工作区…」重新选择同一目录时清除隐藏项，恢复显示。
+- CLI 只有 `GET /project` 与 `PATCH /project/{projectID}`，没有项目删除接口；移除只作用于桌面端侧栏，
+  不删除目录、不写 CLI 全局数据库、不删除历史会话。
+- 移除当前工作区时自动切到剩余列表的第一个；全部移除后清空当前会话、diff、文件面板与预览，
+  进入「还没有工作区」空态，并提供「选择文件夹…」入口。
+- 侧栏工作区行悬停时显示新建会话与移除两个图标；右键菜单新增「从侧栏移除」；全局搜索结果中的工作区行同样可移除。
+- 移除后显示 6 秒提示「已从侧栏移除「…」；文件夹与历史会话未删除」，避免被理解成删除磁盘目录。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）通过；`npm run build:debug` 通过并在真实 `.app` 中验证。
+- 把 `tmp` 切成当前工作区后点悬停移除：行消失，自动切到 `/`；重启应用后 `tmp` 仍隐藏。
+  证据：`.agent-temp/workspace-remove-hover3.png`、`.agent-temp/workspace-remove-restart.png`。
+- 通过 Composer 的「新建工作区…」重新选择 `/private/tmp`：`tmp` 回到侧栏顶部并成为当前工作区，确认恢复路径。
+- 右键 `tmp` → 「从侧栏移除」：`tmp` 消失，当前 `sampleworkspace-harmony` 与其会话保持不变，提示条正确出现。
+  证据：`.agent-temp/workspace-remove-final.png`。
+
+未验证：
+
+- 未在真机把全部工作区逐个移除来目视核对最终空态；空态由代码路径与 `projects.length === 0` 分支覆盖，
+  没有单独截图。
+- 暗色主题下新增的移除按钮只沿用现有变量，没有逐项截图。
+
+### 22.30 多工作区展开、每次加五条与会话选中竖条（2026-11-07）
+
+需求：侧栏不再使用「一次只展开一个工作区」的手风琴；每个工作区都可独立展开，默认显示 5 条会话，
+点「展开更多」每次再显示 5 条直到全部；再次点击工作区收起该工作区的全部会话，重新展开回到 5 条。
+同时，会话前的圆环看起来像复选框，换成更明确的选中表达。
+
+实现：
+
+- `expanded` 从「只保留当前工作区」改为独立布尔映射：`selectProject / newSession / newSessionIn /
+  changeDraftWorkspace / send` 都只把目标工作区置为展开，不再清空其它项；`toggleProject` 只翻转当前目录。
+- 点击当前工作区只切换它自己的展开状态，不再走 `selectProject`，因此重新展开不会重拉会话或跳回最近会话；
+  点击其它工作区仍会切换并展开，同时保留已展开的工作区。
+- `Sidebar` 新增 `sessionLimits`：默认 `5`，点「展开更多」加 `5`，隐藏数归零后按钮消失；
+  工作区被收起或从项目列表移除时由 effect 清掉该目录的 limit，重新展开重新从 5 条开始。
+- 去掉原先的「收起」行内按钮，因为点击工作区行本身已经承担收起动作。
+- 会话选中标记由 12px 圆环改为 3×16px 蓝色竖条（`--folder-accent`）；当前会话标题加 500 字重，
+  生成中竖条用缩放/透明度呼吸动画，不再使用旋转圆环。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 临时在 `/private/tmp/deveco-multi-test` 创建 12 条空会话：`deveco-multi-test` 与 `sampleworkspace-harmony`
+  可以同时展开；前者初始显示 5 条，点一次「展开更多」变 10 条，再点一次变 12 条且按钮消失。
+  证据：`.agent-temp/multi-workspace-five.png`。
+- 点击当前工作区收起后，`sampleworkspace-harmony` 仍保持展开，当前会话与标题不变；再次点击 `deveco-multi-test`
+  恢复 5 条会话，limit 重置生效。
+- 截图核对当前会话左侧为蓝色竖条，不再出现圆环/复选框观感。
+- 验证结束后已删除两个临时目录下的 24 条空会话并移除目录；重启后 `deveco-multi-test` 从侧栏消失。
+
+未验证：
+
+- 暗色主题下的竖条与呼吸动画未逐项截图。
+- 未用上百条会话测试「展开更多」的连续点击性能；当前实现只做数组切片，没有额外请求。
+
+### 22.31 左栏视图设置菜单（2026-11-07）
+
+需求：左栏第二个滑杆图标原本只是「显示/隐藏已归档会话」，没有归档数据时点击看不到任何变化，
+容易被误认为设置入口。改为真正的视图设置菜单，包含显示已归档会话、会话排序、默认显示条数、
+全部展开/收起工作区和打开完整设置。
+
+实现：
+
+- `Sidebar` 第二个图标改为打开「视图设置」菜单，不再直接切换归档；图标在有非默认视图偏好时保留 `.on` 提示。
+- 菜单扩展 `ContextMenuItem`：新增 `checked` / `checkType`，支持 `menuitemcheckbox` 与 `menuitemradio`，
+  右侧渲染勾选图标；菜单打开时能直接看到当前排序、条数和归档状态。
+- 新增持久化视图偏好：`deveco.desktop.sessionSort`（updated / created / title）与
+  `deveco.desktop.sessionPreview`（5 / 10 / 20 / all），写入 Zustand state 后作用于侧栏与搜索结果。
+- `Sidebar` 统一在渲染前过滤归档并按偏好排序；默认条数替代原来的硬编码 5，点「展开更多」按当前默认步长增加，
+  选择「显示全部会话」时不再分页。修改默认条数会清空各工作区的临时 limit。
+- `toggleAllProjects`：全部收起时清空 `expanded`；否则把所有项目置为展开并补齐尚未加载的会话列表。
+- 「打开设置…」复用现有 `openSettings()` 与 `⌘,`，不复制完整设置页的状态。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过；真实 `.app` 中点击第二个图标
+  可打开 14 项菜单，勾选状态正确。证据：`.agent-temp/view-settings-menu.png`。
+- 「全部展开工作区」后三个工作区同时展开；再次打开菜单变为「全部收起工作区」，点击后全部收起。
+- 切换到「按标题排序」后 `sampleworkspace-harmony` 的「底部 TabView 实现」排在「关闭 deveco 本地通知脚本功能」之前，
+  确认排序即时生效。
+- 临时创建 12 条按编号命名的会话：默认 5 条；改为 10 条后显示 10 条；改为「显示全部会话」后显示 12 条且
+  「展开更多」消失。测试会话与临时目录已清理。
+- 菜单「打开设置…」能打开完整设置页，`Esc` 关闭；侧栏恢复默认偏好（最近更新、5 条、不显示归档）。
+
+未验证：
+
+- 「按创建时间排序」与「按最近更新排序」共用同一数值排序分支，当前样本两种顺序相同，没有单独构造
+  updated/created 顺序相反的会话做视觉验证。
+- 暗色主题下菜单勾选图标与视图设置在图标上的 `.on` 状态未逐项截图。
+
+### 22.32 工作区二次确认与拖动排序（2026-11-07）
+
+需求：工作区移除不能一键生效，需要行内二次确认；工作区列表要支持拖动调整顺序。
+
+实现：
+
+- 移除入口（悬停垃圾桶、右键「从侧栏移除…」）只设置 `removing`，工作区行内显示「移除？确认/取消」；
+  确认后才调用 `removeWorkspace`，取消或点击其它区域恢复。正常列表与搜索结果工作区行共用同一确认状态。
+- 拖动最初使用 HTML5 `draggable`，在 WKWebView 里从按钮子元素拖动不会稳定触发 `dragstart`；改为鼠标事件实现：
+  mousedown 记录起点，移动超过 4px 后才进入拖动，`elementFromPoint` 命中目标 `.ws-row[data-workspace]`，
+  根据目标行上下半区显示 `drop-before / drop-after` 指示条并写入前后位置。
+- 工作区名称区从 `<button>` 改为 `div[role="button"]`，保留 Enter/Space 操作；这样拖动不会被按钮的默认行为吞掉。
+- 拖动结束会吞掉随后的 click，并用 250ms 时间窗防止误切工作区；拖动中不显示行内操作按钮。
+- 新增 `deveco.desktop.workspaceOrder`：`moveWorkspace` 修改 `projects` 顺序并持久化；启动时按保存顺序排序，
+  新出现但不在名单中的工作区排在已知项之后。通过「新建工作区…」新增的目录仍置顶，并同步写入顺序。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）、`npm run build:debug`、`cargo test`（47 项）通过。
+- 右键 SampleWorkspace → 移除：出现「移除？确认/取消」，取消后 SampleWorkspace 保留；再次确认后 SampleWorkspace 消失。
+  证据：`.agent-temp/workspace-remove-confirm.png`。
+- 通过「新会话 → 新建工作区…」重新选择 `/Users/example/Documents/GitHub/SampleWorkspace`，SampleWorkspace 回到侧栏顶部；
+  再拖回原顺序。
+- 将 SampleWorkspace 拖到 DevEcoCodeDesktop 下方，顺序变为 DevEcoCodeDesktop / SampleWorkspace / sampleworkspace-harmony；
+  关闭重开后顺序保持不变，确认 `workspaceOrder` 生效。
+
+未验证：
+
+- 没有实现拖动到侧栏上下边缘时的自动滚动；长列表需要先滚动到目标附近。
+- 暗色主题下的拖动指示线与确认提示未逐项截图。
+
+### 22.33 设置页接入账号、模型与扩展信息（2026-11-07）
+
+需求：按 deveco-code 官方 README、OpenAPI 与官方客户端设置页，把账号、模型、Agent、MCP、Skills
+和 CLI 配置来源纳入桌面端设置，同时继续遵守「不直接修改 deveco 全局配置」的现有边界。
+
+实现：
+
+- 设置分类扩展为「外观 / 账号与模型 / Agent 与权限 / 扩展 / CLI 与服务 / 通知 / 诊断」。
+  只读页面隐藏全局保存按钮；CLI 与服务、通知仍通过原有草稿 + 保存流程写入桌面端配置。
+- 新增 `api.ts` 数据归一化：读取 `/auth`、`/config`、`/config/providers`、`/stats/quota`、
+  `/stats/usage`、`/path`、`/pty/shells`、`/mcp`、`/skill/status`。Provider 的 `options`、
+  MCP Header 和 Skill 正文不进入 React 状态，避免把凭据或大段 Skill 内容渲染到界面。
+- 「账号与模型」显示登录/实名、小时/周/月配额、默认与小模型、UI 校验模型、Provider 来源/模型数量、
+  最近 30 天会话/消息/Token/成本；Provider 支持刷新。
+- 「Agent 与权限」合并 `/agent`、当前 Composer Agent、`default_agent`、Agent 配置覆盖与 permission
+  摘要；权限规则编辑器暂不开放，避免覆盖项目级配置。
+- 「扩展」显示 MCP 状态值（connected/failed/needs_auth 等），支持重试连接和断开；Skills 支持搜索、
+  全局/项目/内置范围展示和持久化启停；Plugins 只读列出配置入口。
+- 「CLI 与服务」展示 CLI 版本、有效配置、配置来源优先级、可用 Shell，以及桌面端自己的端口与口令；
+  配置目录可直接在 Finder 打开。
+- 「外观」增加界面字体和代码字体，存 localStorage，并通过 `--font-ui` / `--font-mono` 实时应用；
+  代码块、路径、快捷键等统一走 `--font-mono`。
+- 设置页字体改为下拉选择：Rust 通过 CoreText 枚举本机字体家族，前端只提交列表中的字体名，
+  避免手工输入拼写错误后无提示回退；旧版本保存的自定义值仍会保留并显示为当前选项。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 `.app` 中打开并切换分类，账号、真实 Provider 数量、58 个 Skill、CLI 配置来源与 Agent 列表均正确：
+  `.agent-temp/settings-expanded-real-appearance.png`、`settings-expanded-real-account.png`、
+  `settings-expanded-real-agent.png`、`settings-expanded-real-extensions.png`、
+  `settings-expanded-real-cli.png`。
+- 字体下拉在真实 `.app` 中展开后可读取完整本机字体家族列表，两个控件均为 `select`：
+  `.agent-temp/settings-font-dropdown-real-app.png`；假 IPC 下补充亮/暗色截图：
+  `.agent-temp/settings-font-dropdown-light.png`、`settings-font-dropdown-dark.png`。
+- 使用最新前端产物 + 假 IPC 在 1440×900 复核亮/暗色，并在 1040×640 最小窗口复核无横向溢出：
+  `.agent-temp/settings-expanded-appearance.png`、`settings-expanded-dark.png`、
+  `settings-expanded-min.png`。
+- Mock 中实际点击 Skill 开关，PATCH 后状态从停用变为启用；MCP 连接/断开按钮按状态显示。
+
+未验证：
+
+- 未在真实账号上执行 Skill 启停、MCP 断开或 OAuth 认证，避免改变当前扩展状态；只做了 mock 交互验证。
+- 未实现桌面端登录/登出、Provider 新增、MCP 新增、CLI 升级和全局配置写入；这些仍通过 deveco CLI
+  或官方配置文件完成。
+- 当前账号 `/stats/quota` 返回空对象，真实配额非空时的进度条仅由 mock 数据核对。
+
+### 22.34 底栏统一与 token 状态栏（2026-11-07）
+
+需求：左栏底栏与主区底栏高度不一致；主区底栏混排 Agent、MCP、步数和输入/输出 token，
+高频信息被低频配置信息挤占，且没有直观的生成速度和会话轮次。
+
+实现：
+
+- 新增 `--bottom-bar-height: 34px`，`.sidebar-footer` 与 `.statusbar` 共用同一高度变量，
+  两边底边与分隔线在视觉上对齐。
+- 主区底栏左侧缩短为「已连接 · 当前工作区」，连接事件的原始计数和失败原因保留在 tooltip。
+- 右侧改为三个稳定指标：`轮次 N`、`Token 总消耗`、`速度 xx tok/s`；运行时在指标前显示呼吸点。
+  Token 的输入、输出、推理、缓存读/写与成本全部收进标题提示，不再占用横向空间。
+- Token 总量按 `input + output + reasoning` 计算；速度按助手消息的 `(output + reasoning) / (completed - created)`
+  累计估算，流式期间用当前时间补齐未完成消息的耗时。该口径包含等待与工具调用时间，明确写在 tooltip 中。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 重启真实 `.app`，在 `sampleworkspace-harmony / 关闭 deveco 本地通知脚本功能` 会话确认：
+  左右底栏高度一致；状态栏显示 `已连接 · sampleworkspace-harmony`、`轮次 1`、`Token 30.5k`、`速度 59.5 tok/s`。
+- 用同一会话的 9 条真实消息复核统计：输入 28,788、输出 1,067、推理 640，
+  合计 30,495；8 个助手消息的生成窗口合计 28.7s，速度 59.47 tok/s，与 UI 一致。
+
+未验证：
+
+- 未发送新的真实 prompt 验证流式过程中每个 `message.updated` 刷新时的速度跳动；
+  运行态仅确认了布局与静态指标，动态计时以当前会话的历史消息验证口径。
+- 未逐项截图 tooltip 的缓存读/写与成本分支；当前会话缓存读为 239,104，成本为 0。
+
+### 22.36 左栏收起按钮（2026-11-07）
+
+需求：在程序左上角应用名和版本号右侧增加一个按钮，用于收起或展开左侧边栏。
+
+实现：
+
+- 顶栏品牌区右侧新增 `panel-left` 线性图标按钮，复用现有 `.icon-btn`；按钮的 tooltip、
+  `aria-label` 和 `aria-pressed` 随开合状态切换为「收起左侧边栏 / 展开左侧边栏」。
+- `store.ts` 新增 `sidebarOpen` 与 `toggleSidebar()`，状态写入
+  `deveco.desktop.sidebarOpen`，重启后保持上次选择。
+- 收起时三栏网格首列改为 `0px`，侧栏用 `display: none` 隐藏但不卸载，保留搜索、展开等工作区视图状态；
+  拖拽调宽条同步隐藏，主区显式放在第二列并自动铺满。该按钮位于标题栏拖动区域内，
+  已排除原生拖动并通过阻止双击冒泡避免误触窗口缩放。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 `.app` 中按钮位于 `DevEco Code v0.2` 右侧；点击后侧栏消失、主区铺满，按钮提示变为
+  「展开左侧边栏」。证据：`.agent-temp/sidebar-toggle-open.png`、
+  `.agent-temp/sidebar-toggle-collapsed.png`。
+- 在收起状态退出并重开应用，侧栏仍保持收起；再次点击后侧栏恢复，确认状态持久化和往返切换正常。
+
+未验证：
+
+- 只核对了当前亮色主题；暗色主题沿用现有按钮与网格变量，未单独截图。
+
+### 22.35 输入框默认两行、最多四行（2026-11-07）
+
+需求：输入框只有单行高度，点击热区偏小；改为默认两行，最多展示四行，更多内容在输入框内部滚动。
+
+实现：
+
+- `.composer textarea` 的 `rows` 改为 2，CSS 以 `min-height: calc(2 * 1.6em)` /
+  `max-height: calc(4 * 1.6em)` 固定两行到四行区间。
+- 自动高度改为读取实际 `line-height` 和上下 padding，按两行/四行换算夹紧，不再使用固定的 220px 上限。
+- 超过四行后保持四行高度，文本在 textarea 内部滚动；空输入时仍保持两行可点击区域。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 重启真实 `.app`：空输入为两行高度；填入 6 行后只显示最后四行，右侧出现内部滚动条；
+  清空后恢复两行。测试文本未发送。
+
+### 22.37 任务概览卡片与提交/推送（2026-11-07）
+
+需求：标题栏右上角增加任务概览入口；概览以可固定的浮动卡片展示当前任务基础信息，并允许直接提交、
+推送当前工作区代码；提交信息留空时由 Agent 根据变更自动生成。
+
+契约与实现：
+
+- `GET /vcs`、`GET /vcs/status` 继续由 CLI 提供分支和文件状态；新增 Rust `src-tauri/src/git.rs`
+  负责桌面端自己的完整状态读取，以及 `git add -A -- .`、`git commit -m`、`git push`。Git 命令只从
+  Rust 发起，前端不拼 shell。
+- Rust `git_state` 使用 `git status --porcelain=v1 -z --untracked-files=all --no-renames -- .`
+  读取当前工作区状态，并用 `git diff --numstat` / `git diff --cached --numstat` 汇总增删行；
+  未跟踪文本文件用 `git diff --no-index --numstat` 做最多 100 个文件的统计。读取 upstream 用
+  `@{u}`，ahead/behind 用 `git rev-list --left-right --count @{u}...HEAD`。
+- 提交与推送拆成两个显式按钮。提交会暂存当前工作区全部改动（包括未跟踪文件），遵守 hooks 和 Git
+  签名配置，不 amend、不 force push。推送优先使用 upstream，没有 upstream 时回退到 `origin` 当前分支
+  并设置追踪；没有可用远端时返回可读错误。动作均设置超时、关闭终端凭据提示并回收子进程。
+- Agent 提交信息走 `POST /session/{sessionID}/btw`：这是 CLI 的隔离单轮、无工具调用能力，
+  不写入会话历史、不改变 session status。请求带 `asideID`、当前会话模型和提交摘要；结果通过
+  `btw.start / btw.delta / btw.complete / btw.error` 事件增量填入卡片。切换会话后丢弃迟到的
+  `asideID` 事件。留空点击提交时，Agent 生成成功后才执行暂存和提交；生成失败不提交。
+- 标题栏入口位于连接状态与右栏切换按钮之间；`ui/src/components/TaskOverview.tsx` 负责右上浮动卡片。
+  卡片摘要包含会话标题、Agent/模型、项目与分支、任务/子代理进度、轮次/Token/费用、工作区文件统计和
+  ahead/behind。图钉状态写入 `localStorage`；未固定时点击外部或按 `Esc` 收起，固定后跨会话保持展开。
+- 概览展开时 `.main` 通过 `margin-right` 过渡（240ms）向左让出卡片空间；右栏同时打开时只额外让出
+  卡片压过右栏的部分并保留 16px 空隙，不把消息区挤得过窄。`prefers-reduced-motion` 下关闭过渡。
+- 当前没有会话时卡片只显示空态，不提供提交/推送；非 Git、detached HEAD、干净工作区和无可用远端分别显示
+  明确原因。提交/推送进行中禁止重复操作，Agent 执行中禁止提交，避免半完成改动被提交。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml`：66 项通过；新增临时仓库测试覆盖非 Git、暂存/未暂存/
+  未跟踪统计、全量提交、空改动、detached HEAD、pre-commit hook 失败、无 upstream 回退 origin 和无远端错误。
+- `deveco-selftest`：16 项通过；新增只读检查确认当前 CLI OpenAPI 暴露 `POST /session/{sessionID}/btw`，
+  不调用模型。
+- 真实 `.app` 打开任务概览，确认标题栏按钮、卡片层级、当前会话/分支/变更/Token 信息和提交/推送禁用状态；
+  暗色主题下同时确认概览展开后消息区向左让出空间、正文不被卡片遮挡。
+  证据：`.agent-temp/task-overview/card-light-full.png`、`.agent-temp/task-overview/card-dark-full.png`、
+  `.agent-temp/task-overview/window-dark.png`。
+
+未验证：
+
+- 没有在真实会话点击提交或推送，避免提交当前工作区的未完成任务改动；提交/推送行为由临时仓库测试覆盖。
+- 没有触发一次真实 Agent `btw` 生成（会消耗模型 token）；事件字段和路由按当前 CLI 源码与 OpenAPI 核对。
+- 推送鉴权依赖本机 git 的 credential helper / SSH agent；GUI 进程若拿不到 `SSH_AUTH_SOCK`，会显示 git stderr 而不是尝试交互式输入。
+- 未单独验证图钉持久化和自动展开；外部点击收起已在真实应用触发标题栏按钮时确认。
+- 避让过渡为 CSS `margin-right 240ms`，仅用静态截图确认最终布局，未录制逐帧动画或测量帧率。
+
+### 22.38 设备截图（P0，2026-11-07）
+
+需求：在现有桌面端中增加 HarmonyOS 手机画面工具，先完成推荐路线里的 `P0`：
+自动发现设备、抓取当前页面、手动刷新、复制到剪贴板、另存为，以及把截图附加到当前对话
+交给 Agent。实时投屏与远控留待后续阶段，不把未验证的华为内部投屏协议带进主流程。
+
+实现：
+
+- `src-tauri/src/device.rs` 只依赖本机 `hdc`：
+  - `hdc list targets -v` 解析已连接设备；通过 `param get` 读取型号、名称、厂商、API 和系统版本。
+  - 自动定位顺序为 `HDC` 环境变量 → DevEco Studio 内置 hdc → OpenHarmony / Huawei SDK → `PATH`。
+  - `hdc shell snapshot_display -f /data/local/tmp/...jpeg` + `hdc file recv` 抓取一帧；
+    设备侧临时文件在成功或失败后都尝试删除。注意 `snapshot_display` 要求 `.jpeg` 后缀，
+    使用 `.jpg` 会直接返回 invalid suffix。
+  - `sips -g pixelWidth -g pixelHeight` 读取尺寸；截图保存为
+    `~/Library/Application Support/DevEco Code Desktop/device-shots/` 下的 JPEG。
+  - 复制到剪贴板时临时转 PNG，因为剪贴板插件的 bytes 只接受 PNG/ICO；转换后立即删除临时文件。
+- `ipc.rs` 新增 `device_probe`、`device_capture`、`device_screenshot_bytes`、
+  `device_copy_screenshot`、`device_save_screenshot`；保存路径经过应用截图目录校验，
+  不允许 WebView 读取任意文件。
+- 右栏新增「设备」页（`DevicePanel.tsx`）：显示设备型号/系统/API/连接方式、自动抓取一次、
+  右上角手动刷新、截图预览、复制、保存…、附加到对话。附加通过 `appEvents` 轻量事件总线
+  进入 Composer，不把附件状态提升到全局 store。
+- 页面明确提示“手动刷新获取最新画面；锁屏/安全窗口可能黑屏”，不把截图预览伪装成实时投屏。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）、`cargo test`（65 项）与 `npm run build:debug` 通过。
+- 真实 `.app` 连接 TLR-AL00（HarmonyOS 7.0.0.111、API 26、USB、1084×2412）：
+  - 自动发现并显示 `nova 14`；首帧约 0.6s 完成；
+  - 点击右上角刷新后时间戳从 17:48:42 变为 17:49:09，确认获取到新页面；
+  - 点击复制后系统剪贴板出现 TIFF/JPEG/PNG/BMP 图片类型；
+  - 点击附加到对话后 Composer 出现截图附件条目，移除按钮可用；
+  - 点击保存…打开 macOS 保存面板，默认文件名不含设备序列号；实际保存到
+    `.agent-temp/device-screenshot-*.jpeg`，文件为 1084×2412 JPEG，验证后已删除测试文件。
+- 截图布局与交互通过真实窗口截图确认；设备截图不需要加载华为投屏 jar 或启动设备侧投屏服务。
+
+未验证：
+
+- 未测试无线调试、多设备并发、锁屏/安全窗口和受保护内容；
+- 未测试图片附加后真正发送给模型的完整消息链路，避免在用户会话里发送真实截图；
+- 未实现实时投屏、点击/滑动/文本注入；这些仍属于后续 `P1/P2`，需要单独验证 `uitest`、H.264 流、
+  帧率与华为组件许可边界。
+
+### 22.39 macOS 菜单栏状态项（2026-11-07）
+
+需求：原托盘只有「显示主窗口 / 隐藏到托盘 / 退出」，图标复用彩色应用图标。需要把它扩展成
+可用的菜单栏入口，并允许用户选择单色或彩色图标、是否常驻显示。
+
+实现：
+
+- 新增 `src-tauri/src/menubar.rs`，用 `TrayState` 统一保存托盘句柄、菜单项、后端阶段、前端上下文和
+  待授权请求。菜单本身只保留操作项，不再重复展示后端状态、当前会话和本地服务三行文字；
+  状态继续体现在图标、图标旁的数量和 tooltip 中。
+- 图标由代码生成 72×72 RGBA 图像，不依赖运行时外部资源：
+  - 单色模式开启 `icon_as_template`，由 macOS 自动适配浅色 / 深色菜单栏；
+  - 彩色模式使用暖炭色圆角底板、暖白终端符号与状态色徽标；
+  - 待授权时在图标右侧显示数量，故障时显示 `!`。
+- 菜单动作扩展为：显示主窗口、隐藏到菜单栏、设置…、主窗口置顶、打开日志目录、
+  复制诊断信息、重启本地服务、退出。`菜单栏图标` 子菜单提供单色 / 彩色和常驻显示复选项。
+- `Config` 新增持久化 `menu_bar`：
+  ```json
+  { "icon_style": "monochrome", "always_visible": true }
+  ```
+  设置页的「外观 → 菜单栏」复用同一份配置；保存后立即刷新托盘，不需要重启应用。
+- `always_visible = false` 时，主窗口可见则隐藏菜单栏图标；主窗口关闭 / 隐藏后自动显示，
+  保证仍能找回窗口。窗口聚焦、托盘隐藏、单实例唤回与关闭事件都会重新计算可见性。
+- 全局 SSE 的 `permission.asked / permission.replied / session.idle / session.error` 同步维护
+  跨工作区的待授权集合；`permission.replied` 现在解析 `requestID`，按请求精确扣减，避免多请求时
+  误清零。
+- 新增 `BackendCtl.restart`。菜单「重启本地服务」不再只是唤醒退避，而是取消当前 SSE 连接、
+  回收 serve 进程组并按现有 Supervisor 流程重建；原来应用级菜单监听只转发白名单动作，避免
+  托盘菜单事件与原生菜单事件重复触发。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）、`cargo test`（66 项）与
+  `npm run build:debug` 通过；`deveco-selftest` 16 项全通过。
+- 真实 `.app` 菜单结构：`.agent-temp/menubar/tray-menu-trimmed-open.png` 只显示操作项，已移除
+  顶部三行状态信息和「新建会话」；`.agent-temp/menubar/tray-submenu-hover2.png` 展开
+  「菜单栏图标」，可见单色、彩色和常驻菜单栏三个选项。菜单由 `agent-desktop` 的
+  `menu-bar-extras` 读取并点击打开，AX 树包含 16 个菜单节点。
+- 彩色模式：写入 `icon_style = "color"` 后重启 `.app`，菜单栏图标变为暖炭色底板加绿色状态点；
+  证据：`.agent-temp/menubar/color-restart.png`、`.agent-temp/menubar/color-menu-bar-2x.png`。
+- 非常驻模式：设置 `always_visible = false` 后重启，主窗口可见时菜单栏图标消失
+  （`.agent-temp/menubar/nonresident-visible-crop.png`）；执行 `⌘W` 隐藏窗口后图标自动出现
+  （`.agent-temp/menubar/nonresident-hidden-crop.png`）。
+- 设置页「外观 → 菜单栏」控件已在真实窗口中渲染（`.agent-temp/menubar/color-saved.png`），
+  默认配置恢复为单色、常驻。
+
+未验证：
+
+- 生成中、等待授权、重连、故障四类动态图标只验证了纯函数状态映射和编译，没有分别构造真实 SSE
+  事件截图；待授权数量也没有在真实权限请求中复核。
+- 菜单动作没有逐项点击执行；设置、置顶、打开日志、复制诊断、重启服务和退出主要依赖
+  同一套菜单分发代码，重启服务的进程组重建逻辑由编译与现有自愈自检覆盖。
+- 当前系统为浅色外观，未单独截图深色菜单栏下的彩色图标；单色模式依赖 macOS template 语义，
+  但仍需在深色外观下人工确认。
+- 最终重新打包 debug `.app` 后 macOS 重新询问「文稿」文件夹权限，设置页保存的最终点击验证被系统
+  授权弹窗阻断；偏好字段的序列化、显式颜色/常驻配置重启生效和设置页渲染已验证，保存按钮到托盘
+  即时刷新的完整 UI 链路未再次点击确认。
+
+### 22.40 模型可用性与默认推理档（2026-11-07）
+
+需求：composer 的模型菜单只展示当前可用模型；模型确定后，推理深度默认选择该模型的最高档。
+
+契约与实现：
+
+- `/api/model` 实测返回 51 条，其中 39 条 `status = "deprecated"`，但 `enabled` 仍为 `true`。
+  官方 Web UI 也只在模型列表中过滤 `deprecated`，并排除 `enabled = false`。
+- 新增 `ui/src/models.ts`：列表过滤条件为 `enabled !== false && status !== "deprecated"`；实测
+  51 条过滤后剩 12 条。
+- CLI 的 variants 按推理强度从低到高排列（如 `low / medium / high / xhigh / max`），最后一项即最高档。
+  `selectModel` 切换模型时直接取最后一项；历史会话恢复出的当前模型也补一次相同的默认选择。
+- 用户仍可在「推理深度」菜单里手动改回「默认」或选择其他档位。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 debug `.app` 的 AX 树中，模型菜单只包含 12 个可用项；证据：
+  `.agent-temp/model-select/model-list-and-max.png`、
+  `.agent-temp/model-select/model-list-scrolled2.png`。
+- 当前 Qoder 模型显示「推理 max」；打开推理菜单时 `max` 为选中项。切到无 variants 的 Big Pickle
+  后推理入口消失，再切回 Qoder 自动恢复 `max`。证据：
+  `.agent-temp/model-select/reasoning-max-default.png`。
+
+未验证：
+
+- 没有发送真实模型 prompt 复核 `variant = "max"` 的请求体与实际生成效果；本次只验证模型列表、默认档
+  状态和切换行为，避免消耗模型 token。
+
+### 22.41 设备页缓存与充电保持亮屏（2026-11-07）
+
+需求：收起并重新打开右栏时，设备页不应重新扫描和抓取截图；同时增加「充电时保持亮屏」开关，
+关闭后恢复系统默认息屏时间。
+
+实现：
+
+- `DevicePanel.tsx` 增加模块级 `deviceCache`，缓存 `hdc` 信息、设备列表、当前设备、截图元数据、
+  JPEG 字节、电源状态和错误；组件卸载只撤销 object URL，不清缓存。重新挂载时直接复用缓存，
+  只有首次进入、手动刷新或重新扫描才调用 hdc。实测关闭右栏再打开，时间戳保持 `18:26:32` 不变。
+- `device.rs` 新增：
+  - `battery_plugged()`：从 `hidumper -s BatteryService -a -i` 的 `pluggedType` 判断是否接电源。
+  - `set_keep_on()`：调用 `hidumper -s PowerManagerService -a -t/-f` 持有/释放 SCREEN keep-on 锁；
+    `-f` 不改写系统 `ScreenOffTime`，只释放锁。
+- `ipc.rs` 的 `DeviceAwakeState` 按设备保存开关；首次开启后启动 5 秒轮询：
+  充电时获取 keep-on 锁，拔掉充电器自动释放；关闭开关立即释放。应用正常退出在
+  `RunEvent::Exit` 同步释放，避免把手机留在常亮状态。
+
+验证：
+
+- `npm run check`：63 个库测试 + 6 个二进制测试通过；`npm run build:debug` 通过。
+- 真机 TLR-AL00（充电中，`pluggedType: 1`）：
+  - 设备页关闭/重开后截图时间戳保持 `18:26:32`，没有重新抓取；
+  - 开启开关后 `PowerManagerService` 显示 `SCREEN: 1`、`PowerMgrKeepOnLock ... state=1`；
+  - 关闭开关后恢复 `SCREEN: 0`、`state=0`，`ScreenOffTime` 仍为原来的 `600000ms`；
+  - 保持开启时退出应用，退出后锁状态恢复为 `state=0`。
+
+未验证：
+
+- 没有物理拔掉充电器验证 5 秒轮询的自动释放；逻辑已按 `pluggedType` 状态切换实现。
+- 异常终止（崩溃、强制杀进程）不会执行退出清理，可能留下 keep-on 锁；正常退出已验证会释放。
