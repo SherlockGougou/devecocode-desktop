@@ -392,7 +392,7 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 | 能力 | 接口 | 实现 |
 |---|---|---|
 | Agent 切换 | `GET /agent`（mode=primary） | composer 左侧 `build` 胶囊 + 下拉，随消息发 `agent` |
-| 推理档位 | `/api/model` 的 `variants` | 选中带变体的模型时出现档位胶囊，随消息发 `variant` |
+| 推理档位 | `/api/model` 的 `variants` | 选中带变体的模型时，发送按钮左侧出现档位菜单，随消息发 `variant` |
 | 斜杠命令 | `GET /command`（62 条） | 输入 `/` 弹出面板，↑↓/Enter/Esc，插入 `/name ` |
 | MCP 状态 | `GET /mcp` | 状态栏 `2 MCP`，同时显示当前 agent |
 
@@ -924,6 +924,9 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
   显式接收所属 `directory`，普通工作区会话的打开改用 `openSessionIn(dir, id)`；此前非当前工作区的
   会话按钮可能用当前目录发请求。
 - `showNotice` 支持自定义持续时间并清理旧计时器，右键复制使用 1.6s 短提示。
+- 操作型界面（侧栏、标题栏、右栏标签/文件行、工具与思考摘要、设置标签、快捷键面板、附件/引用 chip）
+  统一关闭 `user-select`；消息正文、Markdown、代码、diff、预览和输入框不受影响。右键工作区/会话时不再
+  触发 WebKit 自动选中文字，也不会多出「复制所选文字」项。
 
 验证：
 
@@ -943,3 +946,258 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 - 未实际点击 Finder 定位项（命令已编译、API 已接，避免改变当前 Finder 窗口）；
   未逐项测试剪切/重做、链接打开、代码块复制和快捷键面板关闭菜单。
 - 自绘菜单不提供子菜单、分组标题或原生日志；仅 macOS 验证，未测试 Windows/Linux。
+
+### 22.21 Composer 工具栏重排（2026-11-07）
+
+需求：统一底部输入区所有工具控件的效果和位置，唯一硬约束是「推理深度」必须紧挨发送按钮左侧。
+
+实现：
+
+- 工具栏拆成左右两组：左侧为附件和 Agent，右侧固定为「模型 → 推理深度 → 发送 / 停止」。
+  移除原先夹在模型胶囊后的「Enter 发送」提示，把键盘说明收进 placeholder，减少底行噪音。
+- 附件改成无边框图标按钮；Agent、模型、推理统一为 30px 胶囊，只有悬停、展开或选中时才出现底色和描边。
+  发送仍保持更高一级的实心主按钮，停止按钮使用同高胶囊和危险色悬停。
+- 推理深度从「点击循环切换」改为明确菜单，列出默认档与全部 variants 并勾选当前项，避免误点后反复轮转。
+  Agent 与模型菜单也统一为标题、主文案、说明、勾选的结构。
+- 三个菜单共用 `.composer-pop` 的定位、阴影、圆角和 120ms 进入动画；点击外部或按 `Esc` 同时收起。
+  触发器补 `aria-haspopup` / `aria-expanded` / `aria-label`，菜单项使用 `menuitemradio` 与 `aria-checked`。
+- 窄窗口下工具组整体换行：左侧附件/Agent 留在一行，右侧模型/推理/发送作为一组落到下一行，
+  不拆散「推理深度 → 发送」的相邻关系；模型名称与 Agent 名称各自省略，不把容器撑破。
+- 文本框为空时隐藏 placeholder 造成的纵向滚动条；保留多行输入到 220px 后正常滚动。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 退出重开后加载真实 `.app`，默认 1512×898 下工具组左右分布、推理紧邻发送：
+  `.agent-temp/composer-redesign/21-final-light.png`。
+- 三个菜单逐一打开核对锚点、勾选和层级：
+  `.agent-temp/composer-redesign/09-model-menu-final.png`、
+  `.agent-temp/composer-redesign/11-variant-menu-final.png`、
+  `.agent-temp/composer-redesign/19-final-agent-menu.png`。
+- 1040×700 且右栏展开时，工具栏按组换行但顺序不变、没有水平溢出：
+  `.agent-temp/composer-redesign/22-final-narrow-right.png`。
+- 亮色与暗色下输入框、菜单、禁用发送按钮均正常：
+  `.agent-temp/composer-redesign/21-final-light.png`、
+  `.agent-temp/composer-redesign/15-dark-composer.png`、
+  `.agent-temp/composer-redesign/16-dark-variant-menu.png`。
+
+未验证：
+
+- 没有发送真实模型 prompt（避免消耗 token）；输入文字后的发送按钮启用态由条件分支检查，未做自动化断言。
+- 未覆盖 Windows/Linux 的 Tauri WebView；本次仅验证 macOS WKWebView。
+
+### 22.22 Composer 截图粘贴（2026-11-07）
+
+需求：输入框支持直接粘贴系统剪贴板里的截图，不用先保存成文件再走回形针。
+
+实现：
+
+- `Composer` 增加 `onPaste`：先遍历 `clipboardData.items/files` 取 `image/*` File；
+  WKWebView 只给类型、不给可读 File 时，再调用 clipboard-manager 的 `readImage()`，
+  把 RGBA 画到 canvas 后重编码为 PNG。两条路径都复用原有 `FilePartInput { type:"file", mime, url, filename }`
+  和 data URL 发送链路，Rust 代理与 prompt 契约不变。
+- 粘贴图片没有文件名，按本地时间生成 `screenshot-YYYYMMDD-HHmmss.<ext>`；附件列表显示 20×18 缩略图。
+  继续沿用最多 4 个、单个 ≤8MB 的限制，超限给出短提示，不再静默丢弃。
+- 剪贴板没有图片项时，文本粘贴交回 textarea：`text/plain`、`text/html`、`text/rtf` 直接放行，
+  避免把普通文本误当图片读取；同时带图片和文本时按截图附件处理。
+- capability 新增 `clipboard-manager:allow-read-image`；原 `allow-read-text` / `allow-write-text` 保持不变。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过，退出重开后加载新 `.app`。
+- 用 ImageMagick 生成 640×360 PNG，经 AppleScript 写入系统剪贴板（pasteboard 同时含
+  PNG/JPEG/TIFF/GIF 等类型）；在真实 WKWebView 中点击 Composer 后 `⌘V`，
+  出现 `screenshot-20261107-133116.png` 附件 chip 与缩略图：
+  `.agent-temp/paste/01-attachment.png`。
+- 同一输入框改贴 `粘贴文本测试`，文本正常进入 textarea、附件仍保留：
+  `.agent-temp/paste/03-text-paste.png`。
+
+未验证：
+
+- 真机环境当前会话读取报「本地服务 30 秒未响应」，本次没有发送真实 prompt（避免消耗 token 或干扰当前会话）；
+  图片 data URL 的缩略图与 file part 结构已确认，实际发送沿用此前已验证的附件链路。
+- 未单独构造「剪贴板有图但 ClipboardEvent 不暴露 File」的故障注入，原生 `readImage()` 兜底仅做编译与权限验证。
+
+### 22.23 启动等待文件夹授权（2026-11-07）
+
+现象：
+
+- App 刚启动时 macOS 弹出「DevEco Code 想访问您的文稿文件夹」；用户长时间不处理时，底部出现
+  「读取会话失败：本地服务 30 秒未响应」，同时后端状态反复显示重连/检查。
+
+根因：
+
+- 文件夹授权弹窗未处理期间，`deveco serve` 的工作区文件访问会阻塞，代理的 30 秒统一超时先触发，
+  把「等待用户授权」误报成服务超时。
+- `stream_until_down` 在健康检查失败后直接回到监管者；`Supervisor::ensure` 只看健康检查，
+  会回收一个**仍在运行**的 serve 进程重组。等待授权时这相当于反复打断系统弹窗，形成检查/重建循环。
+- `path_exists` 用 `Path::exists()`，权限被拒时返回 `false`，会把仍存在的工作区从侧栏过滤掉。
+
+修复：
+
+- `DevEcoServer::liveness()` 区分 `Running / Exited / Unowned`；事件流断开后只有确认进程已退出
+  （或复用的外部实例不可判定）才进入重建。进程仍在运行时保持重连，并在
+  `Phase::Reconnecting` 的 detail 中说明「可能正在等待文件夹访问权限」。
+- 重连提示条增加「重启服务」按钮：用户确认授权仍不恢复时，可以主动跳过退避并让监管者重建。
+- `server.connected` 到达时重新发布 `ready`，SSE 重连成功后标题栏/状态栏不会永久停在「重连中」，
+  并触发前端重拉当前会话、授权与 diff。
+- 代理请求增加可选 `timeoutMs`；启动阶段读取工作区使用 5 分钟超时，启动页在 4 秒后提示可能正在等待授权。
+  拒绝或超时后给出明确的系统设置路径，不再显示无上下文的 30 秒错误。
+- `path_exists` 改为 `Option<bool>`：`None` 表示权限未就绪、无法判断，前端保留工作区而不是当成已删除。
+- 权限被拒或超时后启动轻量 watcher（2 秒一次路径探测）；用户从系统设置恢复授权后自动重载工作区，
+  成功后清除底部错误提示，不需要手动切换工作区或重启应用。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）通过。
+- `cargo test` 47 项通过；`deveco-selftest` 15/15 通过，新增「运行中/已退出」识别，崩溃自愈仍能在进程被 `SIGKILL` 后重建。
+- `npm run build:debug` 后退出旧实例、重新打开真实 `.app`，会话与工作区正常加载：
+  `.agent-temp/tcc-wait/final-start-verified.png`；当前 TCC 记录未失效，因此没有再次弹授权框。
+- 真机再次 `SIGKILL` serve 进程组，应用自动重建到新端口，界面从重连恢复为「已连接」：
+  `.agent-temp/tcc-wait/after-recovery.png`。
+
+未验证：
+
+- 未主动重置 `SystemPolicyDocumentsFolder`（会改变系统隐私设置），因此「启动页等待授权」的实际截图未取得；
+  该分支依据代码路径、类型检查与启动正常路径验证。
+- CLI 在拒绝「文稿」后持续高 CPU 是上游行为；本次只避免应用反复杀进程和误报超时，没有修改 CLI。
+
+### 22.24 应用图标统一（2026-11-07）
+
+现象：启动页、空工作区欢迎页和助手消息头像都用字母 `D` 占位，顶栏品牌位是一个灰色圆点；
+这些位置与 Dock、托盘、安装包使用的应用图标不一致。
+
+修复：
+
+- 新增 `ui/src/components/AppIcon.tsx`，统一从 `ui/src/assets/app-icon.png`（由
+  `src-tauri/icons/source.png` 生成）渲染应用图标，并提供尺寸与 `className` 参数。
+- 启动页、欢迎页、助手头像和顶栏品牌位全部改用 `AppIcon`；移除对应的字母、圆点和背景占位样式。
+- `ui/index.html` 增加同一图标的 `preload` 与 favicon，开发预览和 Tauri 打包页保持一致。
+- Dock、托盘、安装包与 macOS 通知继续使用 `src-tauri/icons`，无需另做映射。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 用临时 `DEVECO_BIN_PATH` 延迟 CLI 启动，在真实 `.app` 中截取启动页，确认显示应用图标而非字母 `D`。
+- 同一 `.app` 中检查空工作区欢迎页、助手消息头像与顶栏品牌位，三处均显示同一应用图标。
+
+未验证：
+
+- 未逐像素比较图标在不同缩放比例下的抗锯齿效果；图标使用 256×256 位图，当前最大展示尺寸 48px，
+  在 2×/3× 屏幕上有足够像素密度。
+
+### 22.25 子代理与待办显示（2026-11-07）
+
+需求：会话里能看到待办进度、子代理任务状态与子代理最近活动，而不是把 `task` 当成普通工具调用。
+
+契约：
+
+- `GET /session/{id}/todo` 返回 `{ content, status, priority }[]`，状态为
+  `pending / in_progress / completed / cancelled`；变更同时通过全局 SSE 的 `todo.updated`
+  推送完整数组，因此前端不做增量猜测。
+- 子代理工具为 `tool: "task"`；`state.metadata.sessionId` 指向子会话，
+  `state.metadata.parentSessionId` 指向父会话，`state.input` 含 `description / prompt / subagent_type`。
+  旧式命令委派还会产生 `type: "subtask"` part，作为兼容路径一并展示。
+- `GET /session/{id}/children` 给出子会话元数据；`GET /session/status` 只返回当前忙/重试的会话，
+  缺失表示空闲。子会话的 `message.*`、`session.idle`、`session.error`、`session.status`
+  与 `todo.updated` 都在全局事件流里，按 sessionID 合并即可。
+
+实现：
+
+- `ui/src/tasks.ts` 负责纯数据逻辑：待办归一化与进度、`task`/`subtask` 解析、子会话匹配、
+  最近活动提取。任务 part 缺少 `metadata.sessionId` 时从 `<task id="ses_...">` 输出兜底，
+  再按 agent/description 匹配 children；无 part 的孤儿子会话只在标题带
+  `(@agent subagent)` 时展示，避免把 fork 会话误当子代理。
+- `store.ts` 打开会话时并行读取待办、children 与 session status，并为每个子会话拉最近 40 条消息
+  和待办；子会话事件不再丢弃，按 sessionID 合并到 `childMessages`，与快照刷新时按 part id 合并，
+  避免实时活动被迟到快照覆盖。
+- 聊天顶部新增会话任务条：待办 resolved/total、当前进行项、运行中子代理数量，点击打开右栏任务页。
+  `task`/`subtask` 从工具组中拆出，渲染为子代理卡片，显示 agent、耗时、子会话待办和最近一步活动。
+- 右栏新增「任务」页：待办清单显示完成、进行中、取消与高优先级；子代理列表进入详情后显示
+  任务说明、子会话待办和最近活动（工具状态、思考摘录、输出摘要）。详情使用当前会话内嵌视图，
+  不改变主会话与 composer 状态。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）通过。
+- 用 `.agent-temp/mock` 的真实组件 + 假 IPC 数据核对亮/暗色、任务总览、子代理详情与活动列表：
+  `.agent-temp/screens/tasks-overview-light.png`、`.agent-temp/screens/tasks-detail-light.png`、
+  `.agent-temp/screens/tasks-detail-dark.png`。
+- `npm run build:debug` 后打开真实 `.app`，在会话右侧确认「任务」页、空态文案与三栏布局：
+  `.agent-temp/screens/real-tasks-tab-final.png`。
+
+未验证：
+
+- 真实 `.app` 当前可见会话没有待办/子代理数据；填充态使用 mock harness 核对，未为了造数据向真实模型
+  发送 prompt，也没有直接写 CLI 数据库。
+- 没有构造并行多个子代理、子代理取消后父任务未收尾、任务详情中长输出滚动到数万像素的极端场景。
+
+### 22.26 常用文件格式内建预览（2026-11-07）
+
+需求：右侧文件面板不再只展示文本；常见文件打开后应能直接预览，避免每次都跳到外部应用。
+
+实现：
+
+- 预览状态从单一的 `{ path, content, type }` 扩为 `FilePreview`，带 `kind / mime / thumbnail / message`，
+  并加请求序号，快速连续点击文件时旧请求不会覆盖当前预览。
+- 新增 `ui/src/filePreview.ts` 统一做格式判定：文本/Markdown、浏览器原生支持的图片、PDF、音频、视频、
+  Quick Look 缩略图与不支持类型；无 `mimeType` 的二进制按扩展名兜底。
+- 新增 `ui/src/components/FilePreview.tsx`：
+  - 文本/代码使用等宽源码视图；Markdown 增加「预览 / 源码」分段切换。
+  - 图片、PDF、音视频使用 `Blob` URL，避免把大段 base64 直接拼进 DOM；PDF 用内嵌 iframe，音视频使用原生控件。
+  - base64 超过 80M 字符时停止解码并提示用默认应用，避免主线程被超大视频卡住。
+  - Quick Look、失败态和不支持态都给出可操作的「用默认应用打开」。
+- 新增 `src-tauri/src/preview.rs`：调用 `/usr/bin/qlmanage -t -s 1400` 生成 PNG，15 秒超时后终止子进程；
+  临时目录在函数返回时自动清理。`ipc::quick_look_thumbnail` 用 `tauri::ipc::Response` 直接回传 PNG 字节，
+  前端以 `Blob` 显示，不走 base64 JSON。
+- Office / iWork / HEIC 等扩展名先走 Quick Look，不把整份大文件经 HTTP 和 IPC 传进 WebView；
+  其他二进制若浏览器不支持，再尝试一次 Quick Look。预览菜单和顶部按钮都可回到默认应用。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）通过；`cargo test` 47 项通过。
+- `npm run build:debug` 后在真实 `.app` 中逐项打开：
+  Markdown 渲染与切换、PNG、带正文的 PDF、M4A 音频控件、MOV 视频控件、DOCX Quick Look 缩略图均正常。
+- 证据：`.agent-temp/screens/file-preview-markdown.jpg`、`file-preview-image.jpg`、`file-preview-docx.jpg`；
+  PDF/音频/视频同时在真实 WebView 中核对了可滚动页面与原生播放控件。
+
+未验证：
+
+- 未单独用 XLSX/PPTX/HEIC 文件回归；它们与 DOCX 共用同一条 Quick Look 分支。
+- 未注入超大二进制验证 80M 字符保护分支；该限制只防主线程解码卡顿，文件内容仍由 CLI 返回。
+
+### 22.27 新会话选择工作区（2026-11-07）
+
+需求：开启新会话时，在输入框上方选择已有工作区或从本机新建工作区；会话一旦有内容，就不能再切换。
+
+实现：
+
+- `newSession / newSessionIn` 从「立刻 POST /session」改为进入草稿态：清空 `sessionID` 与会话瞬时数据，
+  但不创建服务端空会话。选中工作区后仅加载该工作区元数据，不自动打开最近会话。
+- Composer 在 `sessionID` 为空时显示工作区行：当前目录按钮、完整工作区列表和「新建工作区…」动作；
+  菜单同时提示「发送首条消息后固定」。发送后 `sessionID` 落位，选择器立即移除。
+- 首条消息沿用现有 lazy-create 路径：`send()` 在目标目录调用 `POST /session`，随后发送 `prompt_async`；
+  不再产生切换工作区后遗留的空会话。
+- 新增 `pick_workspace_folder` IPC，使用 `tauri-plugin-dialog 2.7.0` 的系统目录选择器；
+  返回前执行 `canonicalize`，避免 `/tmp` 与 `/private/tmp` 这类路径重复。
+- 选中的新目录加入侧栏项目列表，并写入 `deveco.desktop.workspaces`；CLI `/project` 尚未登记时，
+  重启后仍能从本地列表恢复。已存在目录只切换，不重复写入。
+- `changeDraftWorkspace / addWorkspace` 在 `sessionID` 或消息内容存在时拒绝切换；普通侧栏会话导航不受影响。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）、`cargo test` 47 项、`npm run build:debug` 均通过。
+- 真实 `.app` 中点击侧栏「新会话」，输入框上方出现工作区行；展开菜单可见已有工作区与「新建工作区…」：
+  `.agent-temp/workspace-picker/01-new-session.png`、
+  `.agent-temp/workspace-picker/02-menu.png`。
+- 菜单切换到 SampleWorkspace 后当前按钮同步更新；通过原生目录面板选择 `/private/tmp` 成功切到 tmp，
+  重复目录没有被重复添加。
+- 打开有历史消息的 `sampleworkspace-harmony` 会话后，工作区行消失，只保留消息与 composer：
+  `.agent-temp/workspace-picker/03-session-locked.png`。
+
+未验证：
+
+- 没有发送真实模型 prompt（避免消耗 token）；「首条消息创建会话并锁定工作区」由代码路径、
+  现有 `send()` lazy-create 链路和「已有内容会话隐藏选择器」的实测共同确认，未做完整自动化断言。
+- 未用全新的临时目录验证本地工作区名单跨重启恢复；本次原生面板选择的是已存在工作区，
+  只验证了目录选择、路径规范化和去重分支。
