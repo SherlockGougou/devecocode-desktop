@@ -3,11 +3,9 @@ import { useApp } from "../store";
 
 export default function StatusBar() {
   const messages = useApp((s) => s.messages);
-  const backend = useApp((s) => s.backend);
   const directory = useApp((s) => s.directory);
   const sessionID = useApp((s) => s.sessionID);
   const streaming = useApp((s) => s.streaming);
-  const sseCount = useApp((s) => s.sseCount);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -65,16 +63,6 @@ export default function StatusBar() {
   }, [messages, now, streaming]);
 
   const project = directory ? directory.split("/").filter(Boolean).pop() : "未选择工作区";
-  const connectionLabel =
-    backend.state === "ready"
-      ? "已连接"
-      : backend.state === "failed"
-        ? "本地服务不可用"
-        : "正在重连";
-  const connectionTitle =
-    backend.state === "ready"
-      ? `事件流已连接 · 已接收 ${sseCount} 条实时事件`
-      : (backend.detail ?? "正在重连本地服务");
   const tokenTitle = [
     `输入 ${formatNumber(stats.input)}`,
     `输出 ${formatNumber(stats.output)}`,
@@ -90,14 +78,6 @@ export default function StatusBar() {
   return (
     <footer className="statusbar">
       <div className="status-context">
-        <span
-          className={`status-item ${backend.state === "ready" ? "ok" : backend.state === "failed" ? "bad" : "warn"}`}
-          title={connectionTitle}
-        >
-          <span className="dot" />
-          {connectionLabel}
-        </span>
-        <span className="status-sep">·</span>
         <span className="status-project" title={directory ?? project}>
           {project}
         </span>

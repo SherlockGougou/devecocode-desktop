@@ -6,7 +6,7 @@ import { MAX_REFS, parseMentions } from "../mentions";
 import { onAppEvent } from "../appEvents";
 import { copyItem, revealItem, useContextMenu } from "../contextMenu";
 import { absoluteWorkspacePath, relativeWorkspacePath } from "../paths";
-import { highestModelVariant } from "../models";
+import { highestModelVariant, modelKey } from "../models";
 import {
   MAX_ATTACHMENTS,
   MAX_ATTACHMENT_BYTES,
@@ -74,6 +74,7 @@ export default function Composer() {
   const changeDraftWorkspace = useApp((s) => s.changeDraftWorkspace);
   const pickWorkspaceFolder = useApp((s) => s.pickWorkspaceFolder);
   const models = useApp((s) => s.models);
+  const hiddenModels = useApp((s) => s.hiddenModels);
   const agents = useApp((s) => s.agents);
   const selectedAgent = useApp((s) => s.selectedAgent);
   const selectAgent = useApp((s) => s.selectAgent);
@@ -112,6 +113,13 @@ export default function Composer() {
   const variantPickerRef = useRef<HTMLDivElement>(null);
   const workspacePickerRef = useRef<HTMLDivElement>(null);
   const menu = useContextMenu();
+
+  const hiddenModelKeys = useMemo(() => new Set(hiddenModels), [hiddenModels]);
+  const visibleModels = useMemo(
+    () =>
+      models.filter((model) => !hiddenModelKeys.has(modelKey(model.providerID, model.id))),
+    [hiddenModelKeys, models],
+  );
 
   // 设备面板截图通过轻量事件总线附加到当前输入框；不把附件状态提升到全局，
   // 避免影响 Composer 现有的草稿、失败恢复和工作区切换逻辑。
@@ -396,8 +404,8 @@ export default function Composer() {
 
   const filtered = useMemo(() => {
     const key = keyword.trim().toLowerCase();
-    if (!key) return models.slice(0, 60);
-    return models
+    if (!key) return visibleModels.slice(0, 60);
+    return visibleModels
       .filter(
         (item) =>
           (item.name ?? "").toLowerCase().includes(key) ||
@@ -405,7 +413,7 @@ export default function Composer() {
           item.providerID.toLowerCase().includes(key),
       )
       .slice(0, 60);
-  }, [models, keyword]);
+  }, [keyword, visibleModels]);
 
   const submit = () => {
     const value = text.trim();
@@ -952,7 +960,11 @@ export default function Composer() {
                     })}
                     {filtered.length === 0 && (
                       <div className="empty-line">
-                        {models.length === 0 ? "当前没有可用模型" : "没有匹配的模型"}
+                        {models.length === 0
+                          ? "当前没有可用模型"
+                          : visibleModels.length === 0
+                            ? "设置中未勾选任何模型"
+                            : "没有匹配的模型"}
                       </div>
                     )}
                   </div>

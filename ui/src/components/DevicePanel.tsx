@@ -72,7 +72,6 @@ function deviceMeta(device: DeviceInfo | undefined): string {
     device.model,
     osVersion,
     device.apiVersion ? `API ${device.apiVersion}` : null,
-    device.connection,
   ]
     .filter((value): value is string => Boolean(value))
     .join(" · ");
@@ -365,13 +364,42 @@ export default function DevicePanel() {
       : devices.length === 0
         ? "请在手机上开启开发者模式与 USB 调试，连接后回到这里点「重新扫描」。"
         : "点右上角刷新按钮获取当前页面。");
+  const awakeState = !selected
+    ? "设备未连接"
+    : !awake
+      ? "读取中…"
+      : awake.enabled
+        ? awake.active
+          ? "充电中，保持亮屏"
+          : "已开启，等待充电"
+        : "已关闭，使用系统默认";
+  const awakeDetail = !selected
+    ? "连接设备后可设置"
+    : !awake
+      ? "正在读取电源状态…"
+      : awake.enabled
+        ? awake.active
+          ? "充电中，已保持亮屏"
+          : "已开启，连接充电器后保持亮屏"
+        : "关闭后恢复系统默认息屏时间";
 
   return (
     <div className="device-panel">
       <div className="device-head">
         <div className="device-heading">
-          <div className="device-title" title={activeDevice?.serial}>
-            {deviceLabel(activeDevice)}
+          <div className="device-title-row">
+            <span className="device-title" title={activeDevice?.serial}>
+              {deviceLabel(activeDevice)}
+            </span>
+            {activeDevice && (
+              <span
+                className={`device-status ${
+                  activeDevice.status.toLowerCase() === "connected" ? "ok" : ""
+                }`}
+              >
+                {activeDevice.status}
+              </span>
+            )}
           </div>
           <div className="device-meta" title={deviceMeta(activeDevice)}>
             {deviceMeta(activeDevice) || "HDC 设备"}
@@ -389,7 +417,7 @@ export default function DevicePanel() {
         </button>
       </div>
 
-      {devices.length > 0 && (
+      {devices.length > 1 && (
         <div className="device-select-row">
           <select
             className="device-select"
@@ -424,9 +452,6 @@ export default function DevicePanel() {
               </option>
             ))}
           </select>
-          <span className={`device-status ${activeDevice?.status.toLowerCase() === "connected" ? "ok" : ""}`}>
-            {activeDevice?.status ?? ""}
-          </span>
         </div>
       )}
 
@@ -455,13 +480,6 @@ export default function DevicePanel() {
               </div>
             )}
           </div>
-          <div className="device-shot-meta">
-            <span>{formatTime(shot.capturedAt)}</span>
-            <span>
-              {shot.width}×{shot.height}
-            </span>
-            <span>{formatBytes(shot.bytes)}</span>
-          </div>
           <div className="device-actions">
             <button
               className="device-action"
@@ -475,7 +493,7 @@ export default function DevicePanel() {
               onClick={() => void save()}
               disabled={busy !== null}
             >
-              保存…
+              保存截图
             </button>
             <button
               className="device-action primary"
@@ -503,20 +521,13 @@ export default function DevicePanel() {
         </div>
       )}
 
-      <div className={`device-awake-row ${awake?.enabled ? "on" : ""}`}>
+      <div
+        className={`device-awake-row ${awake?.enabled ? "on" : ""}`}
+        title={awakeDetail}
+      >
         <div className="device-awake-copy">
           <span>充电时保持亮屏</span>
-          <small>
-            {!selected
-              ? "连接设备后可设置"
-              : !awake
-                ? "正在读取电源状态…"
-                : awake.enabled
-                  ? awake.active
-                    ? "充电中，已保持亮屏"
-                    : "已开启，等待充电器连接"
-                  : "关闭后恢复系统默认息屏时间"}
-          </small>
+          <small>{awakeState}</small>
         </div>
         <button
           className={`switch ${awake?.enabled ? "on" : ""}`}
@@ -530,11 +541,18 @@ export default function DevicePanel() {
         </button>
       </div>
 
-      <div className="device-footer">
-        <span title={hdcPath ?? undefined}>
+      <div
+        className="device-footer"
+        title={`${hdcPath ? `hdc: ${hdcPath}` : "未找到 hdc"}\n手动刷新获取最新画面；锁屏/安全窗口可能黑屏。`}
+      >
+        <span className="device-shot-meta">
+          {shot
+            ? `${formatTime(shot.capturedAt)} · ${shot.width}×${shot.height} · ${formatBytes(shot.bytes)}`
+            : "暂无截图"}
+        </span>
+        <span className="device-footer-hdc">
           {hdcPath ? `hdc ${hdcVersion ?? ""}` : "未找到 hdc"}
         </span>
-        <span>手动刷新获取最新画面；锁屏/安全窗口可能黑屏。</span>
       </div>
     </div>
   );

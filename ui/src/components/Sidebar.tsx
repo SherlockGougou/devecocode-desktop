@@ -222,6 +222,7 @@ export default function Sidebar() {
   const pickWorkspaceFolder = useApp((s) => s.pickWorkspaceFolder);
   const setFilter = useApp((s) => s.setFilter);
   const openSettings = useApp((s) => s.openSettings);
+  const backend = useApp((s) => s.backend);
   const [searchOpen, setSearchOpen] = useState(false);
   /** 每个工作区当前展示的会话条数；收起工作区或改默认条数时清掉。 */
   const [sessionLimits, setSessionLimits] = useState<Record<string, number>>({});
@@ -650,6 +651,23 @@ export default function Sidebar() {
 
   const viewCustomized =
     showArchived || sessionSort !== "updated" || sessionPreview !== 5;
+  const cliTone =
+    backend.state === "ready" ? "ok" : backend.state === "failed" ? "bad" : "warn";
+  const cliState =
+    backend.state === "ready"
+      ? "已连接"
+      : backend.state === "failed"
+        ? "服务不可用"
+        : backend.state === "recovering"
+          ? "正在重启"
+          : backend.state === "reconnecting"
+            ? "正在重连"
+            : "正在启动";
+  const cliTitle =
+    backend.detail ??
+    (backend.state === "ready"
+      ? "本机 DevEco Code 服务已连接"
+      : "正在连接本机 DevEco Code 服务");
 
   return (
     <aside
@@ -840,8 +858,17 @@ export default function Sidebar() {
       </div>
 
       <div className="sidebar-footer">
-        <span className="dot" />
-        <span className="footer-text">本机 CLI</span>
+        <span
+          className={`footer-cli ${cliTone}`}
+          role="status"
+          aria-live="polite"
+          title={cliTitle}
+        >
+          <span className="dot" />
+          <span className="footer-text">本机 CLI</span>
+          <span className="footer-sep">·</span>
+          <span className="footer-state">{cliState}</span>
+        </span>
         <button
           className="footer-btn"
           onClick={() => openSettings()}

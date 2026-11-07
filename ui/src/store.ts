@@ -27,9 +27,15 @@ import type {
   TodoItem,
 } from "./types";
 import { buildSubagentTasks, normalizeTodos } from "./tasks";
-import { highestModelVariant, isModelAvailable } from "./models";
+import {
+  highestModelVariant,
+  isModelAvailable,
+  modelKey,
+  readHiddenModels,
+  writeHiddenModels,
+} from "./models";
 
-type RightTab = "changes" | "files" | "device" | "tasks";
+export type RightTab = "changes" | "files" | "device" | "tasks";
 
 const LAST_DIR = "deveco.desktop.dir";
 const LAST_SESSION = "deveco.desktop.session";
@@ -40,7 +46,16 @@ const WORKSPACE_ORDER = "deveco.desktop.workspaceOrder";
 const SESSION_SORT = "deveco.desktop.sessionSort";
 const SESSION_PREVIEW = "deveco.desktop.sessionPreview";
 const SIDEBAR_OPEN = "deveco.desktop.sidebarOpen";
+const RIGHT_WIDTH = "deveco.desktop.rightWidth";
+const RIGHT_TAB_ORDER = "deveco.desktop.rightTabOrder";
 const OVERVIEW_PINNED = "deveco.desktop.overviewPinned";
+export const RIGHT_PANEL_MIN_WIDTH = 320;
+const DEFAULT_RIGHT_TAB_ORDER: readonly RightTab[] = [
+  "changes",
+  "files",
+  "tasks",
+  "device",
+];
 /** 启动阶段读取工作区可能被 macOS 文件夹授权弹窗阻塞，给用户留足处理时间。 */
 const BOOT_LOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const BTW_TIMEOUT_MS = 90_000;
@@ -149,6 +164,13 @@ function normalizeWorkspace(path: string) {
   return trimmed === "/" ? trimmed : trimmed.replace(/\/+$/, "");
 }
 
+/** 右栏固定下限，上限随窗口宽度变化：始终不超过窗口总宽度的一半。 */
+export function clampRightPanelWidth(width: number, viewportWidth = window.innerWidth) {
+  const max = Math.max(1, Math.floor(viewportWidth / 2));
+  const min = Math.min(RIGHT_PANEL_MIN_WIDTH, max);
+  return Math.min(max, Math.max(min, Math.round(width)));
+}
+
 export type SessionSort = "updated" | "created" | "title";
 export type SessionPreview = 5 | 10 | 20 | "all";
 
@@ -162,6 +184,37 @@ function readSessionPreview(): SessionPreview {
   if (value === "all") return "all";
   const count = Number(value);
   return count === 10 || count === 20 ? count : 5;
+}
+
+function readRightTabOrder(): RightTab[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(RIGHT_TAB_ORDER) ?? "[]");
+    const seen = new Set<RightTab>();
+    const order: RightTab[] = [];
+    if (Array.isArray(parsed)) {
+      for (const value of parsed) {
+        if (
+          !DEFAULT_RIGHT_TAB_ORDER.includes(value as RightTab) ||
+          seen.has(value as RightTab)
+        ) {
+          continue;
+        }
+        seen.add(value as RightTab);
+        order.push(value as RightTab);
+      }
+    }
+    // 存储损坏或未来新增标签时，补齐缺失项并保持默认顺序。
+    for (const tab of DEFAULT_RIGHT_TAB_ORDER) {
+      if (!seen.has(tab)) order.push(tab);
+    }
+    return order;
+  } catch {
+    return [...DEFAULT_RIGHT_TAB_ORDER];
+  }
+}
+
+function rememberRightTabOrder(order: RightTab[]) {
+  localStorage.setItem(RIGHT_TAB_ORDER, JSON.stringify(order));
 }
 
 function readPathList(key: string): string[] {
@@ -420,6 +473,9 @@ export interface AppState {
   searchResults: Record<string, Session[]>;
   searching: boolean;
   models: ModelInfo[];
+  hiddenModels: string[];
+  modelsLoading: boolean;
+  modelsError: string | null;
   agents: AgentInfo[];
   selectedAgent: string;
   commands: CommandInfo[];
@@ -444,6 +500,7 @@ export interface AppState {
   /** 后端（本机 deveco serve）状态：自愈过程对用户可见 */
   backend: BackendPhase;
   rightOpen: boolean;
+  rightWidth: number;
   overviewOpen: boolean;
   overviewPinned: boolean;
   overviewGit: GitRepoState | null;
@@ -458,6 +515,7 @@ export interface AppState {
   settingsPage: SettingsPage;
   shortcutsOpen: boolean;
   rightTab: RightTab;
+  rightTabOrder: RightTab[];
   diff: FileDiff[];
   files: FileNode[];
   filePath: string;
@@ -482,6 +540,7 @@ export interface AppState {
   setFindQuery(query: string): void;
   stepFind(delta: number): void;
   setSidebarWidth(width: number): void;
+  setRightWidth(width: number): void;
   toggleSidebar(): void;
 
   boot(): Promise<void>;
@@ -525,6 +584,7 @@ export interface AppState {
   openShortcuts(): void;
   closeShortcuts(): void;
   setRightTab(tab: RightTab): void;
+  moveRightTab(source: RightTab, target: RightTab, after: boolean): void;
   /** taskID 为空时打开任务列表；传入后直接打开该子代理详情。 */
   openTasks(taskID?: string | null): void;
   closeTaskDetail(): void;
@@ -533,7 +593,8 @@ export interface AppState {
   runSearch(query: string): Promise<void>;
   openSessionIn(directory: string, id: string): Promise<void>;
   toggleProject(directory: string): Promise<void>;
-  loadModels(): Promise<void>;
+  loadModels(force?: boolean): Promise<void>;
+  setModelVisible(model: { providerID: string; modelID: string }, visible: boolean): void;
   loadMeta(): Promise<void>;
   selectAgent(name: string): void;
   selectVariant(variant: string | null): void;
@@ -569,6 +630,9 @@ export const useApp = create<AppState>()((set, get) => ({
   searchResults: {},
   searching: false,
   models: [],
+  hiddenModels: readHiddenModels(),
+  modelsLoading: false,
+  modelsError: null,
   agents: [],
   selectedAgent: "build",
   commands: [],
@@ -592,6 +656,10 @@ export const useApp = create<AppState>()((set, get) => ({
   sseCount: 0,
   backend: { state: "starting", attempt: 0, detail: null },
   rightOpen: false,
+  // 窗口变窄时由 App 的 resize 监听重新夹紧，避免恢复旧偏好后超过一半宽度。
+  rightWidth: clampRightPanelWidth(
+    Number(localStorage.getItem(RIGHT_WIDTH)) || RIGHT_PANEL_MIN_WIDTH,
+  ),
   overviewOpen: false,
   overviewPinned: localStorage.getItem(OVERVIEW_PINNED) === "1",
   overviewGit: null,
@@ -606,6 +674,7 @@ export const useApp = create<AppState>()((set, get) => ({
   settingsPage: "appearance",
   shortcutsOpen: false,
   rightTab: "changes",
+  rightTabOrder: readRightTabOrder(),
   diff: [],
   files: [],
   filePath: "",
@@ -1533,6 +1602,12 @@ export const useApp = create<AppState>()((set, get) => ({
     set({ sidebarWidth: clamped });
   },
 
+  setRightWidth(width) {
+    const clamped = clampRightPanelWidth(width);
+    localStorage.setItem(RIGHT_WIDTH, String(clamped));
+    set({ rightWidth: clamped });
+  },
+
   toggleSidebar() {
     const open = !get().sidebarOpen;
     localStorage.setItem(SIDEBAR_OPEN, open ? "1" : "0");
@@ -1820,6 +1895,19 @@ export const useApp = create<AppState>()((set, get) => ({
     void refreshPanel(get, set);
   },
 
+  moveRightTab(source, target, after) {
+    if (source === target) return;
+    const current = get().rightTabOrder;
+    if (!current.includes(source) || !current.includes(target)) return;
+    const next = current.filter((tab) => tab !== source);
+    const targetIndex = next.indexOf(target);
+    if (targetIndex === -1) return;
+    next.splice(targetIndex + (after ? 1 : 0), 0, source);
+    if (next.every((tab, index) => tab === current[index])) return;
+    rememberRightTabOrder(next);
+    set({ rightTabOrder: next });
+  },
+
   openTasks(taskID = null) {
     set({
       rightOpen: true,
@@ -1911,14 +1999,30 @@ export const useApp = create<AppState>()((set, get) => ({
     );
   },
 
-  async loadModels() {
-    if (get().models.length > 0) return;
+  async loadModels(force = false) {
+    if (get().modelsLoading) return;
+    if (!force && get().models.length > 0) return;
+    set({ modelsLoading: true, modelsError: null });
     try {
       const result = await api.models();
-      set({ models: (result.data ?? []).filter(isModelAvailable) });
-    } catch {
-      // 模型列表拿不到不影响聊天，静默失败
+      set({
+        models: (result.data ?? []).filter(isModelAvailable),
+        modelsLoading: false,
+      });
+    } catch (error) {
+      // 模型列表拿不到不影响聊天，但设置页需要显示失败并允许重试。
+      set({ modelsError: `读取模型失败：${String(error)}`, modelsLoading: false });
     }
+  },
+
+  setModelVisible(model, visible) {
+    const key = modelKey(model.providerID, model.modelID);
+    const current = get().hiddenModels;
+    const hidden = current.includes(key);
+    if (visible === !hidden) return;
+    const next = visible ? current.filter((item) => item !== key) : [...current, key];
+    writeHiddenModels(next);
+    set({ hiddenModels: next });
   },
 
   selectModel(model) {

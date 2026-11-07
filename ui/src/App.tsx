@@ -2,7 +2,11 @@ import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { api } from "./api";
-import { useApp } from "./store";
+import {
+  clampRightPanelWidth,
+  RIGHT_PANEL_MIN_WIDTH,
+  useApp,
+} from "./store";
 import type { BackendPhase } from "./types";
 import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
@@ -26,8 +30,10 @@ export default function App() {
   const settingsOpen = useApp((s) => s.settingsOpen);
   const shortcutsOpen = useApp((s) => s.shortcutsOpen);
   const sidebarWidth = useApp((s) => s.sidebarWidth);
+  const rightWidth = useApp((s) => s.rightWidth);
   const sidebarOpen = useApp((s) => s.sidebarOpen);
   const setSidebarWidth = useApp((s) => s.setSidebarWidth);
+  const setRightWidth = useApp((s) => s.setRightWidth);
   const dismissError = useApp((s) => s.dismissError);
   const boot = useApp((s) => s.boot);
   const onSse = useApp((s) => s.onSse);
@@ -122,6 +128,18 @@ export default function App() {
     useApp.setState({ booting: false });
   }, [booting, backendState.state, backendState.detail]);
 
+  // 右侧宽度上限依赖当前窗口宽度；窗口缩小时立即把已有偏好夹回一半以内。
+  useEffect(() => {
+    const onResize = () => {
+      const state = useApp.getState();
+      if (clampRightPanelWidth(state.rightWidth) !== state.rightWidth) {
+        setRightWidth(state.rightWidth);
+      }
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [setRightWidth]);
+
   // 窗口标题跟随会话
   const sessions = useApp((s) => s.sessions);
   const directory = useApp((s) => s.directory);
@@ -134,14 +152,16 @@ export default function App() {
     )?.title;
     return title ?? null;
   });
+  const sessionTitle = sessionID
+    ? ((sessions[directory ?? ""] ?? []).find((item) => item.id === sessionID)?.title ?? "")
+    : "";
+  const projectTitle = directory ? (directory.split("/").filter(Boolean).pop() ?? "") : "";
+  const windowTitle = [sessionTitle || "DevEco Code", projectTitle]
+    .filter(Boolean)
+    .join(" · ");
   useEffect(() => {
-    const project = directory ? directory.split("/").filter(Boolean).pop() : "";
-    const session = sessionID
-      ? (sessions[directory ?? ""] ?? []).find((item) => item.id === sessionID)?.title
-      : "";
-    const title = [session || "DevEco Code", project].filter(Boolean).join(" · ");
-    void invoke("set_window_title", { title });
-  }, [sessions, directory, sessionID]);
+    void invoke("set_window_title", { title: windowTitle });
+  }, [windowTitle]);
 
   // 菜单栏只接收轻量上下文；SSE 是否运行、授权数量仍由 Rust 侧维护
   useEffect(() => {
@@ -175,10 +195,10 @@ export default function App() {
     <div
       className={`shell ${rightOpen ? "right-open" : ""} ${overviewOpen ? "overview-open" : ""} ${sidebarOpen ? "" : "left-collapsed"}`}
       style={{
-        gridTemplateColumns: `${sidebarOpen ? sidebarWidth : 0}px minmax(0, 1fr) ${rightOpen ? "320px" : "0px"}`,
+        gridTemplateColumns: `${sidebarOpen ? sidebarWidth : 0}px minmax(0, 1fr) ${rightOpen ? `${rightWidth}px` : "0px"}`,
       }}
     >
-      <TitleBar />
+      <TitleBar sessionTitle={sessionTitle} project={projectTitle} streaming={streaming} />
       <TaskOverview />
       <Sidebar />
       {sidebarOpen && (
@@ -211,6 +231,32 @@ export default function App() {
         <StatusBar />
       </main>
       <RightPanel />
+      {rightOpen && (
+        <div
+          className="right-resizer"
+          style={{ right: `${rightWidth}px` }}
+          title="拖动调整右侧面板宽度，双击复位"
+          onDoubleClick={() => setRightWidth(RIGHT_PANEL_MIN_WIDTH)}
+          onMouseDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            const startX = event.clientX;
+            const startWidth = rightWidth;
+            const onMove = (moveEvent: MouseEvent) =>
+              setRightWidth(startWidth - (moveEvent.clientX - startX));
+            const onUp = () => {
+              window.removeEventListener("mousemove", onMove);
+              window.removeEventListener("mouseup", onUp);
+              document.body.style.cursor = "";
+              document.body.style.userSelect = "";
+            };
+            document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none";
+            window.addEventListener("mousemove", onMove);
+            window.addEventListener("mouseup", onUp);
+          }}
+        />
+      )}
       {settingsOpen && <Settings />}
       {shortcutsOpen && <Shortcuts />}
       {error && (
@@ -305,19 +351,26 @@ function toggleMaximize() {
   });
 }
 
-function TitleBar() {
+function TitleBar({
+  sessionTitle,
+  project,
+  streaming,
+}: {
+  sessionTitle: string;
+  project: string;
+  streaming: boolean;
+}) {
   const sidebarOpen = useApp((s) => s.sidebarOpen);
   const toggleSidebar = useApp((s) => s.toggleSidebar);
   const rightOpen = useApp((s) => s.rightOpen);
   const toggleRight = useApp((s) => s.toggleRight);
   const overviewOpen = useApp((s) => s.overviewOpen);
   const toggleOverview = useApp((s) => s.toggleOverview);
-  const backend = useApp((s) => s.backend);
-  const connOk = backend.state === "ready";
-  const connBad = backend.state === "failed";
-  const connText = connOk ? "已连接" : connBad ? "后端不可用" : "重连中";
+  const sessionID = useApp((s) => s.sessionID);
+  const exportCurrentSession = useApp((s) => s.exportCurrentSession);
   const handleRef = useRef<HTMLDivElement>(null);
   useTitleBarDrag(handleRef);
+  const fullTitle = [sessionTitle || "DevEco Code", project].filter(Boolean).join(" · ");
 
   return (
     // 顶栏左边留给红黄绿灯（padding-left），中间整段是可拖动的窗口标题区。
@@ -329,11 +382,6 @@ function TitleBar() {
         onDoubleClick={IS_MACOS ? toggleMaximize : undefined}
         {...(IS_MACOS ? {} : { "data-tauri-drag-region": "deep" })}
       >
-        <div className="titlebar-brand">
-          <AppIcon size={16} className="titlebar-icon" />
-          DevEco Code
-          <span className="brand-ver">v0.2</span>
-        </div>
         <button
           className={`icon-btn titlebar-sidebar-toggle ${sidebarOpen ? "active" : ""}`}
           onClick={toggleSidebar}
@@ -344,21 +392,24 @@ function TitleBar() {
         >
           <Icon name="panel-left" size={18} />
         </button>
+        <div className="titlebar-title" title={fullTitle}>
+          <AppIcon size={16} className="titlebar-icon" />
+          <span className="titlebar-title-text">{sessionTitle || "DevEco Code"}</span>
+          {!sessionTitle && <span className="brand-ver">v0.2</span>}
+          {streaming && <span className="titlebar-streaming">· 执行中</span>}
+        </div>
         <div className="titlebar-drag" />
       </div>
       <div className="titlebar-actions">
-        <span
-          className={`conn ${connOk ? "ok" : ""} ${connBad ? "bad" : ""}`}
-          title={
-            connOk
-              ? "事件流已连接"
-              : connBad
-                ? `本地服务已停止：${backend.detail ?? "原因未知"}`
-                : (backend.detail ?? "正在重连本地服务")
-          }
+        <button
+          className="icon-btn"
+          onClick={() => void exportCurrentSession()}
+          disabled={!sessionID}
+          title="导出当前会话 (⌘E)"
+          aria-label="导出当前会话"
         >
-          {connText}
-        </span>
+          <Icon name="download" size={17} />
+        </button>
         <button
           className={`icon-btn ${overviewOpen ? "active" : ""}`}
           data-overview-toggle

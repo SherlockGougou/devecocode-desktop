@@ -75,6 +75,7 @@ export function Toggle({
         onClick={() => onChange(!checked)}
         role="switch"
         aria-checked={checked}
+        aria-label={label}
       >
         <span />
       </button>

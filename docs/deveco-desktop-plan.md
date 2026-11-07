@@ -1554,7 +1554,7 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
   `device_copy_screenshot`、`device_save_screenshot`；保存路径经过应用截图目录校验，
   不允许 WebView 读取任意文件。
 - 右栏新增「设备」页（`DevicePanel.tsx`）：显示设备型号/系统/API/连接方式、自动抓取一次、
-  右上角手动刷新、截图预览、复制、保存…、附加到对话。附加通过 `appEvents` 轻量事件总线
+  右上角手动刷新、截图预览、复制、保存截图、附加到对话。附加通过 `appEvents` 轻量事件总线
   进入 Composer，不把附件状态提升到全局 store。
 - 页面明确提示“手动刷新获取最新画面；锁屏/安全窗口可能黑屏”，不把截图预览伪装成实时投屏。
 
@@ -1566,7 +1566,7 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
   - 点击右上角刷新后时间戳从 17:48:42 变为 17:49:09，确认获取到新页面；
   - 点击复制后系统剪贴板出现 TIFF/JPEG/PNG/BMP 图片类型；
   - 点击附加到对话后 Composer 出现截图附件条目，移除按钮可用；
-  - 点击保存…打开 macOS 保存面板，默认文件名不含设备序列号；实际保存到
+  - 点击「保存截图」打开 macOS 保存面板，默认文件名不含设备序列号；实际保存到
     `.agent-temp/device-screenshot-*.jpeg`，文件为 1084×2412 JPEG，验证后已删除测试文件。
 - 截图布局与交互通过真实窗口截图确认；设备截图不需要加载华为投屏 jar 或启动设备侧投屏服务。
 
@@ -1695,3 +1695,190 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 
 - 没有物理拔掉充电器验证 5 秒轮询的自动释放；逻辑已按 `pluggedType` 状态切换实现。
 - 异常终止（崩溃、强制杀进程）不会执行退出清理，可能留下 keep-on 锁；正常退出已验证会释放。
+
+### 22.42 右栏拖拽调宽（2026-11-07）
+
+需求：右侧面板可由用户拖动拉宽，最小保持原来的固定宽度 `320px`，最大不超过窗口总宽度的一半。
+
+实现：
+
+- `store.ts` 新增 `rightWidth` 与 `setRightWidth`，读取和写入 localStorage 时统一夹紧；
+  下限为 `RIGHT_PANEL_MIN_WIDTH = 320`，上限为 `floor(window.innerWidth / 2)`。
+- `App.tsx` 的第三列网格宽度改为读取 `rightWidth`；右栏打开时在左缘放置绝对定位拖拽条，
+  向左拖动增大宽度，双击恢复 `320px`。监听窗口 `resize`，窗口变窄时立即把持久化值夹回一半以内。
+- 拖拽条复用左栏的分隔条视觉与 `col-resize` 光标；代码只调整前端布局，不涉及 CLI 契约。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真机窗口截图 `.agent-temp/right-resizer/`：初始/复位宽 `320px`；拖动后右栏明显变宽；
+  继续向左拖时，右栏在截图宽度 `3024px` 的窗口里停在 `1512px`，即总宽度的一半。
+- 双击分隔条后恢复 `320px`，右侧标签、文件和正文布局正常。
+
+未验证：
+
+- 没有在窗口拖动缩放过程中逐档截图；动态夹紧逻辑由 `resize` 事件覆盖。
+
+### 22.42.1 右栏标签长按排序（2026-11-07）
+
+需求：右栏顶部四个子页面支持长按拖动排序；默认顺序调整为先「变更、文件、任务」，设备放在最后。
+
+实现：
+
+- `store.ts` 新增 `rightTabOrder` 与 `moveRightTab`，默认顺序为
+  `changes / files / tasks / device`；读取时校验非法值与重复项并补齐缺失标签，排序结果写入
+  `deveco.desktop.rightTabOrder`。
+- `RightPanel.tsx` 按存储顺序渲染标签。鼠标按下后保持约 `320ms` 才进入拖动；未达到长按时普通点击
+  仍只切换标签。拖动超过阈值后按目标标签左右半区决定插到前面或后面，并显示插入线。
+- 只有实际移动过的长按才会抑制 click 并提交排序；长按但未移动按普通点击处理，避免误吞操作。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）通过；`npm run build:debug` 通过。
+- mock IPC + headless Chromium：初始渲染顺序为 `changes / files / tasks / device`；模拟按下 420ms
+  后拖到最后一个标签右侧，DOM 顺序变为 `files / tasks / device / changes`，同时写入 localStorage。
+- 页面重载后仍保持自定义顺序；普通点击「任务」只切换 active 标签，不改变排序。
+
+未验证：
+
+- 真实窗口中的长按手势只核对了默认顺序和按钮布局；连续多档拖动位置没有逐档截图。
+
+### 22.43 模型可见性管理（2026-11-07）
+
+需求：在设置中提供模型管理，用户可以勾选要展示的模型；未勾选模型不进入输入框旁的模型菜单。
+
+契约与实现：
+
+- 可见性是桌面端本地偏好，对齐官方桌面端的模型管理：只影响本应用的模型选择器，
+  不写 `~/.config/deveco/deveco.jsonc`，不调用 `/global/config` 或 `/config`，不影响 CLI/TUI。
+- `hiddenModels` 以 `providerID:modelID` 数组存入 localStorage 的
+  `deveco.desktop.hiddenModels`；坏数据回退为全部可见，新发现模型默认可见。
+- 「设置 → 账号与模型 → 模型管理」按 Provider 分组列出 `/api/model` 中未弃用且启用的模型，
+  显示模型名、ID、分组数量和勾选数；开关即时保存，不依赖设置页底部保存按钮。
+- 输入框下拉只使用可见模型；完整 `models` 仍用于解析当前模型名称和 variants。
+  取消勾选当前模型不会切换会话，胶囊仍显示原模型，模型菜单中则不再出现。
+- 模型加载新增 loading/error 状态；Provider 刷新会同时强制刷新模型列表，设置页失败时可重试。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 debug `.app`：初始 12/12 全部勾选；取消 Iceman 后变为 11/12，输入框菜单从 12 项降到 11 项。
+- 取消当前 Qoder 后为 10/12，输入框仍显示 `Qoder · routing group` 和 `max`，但模型菜单只剩 10 个
+  opencode 模型，不包含 Qoder；切换到 Big Pickle 正常。
+- 退出重开后隐藏状态仍在（模型菜单仍为 10 项）；全部取消后输入框显示「设置中未勾选任何模型」，
+  当前模型和推理档保持不变。验证后已恢复全部 12 个模型可见。
+- 截图：`.agent-temp/model-visibility/settings-models-all-checked.png`、
+  `.agent-temp/model-visibility/composer-after-hide.png`、
+  `.agent-temp/model-visibility/current-hidden-still-selected.png`、
+  `.agent-temp/model-visibility/all-hidden-empty-state.png`。
+
+未验证：
+
+- 没有人为破坏 localStorage 或断开 CLI 验证坏数据与读取失败分支；相关分支由类型检查覆盖。
+- 未发送真实模型 prompt；本次只验证可见性、当前模型保留、切换和重启持久化。
+
+### 22.44 连接状态收敛到侧栏底部（2026-11-07）
+
+需求：顶栏右侧和底部状态栏各显示一次「已连接」，信息重复；连接成功与错误状态统一放到
+左栏底部「本机 CLI」位置，减少主界面的无关信息。
+
+实现：
+
+- `App.tsx` 标题栏移除连接状态文本，保留会话标题与导出、任务概览、右栏开关；删除不再使用的 `.conn` 样式。
+- `StatusBar.tsx` 移除连接状态与 SSE 计数，仅保留当前工作区、轮次、Token 和速度。
+- `Sidebar.tsx` 的底部状态区成为唯一入口：就绪显示「本机 CLI · 已连接」；启动、重连、重建
+  分别显示对应过程文案；失败显示红色「本机 CLI · 服务不可用」，完整 `backend.detail` 放在悬浮提示中。
+- 主区顶部的失败/重连提示条继续保留，因为其中包含「立即重试 / 诊断」操作，不属于重复的静态状态。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 debug `.app` 截图 `.agent-temp/connection-status/final-ready-window.png`：就绪态只在左栏底部
+  显示「本机 CLI · 已连接」，顶栏右上角与底部状态栏均不再显示连接状态。
+- 终止 `deveco serve` 进程组后截图 `.agent-temp/connection-status/reconnect-1.png`：左栏底部切换为
+  「本机 CLI · 正在重启」并显示黄点；主区保留带「立即重试 / 诊断」的恢复提示条。
+- 服务自动重建后截图 `.agent-temp/connection-status/recovered.png`，左栏底部恢复「已连接」。
+
+未验证：
+
+- 未制造持续失败态验证红色「服务不可用」及悬浮的 `backend.detail`；该分支复用既有
+  `backend.state` / `backend.detail`，由类型检查与现有后端状态测试覆盖。
+- 未在亮色主题下重复截图。
+
+### 22.45 Composer 窄宽度工具栏（2026-11-07）
+
+需求：窗口变窄时，输入框底部左右两组工具会换行；应在同一行内优先省略模型名，
+保留 Agent、推理档位和发送按钮的可见性。
+
+实现：
+
+- `.composer-actions` 固定为单行，不再随宽度换行。
+- 右侧工具组占用剩余宽度，模型选择器允许收缩，模型名沿用已有单行 `text-overflow: ellipsis`；
+  推理档位选择器保持固定宽度，避免次要文字一起被压缩。
+- 模型按钮的 `title` 与 `aria-label` 仍使用完整模型名，省略只发生在视觉层。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 debug `.app` 在 `1040×898` 最小窗口、右栏展开时保持单行：
+  `Qoder · routing group` 显示为 `Qoder · r…`，Agent、`推理 max` 和发送按钮均完整可见。
+- 截图：`.agent-temp/composer-ellipsis/narrow-with-right-panel.png`。
+
+未验证：
+
+- 未逐一覆盖所有模型名长度；省略依赖现有 flex 收缩与文本溢出规则。
+
+### 22.46 会话标题移入窗口标题栏（2026-11-07 傍晚）
+
+需求：主区顶部单独用 42px 显示会话标题和导出按钮，标题栏里又重复显示品牌名，
+纵向空间利用不合理；会话标题应放到窗口顶栏，正文直接从顶栏下方开始。
+
+实现：
+
+- `App.tsx` 把当前会话标题传给 `TitleBar`，显示在左栏开关右侧；无会话时回退为
+  「DevEco Code + v0.2」，有会话时只显示会话标题，过长时省略。
+- 标题的悬浮提示保留完整的「会话 · 项目」，原生窗口标题仍由 `set_window_title` 同步，
+  两部分使用同一份标题计算结果。
+- 导出从主区标题行移到顶栏右侧，改为图标按钮并保留 `⌘E`、原生菜单和右键菜单入口；
+  无会话时按钮禁用。
+- `ChatView.tsx` 删除 `.chat-head` 整行，消息流和待办条直接接在顶栏下方；
+  侧栏会话标题的字号与颜色移到自己的 `.chat-title` 规则，避免受主区样式删除影响。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 debug `.app` 打开已有会话时，顶栏显示「Greeting」，主区首条消息直接位于顶栏下方，
+  右侧导出、任务概览、右栏三个按钮正常；点击「新会话」后顶栏回退为「DevEco Code v0.2」，
+  导出按钮禁用。
+
+未验证：
+
+- 未用超长会话标题、亮色主题和「执行中」状态逐一截图；省略与状态样式沿用现有
+  `text-overflow` / CSS 变量规则。
+
+### 22.47 设备面板紧凑布局与截图自适应（2026-11-07 晚）
+
+需求：设备页纵向信息偏多，小屏幕窗口需要滚动才能看全；镜像按宽度放大后超出可用高度，
+会被容器裁切。
+
+实现：
+
+- `.device-body` 改为固定视口的纵向 flex 容器并禁用自身滚动；`.device-panel` 使用
+  `flex: 1; min-height: 0` 吃掉剩余高度，截图外层 `flex: 1 1 0; min-height: 0`，
+  图片改为 `width/height: 100%` + `object-fit: contain`，高度不足时等比缩小而不是裁切。
+- 设备标题行内联连接状态；只有连接多个设备时才显示选择行。截图的采集时间、分辨率、大小
+  与 hdc 版本合并到单行 footer；亮屏开关状态收成一行，完整说明放到悬浮提示；间距与内边距同步收紧。
+- 空态、读取失败态和多设备切换逻辑保持不变，只调整设备页布局。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 debug `.app` 连接 nova 14（1084×2412）：常规窗口与把页面视口临时压到约 `359px`
+  高时，镜像均完整等比显示，设备信息、三个操作按钮、亮屏开关与 footer 不需要滚动即可看到；
+  极小高度下截图缩成窄条，但没有出现上下裁切。
+- 截图：`.agent-temp/device-panel/device-panel-normal.png`、
+  `.agent-temp/device-panel/device-panel-low-height.png`。
+
+未验证：
+
+- 未连接两台及以上设备逐项检查选择行；该分支沿用原有选择与切换逻辑。

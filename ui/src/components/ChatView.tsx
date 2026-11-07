@@ -758,23 +758,6 @@ export default function ChatView() {
         )
       }
     >
-      <div className="chat-head">
-        <div className="chat-title">
-          {title || "DevEco Code"}
-          {streaming && <span className="streaming">· 执行中</span>}
-        </div>
-        <div className="chat-actions">
-          <button
-            className="ghost-btn"
-            onClick={() => void exportCurrentSession()}
-            disabled={!sessionID}
-            title="导出当前会话 (⌘E)"
-          >
-            <Icon name="download" size={15} />
-            导出
-          </button>
-        </div>
-      </div>
       <SessionTaskBar />
 
       {findOpen && (

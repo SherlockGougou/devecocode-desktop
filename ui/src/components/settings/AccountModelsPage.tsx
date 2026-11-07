@@ -1,8 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
+import { modelKey } from "../../models";
+import { useApp } from "../../store";
 import type {
   AuthEntry,
   CliConfigSummary,
+  ModelInfo,
   ProviderOverview,
   QuotaWindow,
   StatsQuota,
@@ -13,6 +16,7 @@ import {
   Row,
   SettingsSection,
   Tag,
+  Toggle,
   formatCost,
   formatNumber,
   formatTokens,
@@ -85,6 +89,16 @@ export default function AccountModelsPage({
   const [usage, setUsage] = useState<StatsUsage | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const models = useApp((s) => s.models);
+  const hiddenModels = useApp((s) => s.hiddenModels);
+  const modelsLoading = useApp((s) => s.modelsLoading);
+  const modelsError = useApp((s) => s.modelsError);
+  const loadModels = useApp((s) => s.loadModels);
+  const setModelVisible = useApp((s) => s.setModelVisible);
+
+  useEffect(() => {
+    void loadModels();
+  }, [loadModels]);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,7 +139,11 @@ export default function AccountModelsPage({
     setRefreshing(true);
     setActionError(null);
     try {
-      setProviders(await api.refreshProviders(directory ?? undefined));
+      const [nextProviders] = await Promise.all([
+        api.refreshProviders(directory ?? undefined),
+        loadModels(true),
+      ]);
+      setProviders(nextProviders);
     } catch (error) {
       setActionError(String(error));
     } finally {
@@ -144,6 +162,31 @@ export default function AccountModelsPage({
     : signedIn
       ? "Qwen3-VL（登录内置）"
       : "未配置";
+  const hiddenModelKeys = useMemo(() => new Set(hiddenModels), [hiddenModels]);
+  const providerNames = useMemo(
+    () => new Map((providers?.providers ?? []).map((provider) => [provider.id, provider.name])),
+    [providers],
+  );
+  const modelGroups = useMemo(() => {
+    const grouped = new Map<string, ModelInfo[]>();
+    for (const model of models) {
+      const group = grouped.get(model.providerID) ?? [];
+      group.push(model);
+      grouped.set(model.providerID, group);
+    }
+    return [...grouped.entries()]
+      .map(([providerID, items]) => ({
+        providerID,
+        name: providerNames.get(providerID) ?? providerLabel(providerID),
+        items: items.sort((a, b) =>
+          (a.name ?? a.id).localeCompare(b.name ?? b.id, "zh-CN"),
+        ),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  }, [models, providerNames]);
+  const visibleModelCount = models.filter(
+    (model) => !hiddenModelKeys.has(modelKey(model.providerID, model.id)),
+  ).length;
 
   return (
     <>
@@ -225,6 +268,56 @@ export default function AccountModelsPage({
         <Row label="默认模型" value={config?.model ?? "未设置"} mono />
         <Row label="小模型" value={config?.small_model ?? "-"} mono />
         <Row label="UI 校验模型" value={verification} mono />
+      </SettingsSection>
+
+      <SettingsSection
+        title="模型管理"
+        hint="勾选后显示在输入框的模型菜单；取消勾选只影响本桌面端，不改 CLI 配置或当前会话。"
+        action={
+          modelsError ? (
+            <button className="ghost-btn" onClick={() => void loadModels(true)}>
+              重试
+            </button>
+          ) : (
+            <Tag tone="muted">
+              {visibleModelCount} / {models.length} 已勾选
+            </Tag>
+          )
+        }
+      >
+        {modelsError && <div className="settings-inline-error">{modelsError}</div>}
+        {modelsLoading && models.length === 0 ? (
+          <EmptyState>正在读取可用模型…</EmptyState>
+        ) : models.length === 0 ? (
+          modelsError ? null : <EmptyState>当前没有可用模型。</EmptyState>
+        ) : (
+          modelGroups.map((group) => (
+            <div className="settings-model-group" key={group.providerID}>
+              <div className="settings-model-group-head">
+                <span>{group.name}</span>
+                <span>{group.items.length} 个模型</span>
+              </div>
+              {group.items.map((model) => {
+                const name = model.name ?? model.id;
+                const key = modelKey(model.providerID, model.id);
+                return (
+                  <Toggle
+                    key={key}
+                    label={name}
+                    hint={name === model.id ? model.providerID : model.id}
+                    checked={!hiddenModelKeys.has(key)}
+                    onChange={(visible) =>
+                      setModelVisible(
+                        { providerID: model.providerID, modelID: model.id },
+                        visible,
+                      )
+                    }
+                  />
+                );
+              })}
+            </div>
+          ))
+        )}
       </SettingsSection>
 
       <SettingsSection
