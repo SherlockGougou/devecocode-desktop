@@ -20,6 +20,7 @@ type RightTab = "changes" | "files";
 
 const LAST_DIR = "deveco.desktop.dir";
 const LAST_SESSION = "deveco.desktop.session";
+let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
 function upsertSession(list: Session[], session: Session): Session[] {
   const index = list.findIndex((item) => item.id === session.id);
@@ -103,8 +104,9 @@ export interface AppState {
   findIndex: number;
   sidebarWidth: number;
   clearFailedText(): void;
-  showNotice(message: string): void;
+  showNotice(message: string, duration?: number): void;
   exportCurrentSession(): Promise<void>;
+  exportSession(directory: string, id: string): Promise<void>;
   openFind(): void;
   closeFind(): void;
   setFindQuery(query: string): void;
@@ -115,6 +117,7 @@ export interface AppState {
   selectProject(directory: string): Promise<void>;
   openSession(id: string): Promise<void>;
   newSession(): Promise<void>;
+  newSessionIn(directory: string): Promise<void>;
   /** refs 是 Composer 里 @ 引用的工作区文件；不传时行为与之前完全一致 */
   send(text: string, attachments?: Attachment[], refs?: MentionRef[]): Promise<void>;
   stop(): Promise<void>;
@@ -138,10 +141,10 @@ export interface AppState {
   selectAgent(name: string): void;
   selectVariant(variant: string | null): void;
   selectModel(model: { providerID: string; modelID: string }): void;
-  renameSession(id: string, title: string): Promise<void>;
-  archiveSession(id: string, archived: boolean): Promise<void>;
+  renameSession(directory: string, id: string, title: string): Promise<void>;
+  archiveSession(directory: string, id: string, archived: boolean): Promise<void>;
   toggleArchivedView(): void;
-  deleteSession(id: string): Promise<void>;
+  deleteSession(directory: string, id: string): Promise<void>;
   refreshDiff(): Promise<void>;
   openPreview(path: string): Promise<void>;
   loadFiles(): Promise<void>;
@@ -149,6 +152,8 @@ export interface AppState {
   goUpDir(): Promise<void>;
   setFileQuery(value: string): Promise<void>;
   closePreview(): void;
+  /** 打开右栏文件页并预览当前工作区内的相对路径 */
+  openFile(path: string): Promise<void>;
   dismissError(): void;
 }
 
@@ -317,6 +322,11 @@ export const useApp = create<AppState>()((set, get) => ({
   async newSession() {
     const directory = get().directory;
     if (!directory) return;
+    await get().newSessionIn(directory);
+  },
+
+  async newSessionIn(directory) {
+    if (!directory) return;
     try {
       const session = await api.createSession(directory);
       const list = get().sessions[directory] ?? [];
@@ -325,7 +335,7 @@ export const useApp = create<AppState>()((set, get) => ({
         // 侧栏一次只展开当前工作区：新建后确保它处于展开态，新会话能立刻看到
         expanded: { [directory]: true },
       });
-      await get().openSession(session.id);
+      await get().openSessionIn(directory, session.id);
     } catch (error) {
       set({ error: `新建会话失败：${String(error)}` });
     }
@@ -357,15 +367,11 @@ export const useApp = create<AppState>()((set, get) => ({
       for (const file of files) {
         parts.push({ type: "file", mime: file.mime, url: file.url, filename: file.name });
       }
-      const message = await api.prompt(directory, sessionID, parts, {
+      await api.prompt(directory, sessionID, parts, {
         ...(model ? { model } : {}),
         agent: selectedAgent,
         ...(selectedVariant ? { variant: selectedVariant } : {}),
       });
-      set({ messages: upsertMessage(get().messages, message.info) });
-      for (const part of message.parts) {
-        set({ messages: upsertPart(get().messages, part) });
-      }
     } catch (error) {
       // 失败的原文还回输入框，用户不用重新打一遍
       set({ streaming: false, error: `发送失败：${String(error)}`, failedText: text });
@@ -559,9 +565,13 @@ export const useApp = create<AppState>()((set, get) => ({
     set({ failedText: null });
   },
 
-  showNotice(message) {
+  showNotice(message, duration = 4000) {
+    if (noticeTimer) clearTimeout(noticeTimer);
     set({ notice: message });
-    setTimeout(() => set({ notice: null }), 4000);
+    noticeTimer = setTimeout(() => {
+      noticeTimer = null;
+      set({ notice: null });
+    }, duration);
   },
 
   async exportCurrentSession() {
@@ -570,9 +580,17 @@ export const useApp = create<AppState>()((set, get) => ({
       set({ error: "请先打开一个会话再导出" });
       return;
     }
+    await get().exportSession(directory, sessionID);
+  },
+
+  async exportSession(directory, id) {
+    if (!directory || !id) {
+      set({ error: "请先打开一个会话再导出" });
+      return;
+    }
     try {
-      const path = await api.exportSession(directory, sessionID);
-      get().showNotice(`已导出：${path}`);
+      const path = await api.exportSession(directory, id);
+      get().showNotice(`已导出：${path}`, 6000);
     } catch (error) {
       set({ error: `导出失败：${String(error)}` });
     }
@@ -701,8 +719,7 @@ export const useApp = create<AppState>()((set, get) => ({
     });
   },
 
-  async renameSession(id, title) {
-    const directory = get().directory;
+  async renameSession(directory, id, title) {
     const trimmed = title.trim();
     if (!directory || !trimmed) return;
     try {
@@ -721,8 +738,7 @@ export const useApp = create<AppState>()((set, get) => ({
     }
   },
 
-  async archiveSession(id, archived) {
-    const directory = get().directory;
+  async archiveSession(directory, id, archived) {
     if (!directory) return;
     const snapshot = get().sessions[directory] ?? [];
     // 先本地置位，界面立即响应；失败再回滚
@@ -757,8 +773,7 @@ export const useApp = create<AppState>()((set, get) => ({
     set({ showArchived: next });
   },
 
-  async deleteSession(id) {
-    const directory = get().directory;
+  async deleteSession(directory, id) {
     if (!directory) return;
     try {
       await api.deleteSession(directory, id);
@@ -766,7 +781,7 @@ export const useApp = create<AppState>()((set, get) => ({
       set({
         sessions: { ...get().sessions, [directory]: list.filter((item) => item.id !== id) },
       });
-      if (get().sessionID === id) {
+      if (get().directory === directory && get().sessionID === id) {
         set({ sessionID: null, messages: [], permissions: [], streaming: false });
         localStorage.removeItem(`${LAST_SESSION}.${directory}`);
       }
@@ -790,6 +805,18 @@ export const useApp = create<AppState>()((set, get) => ({
     } catch (error) {
       set({ preview: { path, content: `读取失败：${String(error)}`, type: "error" } });
     }
+  },
+
+  async openFile(path) {
+    const directory = get().directory;
+    if (!directory) return;
+    // CLI 返回的 filename 可能是相对路径，也可能被上游改写成绝对路径
+    const normalized = path.replace(/\\/g, "/");
+    const relative = normalized.startsWith(`${directory}/`)
+      ? normalized.slice(directory.length + 1)
+      : normalized.replace(/^\/+/, "");
+    set({ rightOpen: true, rightTab: "files", preview: null });
+    await get().openPreview(relative);
   },
 
   closePreview() {

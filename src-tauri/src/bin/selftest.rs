@@ -229,11 +229,12 @@ async fn proxy_roundtrip(base: &str) -> Result<String, String> {
         .to_string();
 
     let message_path = format!("/session/{session_id}/message");
-    http::send(
+    let prompt_path = format!("/session/{session_id}/prompt_async");
+    let accepted = http::send(
         base,
         None,
         "POST",
-        &message_path,
+        &prompt_path,
         &query,
         Some(&serde_json::json!({
             "parts": [{ "type": "text", "text": "自检消息" }],
@@ -242,11 +243,25 @@ async fn proxy_roundtrip(base: &str) -> Result<String, String> {
     )
     .await
     .map_err(|err| format!("写消息失败：{err:#}"))?;
+    if !accepted.is_null() {
+        return Err("prompt_async 应返回空响应".into());
+    }
 
-    let messages = http::send(base, None, "GET", &message_path, &query, None)
-        .await
-        .map_err(|err| format!("读消息失败：{err:#}"))?;
-    let count = messages.as_array().map(|items| items.len()).unwrap_or(0);
+    // prompt_async 先返回 204，消息随后异步落库；给 CLI 最多 5s 完成这一步
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let count = loop {
+        let messages = http::send(base, None, "GET", &message_path, &query, None)
+            .await
+            .map_err(|err| format!("读消息失败：{err:#}"))?;
+        let count = messages.as_array().map(|items| items.len()).unwrap_or(0);
+        if count > 0 {
+            break count;
+        }
+        if Instant::now() >= deadline {
+            return Err("prompt_async 5s 内未落库".into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
 
     let session_path = format!("/session/{session_id}");
     http::send(base, None, "DELETE", &session_path, &query, None)

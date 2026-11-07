@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, MentionRef } from "../types";
 import { api } from "../api";
 import { useApp } from "../store";
+import { MAX_REFS, parseMentions } from "../mentions";
+import { onAppEvent } from "../appEvents";
+import { copyItem, revealItem, useContextMenu } from "../contextMenu";
+import { absoluteWorkspacePath, relativeWorkspacePath } from "../paths";
 import { Icon } from "./Icon";
 
-/** 一次最多引用多少个文件：超过后不再插入，避免把整个目录塞进上下文 */
-const MAX_REFS = 8;
 /** 弹层最多展示多少条候选 */
 const MAX_MENTION_ITEMS = 8;
 
@@ -33,28 +35,6 @@ function detectMention(value: string, caret: number): MentionDraft | null {
   // 没有引号时遇到空白或另一个 @，说明这条引用已经输入完毕
   if (/[\s@]/.test(rest)) return null;
   return { query: rest, start: at, end: caret };
-}
-
-/**
- * 从文本解析全部 @ 引用，触发规则与 detectMention 保持一致。
- * 文本是唯一事实来源：输入框上方的 chip、发送时的 file part 都从它派生。
- * 未闭合的引号 token 不算引用（用户可能还在输入）；按路径去重。
- */
-function parseMentions(value: string): MentionRef[] {
-  const pattern = /(?:^|\s)(@"[^"\n]+"|@[^\s@"][^\s@]*)/gm;
-  const refs: MentionRef[] = [];
-  const seen = new Set<string>();
-  for (const match of value.matchAll(pattern)) {
-    const token = match[1];
-    const start = (match.index ?? 0) + match[0].length - token.length;
-    const path = token.startsWith('@"') ? token.slice(2, -1) : token.slice(1);
-    // 目录项（以 / 结尾）不能作为文件引用，和弹层过滤保持同一规则
-    if (!path || path.endsWith("/") || seen.has(path)) continue;
-    seen.add(path);
-    refs.push({ path, token, start, end: start + token.length });
-    if (refs.length >= MAX_REFS) break;
-  }
-  return refs;
 }
 
 /**
@@ -101,6 +81,7 @@ export default function Composer() {
   const [keyword, setKeyword] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const menu = useContextMenu();
 
   useEffect(() => {
     void loadModels();
@@ -221,6 +202,53 @@ export default function Composer() {
     const end = text[current.end] === " " ? current.end + 1 : current.end;
     applyText(text.slice(0, current.start) + text.slice(end));
   };
+
+  const insertReference = (path: string) => {
+    if (!directory || !path || path.endsWith("/")) return;
+    const relative = relativeWorkspacePath(directory, path);
+    const existing = parseMentions(text).find((ref) => ref.path === relative);
+    if (existing) {
+      requestAnimationFrame(() => {
+        const area = areaRef.current;
+        area?.focus();
+        area?.setSelectionRange(existing.start, existing.end);
+      });
+      showNotice("该文件已在引用中");
+      return;
+    }
+    if (refs.length >= MAX_REFS) {
+      showNotice(`最多引用 ${MAX_REFS} 个文件，请先移除已有引用`);
+      return;
+    }
+    const area = areaRef.current;
+    const start = area?.selectionStart ?? text.length;
+    const end = area?.selectionEnd ?? start;
+    const before = text.slice(0, start);
+    const after = text.slice(end);
+    const prefix = before && !/\s$/.test(before) ? " " : "";
+    const suffix = after && !/^\s/.test(after) ? " " : "";
+    const token = relative.includes(" ") ? `@"${relative}"` : `@${relative}`;
+    const next = `${before}${prefix}${token} ${suffix}${after}`;
+    applyText(next);
+    setMention(null);
+    const caret = start + prefix.length + token.length + 1;
+    requestAnimationFrame(() => {
+      area?.focus();
+      area?.setSelectionRange(caret, caret);
+    });
+  };
+
+  useEffect(
+    () =>
+      onAppEvent("reference-file", ({ directory: sourceDirectory, path }) => {
+        if (sourceDirectory !== directory) {
+          showNotice("请先切换到该文件所在的工作区");
+          return;
+        }
+        insertReference(path);
+      }),
+    [directory, insertReference, showNotice],
+  );
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -344,7 +372,31 @@ export default function Composer() {
         {refs.length > 0 && (
           <div className="ref-row">
             {refs.map((ref) => (
-              <span className="ref-chip" key={ref.path} title={`引用：${ref.path}`}>
+              <span
+                className="ref-chip"
+                key={ref.path}
+                title={`引用：${ref.path}`}
+                onContextMenu={(event) => {
+                  if (!directory) return;
+                  const absolute = absoluteWorkspacePath(directory, ref.path);
+                  menu.open(
+                    event,
+                    [
+                      revealItem("在 Finder 中显示", absolute),
+                      copyItem("复制相对路径", ref.path, "相对路径已复制"),
+                      copyItem("复制绝对路径", absolute, "绝对路径已复制"),
+                      { type: "separator" },
+                      {
+                        type: "item",
+                        label: "移除引用",
+                        icon: "close",
+                        onSelect: () => removeRef(ref),
+                      },
+                    ],
+                    { label: "引用文件菜单" },
+                  );
+                }}
+              >
                 <Icon name="file" size={13} />
                 <span className="ref-chip-path">{ref.path}</span>
                 <button
@@ -363,7 +415,30 @@ export default function Composer() {
         {attachments.length > 0 && (
           <div className="attachment-row">
             {attachments.map((file) => (
-              <span className="attachment-chip" key={file.id} title={`${file.name} · ${Math.round(file.size / 1024)}KB`}>
+              <span
+                className="attachment-chip"
+                key={file.id}
+                title={`${file.name} · ${Math.round(file.size / 1024)}KB`}
+                onContextMenu={(event) =>
+                  menu.open(
+                    event,
+                    [
+                      copyItem("复制文件名", file.name, "文件名已复制"),
+                      { type: "separator" },
+                      {
+                        type: "item",
+                        label: "移除附件",
+                        icon: "close",
+                        onSelect: () =>
+                          setAttachments((current) =>
+                            current.filter((item) => item.id !== file.id),
+                          ),
+                      },
+                    ],
+                    { label: "附件菜单" },
+                  )
+                }
+              >
                 <Icon name={file.mime.startsWith("image/") ? "image" : "file"} size={14} />
                 {file.name}
                 <button

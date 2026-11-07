@@ -51,7 +51,9 @@ export const api = {
     parts: Array<Record<string, unknown>>,
     options?: { model?: { providerID: string; modelID: string }; agent?: string; variant?: string },
   ) =>
-    request<Message>("POST", `/session/${sessionID}/message`, { directory }, {
+    // 同步 message 接口会一直等到整个 agent loop 结束，长任务必然撞上代理超时；
+    // prompt_async 只负责接收消息，进度统一由全局 SSE 推送。
+    request<void>("POST", `/session/${sessionID}/prompt_async`, { directory }, {
       parts,
       ...(options?.model ? { model: options.model } : {}),
       ...(options?.agent ? { agent: options.agent } : {}),
@@ -86,6 +88,7 @@ export const api = {
   probeCli: (explicit: string | null) =>
     invoke<{ path: string; version: string | null }>("probe_cli", { explicit }),
   openPath: (path: string) => invoke<void>("open_path", { path }),
+  revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   restartApp: () => invoke<void>("restart_app"),
   cliConfig: () => request<CliConfigSummary>("GET", "/config"),
   renameSession: (directory: string, id: string, title: string) =>

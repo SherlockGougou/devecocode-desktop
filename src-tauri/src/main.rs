@@ -41,6 +41,7 @@ fn main() {
         .manage(ipc::ServerConn::default())
         .manage(ipc::SettingsState::default())
         .manage(ipc::BackendCtl::default())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             focus_main(app);
         }))
@@ -55,6 +56,7 @@ fn main() {
             ipc::save_settings,
             ipc::probe_cli,
             ipc::open_path,
+            ipc::reveal_path,
             ipc::restart_app,
             ipc::export_session,
             ipc::set_window_title,

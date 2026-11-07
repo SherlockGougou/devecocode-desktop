@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../store";
 import type { Session } from "../types";
+import { copyItem, openPathItem, useContextMenu } from "../contextMenu";
 import { Icon } from "./Icon";
 
 /** 每个工作区默认先显示最近几个会话，其余折叠成一行「展开其余 N 个会话」 */
@@ -26,11 +27,13 @@ function timeAgo(ms?: number) {
 /** 单条会话：默认只有标题与相对时间，重命名/归档/删除只在悬停或聚焦时出现 */
 function ChatRow({
   session,
+  directory,
   active,
   streaming,
   onOpen,
 }: {
   session: Session;
+  directory: string;
   active: boolean;
   streaming: boolean;
   onOpen: () => void;
@@ -38,20 +41,65 @@ function ChatRow({
   const renameSession = useApp((s) => s.renameSession);
   const archiveSession = useApp((s) => s.archiveSession);
   const deleteSession = useApp((s) => s.deleteSession);
+  const exportSession = useApp((s) => s.exportSession);
   const [editing, setEditing] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const title = session.title || "未命名会话";
   const archived = session.time?.archived ?? false;
+  const menu = useContextMenu();
 
   const commitRename = async () => {
     const value = (editing ?? "").trim();
     setEditing(null);
-    if (value && value !== session.title) await renameSession(session.id, value);
+    if (value && value !== session.title) await renameSession(directory, session.id, value);
   };
 
   return (
     <div
       className={`chat-row ${active ? "active" : ""} ${archived ? "archived" : ""}`}
+      onContextMenu={(event) =>
+        menu.open(
+          event,
+          [
+            {
+              type: "item",
+              label: "打开会话",
+              icon: "chevron-right",
+              onSelect: onOpen,
+            },
+            {
+              type: "item",
+              label: "重命名",
+              icon: "pencil",
+              onSelect: () => setEditing(session.title ?? ""),
+            },
+            {
+              type: "item",
+              label: archived ? "取消归档" : "归档会话",
+              icon: archived ? "unarchive" : "archive",
+              onSelect: () => archiveSession(directory, session.id, !archived),
+            },
+            { type: "separator" },
+            {
+              type: "item",
+              label: "导出会话",
+              icon: "download",
+              onSelect: () => exportSession(directory, session.id),
+            },
+            copyItem("复制会话标题", title, "会话标题已复制"),
+            copyItem("复制会话 ID", session.id, "会话 ID 已复制"),
+            { type: "separator" },
+            {
+              type: "item",
+              label: "删除会话…",
+              icon: "trash",
+              danger: true,
+              onSelect: () => setConfirming(true),
+            },
+          ],
+          { label: "会话菜单" },
+        )
+      }
     >
       <span className="chat-mark" aria-hidden>
         {active && <span className={`chat-ring ${streaming ? "run" : ""}`} />}
@@ -86,7 +134,7 @@ function ChatRow({
             className="mini-btn text danger"
             onClick={() => {
               setConfirming(false);
-              void deleteSession(session.id);
+              void deleteSession(directory, session.id);
             }}
           >
             确认
@@ -110,7 +158,7 @@ function ChatRow({
               className="mini-btn"
               title={archived ? "取消归档" : "归档会话"}
               aria-label={archived ? "取消归档" : "归档会话"}
-              onClick={() => void archiveSession(session.id, !archived)}
+              onClick={() => void archiveSession(directory, session.id, !archived)}
             >
               <Icon name={archived ? "unarchive" : "archive"} size={14} />
             </button>
@@ -143,15 +191,16 @@ export default function Sidebar() {
   const filter = useApp((s) => s.filter);
   const selectProject = useApp((s) => s.selectProject);
   const toggleProject = useApp((s) => s.toggleProject);
-  const openSession = useApp((s) => s.openSession);
   const openSessionIn = useApp((s) => s.openSessionIn);
   const showArchived = useApp((s) => s.showArchived);
   const toggleArchivedView = useApp((s) => s.toggleArchivedView);
   const newSession = useApp((s) => s.newSession);
+  const newSessionIn = useApp((s) => s.newSessionIn);
   const setFilter = useApp((s) => s.setFilter);
   const openSettings = useApp((s) => s.openSettings);
   const [searchOpen, setSearchOpen] = useState(false);
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
+  const menu = useContextMenu();
 
   const keyword = filter.trim().toLowerCase();
   const visible = useMemo(() => {
@@ -185,6 +234,39 @@ export default function Sidebar() {
     else void selectProject(dir);
   };
 
+  const workspaceMenu = (
+    event: React.MouseEvent,
+    dir: string,
+    canToggle: boolean,
+  ) => {
+    const isOpen = expanded[dir] ?? false;
+    menu.open(
+      event,
+      [
+        {
+          type: "item",
+          label: "新建会话",
+          icon: "compose",
+          onSelect: () => newSessionIn(dir),
+        },
+        ...(canToggle
+          ? [
+              {
+                type: "item" as const,
+                label: isOpen ? "收起会话" : "展开会话",
+                icon: isOpen ? ("chevron-down" as const) : ("chevron-right" as const),
+                onSelect: () => toggleProject(dir),
+              },
+            ]
+          : []),
+        { type: "separator" as const },
+        copyItem("复制工作区路径", dir, "工作区路径已复制"),
+        openPathItem("在 Finder 中打开", dir),
+      ],
+      { label: "工作区菜单" },
+    );
+  };
+
   const renderWorkspace = (dir: string, isCurrent: boolean) => {
     const isOpen = expanded[dir] ?? false;
     const loaded = loadedDirs[dir] ?? false;
@@ -198,6 +280,7 @@ export default function Sidebar() {
         <button
           className={`ws-row ${isCurrent ? "active" : ""}`}
           onClick={() => onWorkspace(dir)}
+          onContextMenu={(event) => workspaceMenu(event, dir, true)}
           title={dir}
           aria-expanded={isOpen}
         >
@@ -214,9 +297,10 @@ export default function Sidebar() {
               <ChatRow
                 key={session.id}
                 session={session}
+                directory={dir}
                 active={isCurrent && session.id === sessionID}
                 streaming={isCurrent && session.id === sessionID && streaming}
-                onOpen={() => void openSession(session.id)}
+                onOpen={() => void openSessionIn(dir, session.id)}
               />
             ))}
             {hidden > 0 && (
@@ -242,7 +326,45 @@ export default function Sidebar() {
   };
 
   return (
-    <aside className="sidebar">
+    <aside
+      className="sidebar"
+      onContextMenu={(event) =>
+        menu.open(
+          event,
+          [
+            {
+              type: "item",
+              label: "新建会话",
+              icon: "compose",
+              shortcut: "⌘N",
+              disabled: !directory,
+              onSelect: () => newSession(),
+            },
+            {
+              type: "item",
+              label: searchOpen ? "关闭搜索" : "搜索工作区或会话",
+              icon: "search",
+              onSelect: toggleSearch,
+            },
+            {
+              type: "item",
+              label: showArchived ? "隐藏已归档会话" : "显示已归档会话",
+              icon: "sliders",
+              onSelect: toggleArchivedView,
+            },
+            { type: "separator" },
+            {
+              type: "item",
+              label: "打开设置",
+              icon: "sliders",
+              shortcut: "⌘,",
+              onSelect: openSettings,
+            },
+          ],
+          { label: "侧栏菜单" },
+        )
+      }
+    >
       <div className="ws-header">
         <span className="ws-title">
           {keyword ? (searching ? "搜索中…" : "搜索结果") : "工作区"}
@@ -311,7 +433,11 @@ export default function Sidebar() {
         {keyword
           ? Object.entries(searchResults).map(([dir, list]) => (
               <div className="ws" key={`search-${dir}`}>
-                <div className={`ws-row static ${dir === directory ? "active" : ""}`} title={dir}>
+                <div
+                  className={`ws-row static ${dir === directory ? "active" : ""}`}
+                  title={dir}
+                  onContextMenu={(event) => workspaceMenu(event, dir, false)}
+                >
                   <span className="ws-icon">
                     <Icon name="workspace" size={19} strokeWidth={1.9} />
                   </span>
@@ -322,6 +448,7 @@ export default function Sidebar() {
                     <ChatRow
                       key={session.id}
                       session={session}
+                      directory={dir}
                       active={session.id === sessionID && dir === directory}
                       streaming={session.id === sessionID && dir === directory && streaming}
                       onOpen={() => void openSessionIn(dir, session.id)}

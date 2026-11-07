@@ -36,7 +36,14 @@ export type IconName =
   | "folder"
   | "folder-up"
   | "refresh"
-  | "alert";
+  | "alert"
+  | "spark"
+  | "undo"
+  | "redo"
+  | "scissors"
+  | "clipboard"
+  | "select-all"
+  | "keyboard";
 
 const ICONS: Record<IconName, ReactNode> = {
   plus: <path d="M12 5.5v13M5.5 12h13" />,
@@ -161,6 +168,51 @@ const ICONS: Record<IconName, ReactNode> = {
     <>
       <path d="M12 4.2 21 19.8H3z" />
       <path d="M12 10v4.2M12 17h.01" />
+    </>
+  ),
+  // 思考过程：不对称的四角星，比灯泡更像“内部推理”而不是提示或灵感
+  spark: (
+    <>
+      <path d="M12 3.6c.7 4.3 2.1 5.7 6.4 6.4-4.3.7-5.7 2.1-6.4 6.4-.7-4.3-2.1-5.7-6.4-6.4 4.3-.7 5.7-2.1 6.4-6.4Z" />
+      <path d="M18.4 15.5c.3 1.6.8 2.1 2.4 2.4-1.6.3-2.1.8-2.4 2.4-.3-1.6-.8-2.1-2.4-2.4 1.6-.3 2.1-.8 2.4-2.4Z" />
+    </>
+  ),
+  undo: (
+    <>
+      <path d="m8.2 7.2-4 4 4 4" />
+      <path d="M4.6 11.2h8.2a5.2 5.2 0 0 1 5.2 5.2v.2" />
+    </>
+  ),
+  redo: (
+    <>
+      <path d="m15.8 7.2 4 4-4 4" />
+      <path d="M19.4 11.2h-8.2A5.2 5.2 0 0 0 6 16.4v.2" />
+    </>
+  ),
+  scissors: (
+    <>
+      <circle cx="6.2" cy="7" r="2.1" />
+      <circle cx="6.2" cy="17" r="2.1" />
+      <path d="m8 8.3 10.8 7.3M8 15.7 18.8 8.4" />
+    </>
+  ),
+  clipboard: (
+    <>
+      <rect x="5" y="5.2" width="14" height="15" rx="2" />
+      <path d="M9 5.2V3.8h6v1.4" />
+      <path d="M8.5 10.2h7M8.5 14h7" />
+    </>
+  ),
+  "select-all": (
+    <>
+      <path d="M8 4H5.2A1.2 1.2 0 0 0 4 5.2V8M16 4h2.8A1.2 1.2 0 0 1 20 5.2V8M20 16v2.8a1.2 1.2 0 0 1-1.2 1.2H16M8 20H5.2A1.2 1.2 0 0 1 4 18.8V16" />
+      <path d="m9 12 2 2 4-4" />
+    </>
+  ),
+  keyboard: (
+    <>
+      <rect x="3" y="6" width="18" height="12" rx="2" />
+      <path d="M7 10h.01M11 10h.01M15 10h.01M19 10h.01M7 14h.01M19 14h.01M10.5 14h3" />
     </>
   ),
 };

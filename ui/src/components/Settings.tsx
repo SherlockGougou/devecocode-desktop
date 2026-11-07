@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { onAppEvent } from "../appEvents";
 import { useApp } from "../store";
 import { Icon } from "./Icon";
 import { getThemeChoice, setThemeChoice, type ThemeChoice } from "../theme";
@@ -16,6 +17,7 @@ export default function Settings() {
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [restartRequired, setRestartRequired] = useState(false);
   const [theme, setTheme] = useState<ThemeChoice>(getThemeChoice());
+  const saveFromMenu = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     void api
@@ -33,6 +35,11 @@ export default function Settings() {
   }, []);
 
   const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(
+    () => onAppEvent("settings-save", () => saveFromMenu.current()),
+    [],
+  );
 
   // 面板要等配置加载完才渲染，所以依赖 draft；否则焦点会留在背后的主界面
   useEffect(() => {
@@ -82,6 +89,9 @@ export default function Settings() {
   }
 
   const dirty = JSON.stringify(draft) !== JSON.stringify(original);
+  saveFromMenu.current = () => {
+    if (dirty) void save();
+  };
   const notify = draft.notifications;
 
   const patchNotifications = (patch: Partial<AppConfig["notifications"]>) =>

@@ -3,14 +3,15 @@
 //! 放在 lib 而不是 Tauri 命令里，是为了让无头自检程序（`deveco-selftest`）
 //! 能对真实的 `deveco serve` 跑一遍 UI 实际使用的读写路径。
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use std::time::Duration;
 
-/// 单次请求上限。
+/// 普通请求上限。
 ///
 /// 本机 CLI 正常时全部在毫秒级；卡住通常是 CLI 自身被阻塞（例如锁屏时访问
 /// 钥匙串）。300s 会让界面无限转圈，30s 能把「卡住」变成界面上看得见的错误。
+/// 会话 prompt 走 `/prompt_async`，长任务不再受这个上限影响。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn client() -> Result<reqwest::Client> {
@@ -79,10 +80,16 @@ pub async fn send(
         }
     }
 
-    let response = request
-        .send()
-        .await
-        .with_context(|| format!("请求 {url} 失败"))?;
+    let response = request.send().await.map_err(|err| {
+        if err.is_timeout() {
+            // 不要把内部端口、session id 和 directory 原样丢给用户
+            anyhow!("本地服务 {} 秒未响应", REQUEST_TIMEOUT.as_secs())
+        } else if err.is_connect() {
+            anyhow!("无法连接本地服务")
+        } else {
+            anyhow!("请求本地服务失败：{}", err.without_url())
+        }
+    })?;
     let status = response.status();
     let text = response.text().await.context("读取响应失败")?;
     if !status.is_success() {

@@ -762,3 +762,184 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 修复：在 `src-tauri/Cargo.toml` 的 `[package]` 增加 `default-run = "deveco-desktop"`。
 验证：`npm run dev` 能编译并拉起 `target/debug/deveco-desktop`；`npm --prefix ui run build`、
 `cargo test` 40 项通过。
+
+### 22.16 发送超时与 synthetic 文本（2026-11-07）
+
+现象（用户截图）：
+
+1. 发送消息约 30s 后弹出「发送失败」，错误串里完整打印了内部端口、session id 与工作区路径；
+2. `@README.md` 的用户气泡把 CLI 合成的 `Called the Read tool with the following input: …` 当成了正文。
+
+根因：
+
+- `POST /session/{id}/message` 是同步接口，会等到整个 agent loop 结束才返回；代理层统一 30s 超时，
+  正常长任务必然被截断，且失败提示直接暴露内部 URL。
+- CLI 为 `file://` 引用展开文件时，会在用户消息里写入 `synthetic: true` 的 text part（Read 调用说明与文件内容），
+  这些 part 是给模型看的内部上下文，前端此前没有过滤。
+
+修复：
+
+- `api.prompt` 改走 `POST /session/{id}/prompt_async`；204 只表示「已接收」，用户/助手消息与阶段全部由全局 SSE 渲染。
+- `store.send` 不再等待并解析 message 响应，避免长连接；失败时仍恢复原文。
+- `ChatView` 的正文、复制、会话查找和文件 chip 统一排除 `synthetic` part；助手渲染也跳过。
+- `http.rs` 的传输错误不再拼接完整 URL：超时显示「本地服务 30 秒未响应」，连接失败显示「无法连接本地服务」。
+
+契约实测（本机 CLI 0.2.5，临时会话 + `noReply`，不消耗模型 token）：
+
+| 操作 | 结果 |
+|---|---|
+| `POST /session/{id}/prompt_async` | 约 5ms 返回 204，空响应体 |
+| 返回后 100ms 读取 `/session/{id}/message` | 用户 text part 已落库 |
+| 同时订阅 `/global/event` | 依次收到 `session.created`、`message.updated`、`message.part.updated` 等事件 |
+| 清理 | 临时会话已 `DELETE /session/{id}`，未留下测试数据 |
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）通过。
+- `cargo test` 40 项通过；`deveco-selftest` 13/13 通过，其中代理读写改为异步 prompt + 等待落库。
+- `npm run build:debug` 后启动真实 `.app`，打开截图中的会话：用户气泡仅显示原始输入与 `README.md` 引用
+  （当时为独立 chip，22.19 起改为正文内链接），`Called the Read tool…` 已不再出现
+  （证据：`.agent-temp/screens/synthetic-hidden-top.png`）。
+
+未验证：
+
+- 没有为了验证再跑一轮真实模型的 UI prompt（避免消耗 token）；`prompt_async` 的接收、落库与 SSE 事件链已用
+  `noReply` 验证，真实模型的长任务仍走同一异步入口。
+- `cargo fmt --check` 仍会报告仓库既有的 `selftest.rs/server.rs/ipc.rs/main.rs/supervise.rs` 格式差异；
+  本次修改的 `http.rs` 单独 `rustfmt --check` 通过，未顺手改动无关文件。
+
+### 22.17 消息流聚合展示（2026-11-07）
+
+现象：真实会话里每一步助手消息都重复一个 `D` 头像；每个工具调用各占一张全宽卡片并重复「完成」徽标。
+一次包含十几个 `read/bash` 的任务会把正文挤成一条很长的卡片列表，阅读时很难区分“步骤”和“工具”。
+
+改动（只调整渲染，不改 CLI 契约与 `store` 数据结构）：
+
+- 相邻 `tool` part 在 `AssistantBlocks` 内合并为一个 `tool-group`，每个工具保留可展开的输入/输出；
+  完成态只显示绿色对勾，运行态用旋转指示 +「执行中」，失败自动展开并标红。
+- 同一轮里的连续助手消息只保留第一个 `D` 头像，后续步骤在头像列显示时间线节点；连续消息之间收紧 4px。
+- 思考折叠从「思考过程 · 0.3s」改为星形图标 +「思考」+ 耗时，运行中显示「思考中」并展开。
+- 最后一条进行中的助手消息在正文末尾显示三点脉冲状态；运行中的工具或思考本身已有状态，不重复提示。
+- Markdown 标题层级、图片和分隔线样式补齐；`prefers-reduced-motion` 下关闭旋转/脉冲动画。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）通过。
+- 预览页（真实组件 + 假数据）亮/暗色、工具展开、连续两步消息均截图核对：
+  `.agent-temp/screens/stream-light-d.png`、`.agent-temp/screens/stream-dark-a.png`、
+  `.agent-temp/screens/stream-dark-open.png`、`.agent-temp/screens/stream-live.png`。
+- `npm run build:debug` 后启动真实 `.app`，打开已有会话核对实际渲染：
+  `.agent-temp/screens/real-stream-final-top.png`、`.agent-temp/screens/real-stream-final.png`。
+
+未验证：
+
+- 没有为验证再发送真实模型 prompt（避免消耗 token）；流式状态用预览页的 `message.updated` 事件模拟。
+- 组件级没有浏览器自动化断言，分组逻辑目前由 `tsc` 与截图人工核对覆盖。
+
+### 22.18 用户气泡与附件错位（2026-11-07）
+
+现象（用户截图）：`@README.md` 消息的 `README.md` chip 右边缘明显比气泡更靠右，气泡里的短句也被提前折成两行。
+
+根因：`.bubble-wrap` 已经限制 `max-width: 76%`，`.bubble` 又限制了一次 `max-width: 76%`；
+气泡实际只有消息列宽的约 58%，且作为块元素贴在 wrap 左侧，附件 chip 仍贴 wrap 右侧，两条右边线因此错开。
+
+修复：
+
+- `.bubble` 改为 `width: fit-content; max-width: 100%; margin-left: auto`，外层仍保留 76% 上限；
+  短消息按内容宽度收缩并靠右，长消息到 76% 才换行，附件 chip 与气泡右边缘对齐。
+- 用户消息与助手消息的「复制 / 时间」从 `top/right` 悬浮角标改成消息下方 18px 元数据行；
+  默认 `opacity: 0` 且 `pointer-events: none`，悬停时淡入，避免压住附件 chip 或助手消息首行。
+- 助手 `.assistant-body` 增加 `position: relative` 作为元数据行定位基准；消息间距仍沿用原有 18px。
+- 用户气泡与助手正文右边缘统一到同一条消息列右边线，右侧不再出现两套对齐线。
+
+验证：
+
+- `npm run check` 通过：前端构建 + 40 项 Rust 单测。
+- 预览页核对附件 chip、气泡、复制/时间元数据和助手悬停态：
+  `.agent-temp/screens/bubble-fix-top.png`、`.agent-temp/screens/bubble-fix-hover2.png`、
+  `.agent-temp/screens/assistant-hover.png`。
+- `npm run build:debug` 后启动真实 `.app`，已有 `@README.md` 会话中 chip 与气泡右边缘已对齐：
+  `.agent-temp/screens/real-bubble-final.png`。
+
+未验证：
+
+- 没有在真实应用里用鼠标逐像素复核 hover 元数据；该状态由预览页的同款组件截图核对。
+
+### 22.19 文件引用内联链接与附件预览（2026-11-07）
+
+现象：用户消息正文已经包含 `@README.md`，上方又显示一个同名 `README.md` chip；chip 是 `<span>`，
+没有点击行为，既重复信息又违反「看起来能点就应能点」的交互直觉。
+
+契约实测（本机 CLI 0.2.5）：真实消息返回 `text: "@README.md 根据项目现状，更新该文件"`、
+`synthetic` 的 Read 调用说明，以及 `file: { filename: "README.md", url: "data:…" }`；
+发送时的 `source: { type: "file", path, text }` **没有保留**。因此展示层不能用 source 范围，
+只能从正文 `@token` 解析引用，再用 `filename` 匹配 file part。
+
+改动：
+
+- 抽出 `ui/src/mentions.ts`，Composer 与 ChatView 共用 `parseMentions` 和 `MAX_REFS`。
+- 用户消息里匹配到 file part 的 `@path` / `@"path with space"` 渲染为正文内蓝色 `file-ref` 按钮；
+  点击调用新的 `store.openFile(path)`，自动打开右栏、切到「文件」tab 并预览该相对路径。
+  未匹配到 file part 的引用保持纯文本；复制、查找仍使用原始 `messageText`。
+- 没有正文锚点的上传附件保留独立项，但改成可点击的 `message-attachment` 按钮：
+  图片和文本在应用内预览层查看，其他类型给出「暂不支持预览」和下载入口；
+  图片附件同时显示 18px 缩略图。预览层支持 Esc、点击遮罩关闭。
+- `messageHasContent` / 引用匹配都不依赖 CLI 的 `source` 元数据，避免升级 CLI 后再次错位。
+
+验证：
+
+- `npm run check` 通过：前端构建（含 `tsc --noEmit`）+ 40 项 Rust 单测。
+- 预览页验证：`@README.md` 只剩正文链接、无同名 chip；点击后右栏打开 `README.md` 预览；
+  上传的 SVG 以缩略图展示并可打开预览层，`notes.txt` 以文本预览；下载入口可见。
+- 真实 `.app` 打开已有会话，`@README.md` 为蓝色内联链接；点击后右栏「文件」显示
+  `README.md # DevEco Code Desktop …` 内容：
+  `.agent-temp/screens/real-ref-link2.png`、`.agent-temp/screens/real-ref-preview.png`。
+
+未验证：
+
+- 下载入口在 Tauri WebView 中是否真正落盘未验证；当前只验证了按钮存在。
+- 没有在真实 `.app` 中上传二进制/图片附件验证预览层；上传预览由预览页同款组件覆盖。
+
+### 22.20 全局右键菜单（2026-11-07）
+
+需求：把 WebView 默认右键菜单替换为应用自绘的统一菜单，并让工作区、会话、消息、代码、输入框、
+右侧文件和空白区域暴露各自可用的动作。首版只做常用安全动作，不引入 fork、revert、重新生成、
+分享或删除消息；删除会话继续走行内二次确认。
+
+实现：
+
+- 新增 `ui/src/contextMenu.tsx`：单个 React portal 菜单宿主，菜单模型为扁平 item/separator，
+  支持图标、快捷键、禁用、危险项和异步动作；位置自动向左/向上翻转并夹紧视口，支持方向键、Home/End、
+  Enter/Space、Esc、Shift+F10，关闭后恢复原焦点。
+- 菜单接管采用三层顺序：可编辑控件的 capture 菜单 → 场景组件自己的 `onContextMenu` → window 空白区兜底；
+  设置输入框、Composer、搜索框和重命名框始终得到撤销/重做/剪切/复制/粘贴/全选，同时不会让默认菜单漏出。
+- 新增 `@tauri-apps/plugin-clipboard-manager` 与 `tauri-plugin-clipboard-manager`，
+  capability 开放 `allow-read-text` / `allow-write-text`；剪切/粘贴恢复目标控件和选区后用 WebKit
+  编辑命令执行，确保 React controlled textarea 的输入值和撤销栈同步更新（真实应用中已实测粘贴成功）。
+- `ipc::reveal_path` 用 `open -R` 在 Finder 定位文件；`api.revealPath` 供右侧文件、diff、预览和引用 chip 共用。
+- 工作区、会话、右侧文件/diff/预览、消息内联文件引用均接入菜单；文件通过新的 `reference-file`
+  类型化应用事件插入 Composer，复用 `mentions.ts` 的 `@` 解析，处理空格引号、去重、光标位置、
+  8 个引用上限和工作区不匹配提示。
+- 顺手修正会话操作目录：`renameSession` / `archiveSession` / `deleteSession` / `exportSession`
+  显式接收所属 `directory`，普通工作区会话的打开改用 `openSessionIn(dir, id)`；此前非当前工作区的
+  会话按钮可能用当前目录发请求。
+- `showNotice` 支持自定义持续时间并清理旧计时器，右键复制使用 1.6s 短提示。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `cargo test` 40 项通过；
+  `npm run build:debug` 出真实 `.app`，退出重开后加载新构建。
+- 真实 `.app`（agent-desktop 驱动）验证工作区菜单、会话菜单、消息菜单、Composer 编辑菜单、
+  文件菜单、设置弹层菜单；亮色与暗色各截图核对，菜单不会被窗口边缘裁切：
+  `.agent-temp/context-menu/workspace-dark-final.png`、`session-light.png`、
+  `composer-edit-light.png`、`file-light-2.png`、`message-dark.png`、
+  `settings-context-dark.png`。
+- Composer 菜单实测「粘贴」把剪贴板 `粘贴测试ABC` 写入 textarea 并更新 React 状态，`⌘A` + Backspace
+  可清空；右侧文件菜单「引用到输入框」实测插入 `@README.md `，重复选择保持单个引用并聚焦输入框。
+- 工作区菜单「复制工作区路径」写入系统剪贴板，`pbpaste` 返回当前工作区绝对路径。
+
+未验证：
+
+- 未实际点击 Finder 定位项（命令已编译、API 已接，避免改变当前 Finder 窗口）；
+  未逐项测试剪切/重做、链接打开、代码块复制和快捷键面板关闭菜单。
+- 自绘菜单不提供子菜单、分组标题或原生日志；仅 macOS 验证，未测试 Windows/Linux。

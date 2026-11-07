@@ -753,14 +753,50 @@ button.ws-row:hover {
 .row.user {
   justify-content: flex-end;
 }
+.row.assistant.continued {
+  margin-top: -4px;
+}
 .bubble {
-  max-width: 76%;
+  width: fit-content;
+  max-width: 100%;
+  margin-left: auto;
   background: var(--panel-2);
   border: 1px solid var(--border-soft);
   border-radius: 12px;
   padding: 9px 13px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* 消息里的 @ 文件引用：正文内联链接，点击后在右栏打开 */
+.bubble .file-ref {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  text-decoration: none;
+  white-space: inherit;
+  word-break: inherit;
+  cursor: pointer;
+}
+.bubble .file-ref:hover {
+  text-decoration: underline;
+}
+.bubble .file-ref:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+.avatar-slot {
+  flex: none;
+  width: 24px;
+  display: flex;
+  justify-content: center;
+  margin-top: 2px;
 }
 .avatar {
   flex: none;
@@ -773,11 +809,19 @@ button.ws-row:hover {
   place-items: center;
   font-size: 11px;
   color: var(--text-dim);
-  margin-top: 2px;
+}
+/* 同一轮里的后续步骤不再重复画头像，只留一个时间线节点。 */
+.step-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 9px;
+  border-radius: 50%;
+  background: var(--separator);
 }
 .assistant-body {
   flex: 1;
   min-width: 0;
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -792,17 +836,24 @@ button.ws-row:hover {
 }
 
 /* ---------- 工具/思考/授权 ---------- */
-.tool {
+.tool-group {
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--panel);
   overflow: hidden;
 }
+.tool {
+  background: transparent;
+}
+.tool + .tool {
+  border-top: 1px solid var(--border-soft);
+}
 .tool > summary {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 7px 10px;
+  min-height: 31px;
+  padding: 5px 9px;
   cursor: pointer;
   list-style: none;
   font-size: 12px;
@@ -810,42 +861,59 @@ button.ws-row:hover {
   transition: background 0.12s ease;
 }
 .tool > summary:hover {
-  background: var(--panel-2);
+  background: var(--row-hover);
 }
 .tool > summary::-webkit-details-marker {
   display: none;
 }
-.tool-dot {
-  width: 6px;
-  height: 6px;
+.tool-state {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.tool-state.completed {
+  color: var(--ok);
+}
+.tool-state.error {
+  color: var(--danger);
+}
+.tool-state.running {
+  color: var(--warn);
+}
+.tool-pending {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--muted);
+  border: 1.2px solid currentColor;
 }
-.tool.running .tool-dot {
-  background: var(--warn);
-  animation: pulse 1.1s ease-in-out infinite;
+.tool-spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.4px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 0.72s linear infinite;
 }
-.tool.completed .tool-dot {
-  background: var(--ok);
-}
-.tool.error .tool-dot {
-  background: var(--danger);
-}
-@keyframes pulse {
-  50% {
-    opacity: 0.35;
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 .tool-name {
   font-weight: 550;
-  color: var(--text);
+  color: var(--text-dim);
+  font-size: 11.5px;
 }
 .tool-status {
   font-size: 10.5px;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 0 5px;
+  color: var(--warn);
+  white-space: nowrap;
+}
+.tool-status.error {
+  color: var(--danger);
 }
 .tool-title {
   flex: 1;
@@ -855,9 +923,19 @@ button.ws-row:hover {
   color: var(--muted);
   font-size: 11.5px;
 }
+.tool-caret {
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.tool > summary:hover .tool-caret,
+.tool[open] > summary .tool-caret {
+  opacity: 0.7;
+}
 .tool-body {
   border-top: 1px solid var(--border-soft);
-  padding: 8px 10px;
+  background: var(--bg-soft);
+  padding: 8px 11px 9px;
 }
 .tool-label {
   font-size: 10.5px;
@@ -874,27 +952,88 @@ button.ws-row:hover {
   overflow: auto;
 }
 .reasoning {
-  margin-bottom: 2px;
-  border-left: 2px solid var(--border);
-  padding-left: 10px;
+  margin: -1px 0 0;
   color: var(--muted);
   font-size: 12px;
 }
 .reasoning > summary {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 5px;
+  height: 24px;
+  padding: 0 7px 0 2px;
+  border-radius: 6px;
   cursor: pointer;
   list-style: none;
   font-size: 11.5px;
   color: var(--muted);
+  transition: background 0.12s ease, color 0.12s ease;
 }
 .reasoning > summary:hover {
+  background: var(--row-hover);
   color: var(--text-dim);
 }
+.reasoning-icon {
+  color: var(--muted);
+}
+.reasoning.running .reasoning-icon,
+.reasoning.running .reasoning-label {
+  color: var(--warn);
+}
+.reasoning-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 .reasoning-body {
-  margin-top: 6px;
+  margin: 5px 0 2px 7px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
   white-space: pre-wrap;
+}
+.live-activity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  padding-left: 2px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.live-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.live-dots i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: live-dot 1.1s ease-in-out infinite;
+}
+.live-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.live-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes live-dot {
+  0%,
+  70%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-spinner,
+  .live-dots i {
+    animation: none;
+  }
 }
 .permission {
   max-width: 860px;
@@ -965,8 +1104,19 @@ button.ws-row:hover {
 .markdown h3,
 .markdown h4 {
   margin: 18px 0 8px;
-  font-size: 13.5px;
   font-weight: 600;
+}
+.markdown h1 {
+  font-size: 15.5px;
+}
+.markdown h2 {
+  font-size: 14.5px;
+}
+.markdown h3 {
+  font-size: 13.5px;
+}
+.markdown h4 {
+  font-size: 13px;
 }
 .markdown ul,
 .markdown ol {
@@ -983,11 +1133,20 @@ button.ws-row:hover {
 .markdown a:hover {
   text-decoration: underline;
 }
+.markdown img {
+  max-width: 100%;
+  border-radius: 8px;
+}
 .markdown blockquote {
   margin: 0 0 10px;
   padding: 2px 12px;
   border-left: 2px solid var(--border);
   color: var(--muted);
+}
+.markdown hr {
+  margin: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
 }
 .markdown table {
   border-collapse: collapse;
@@ -1710,25 +1869,23 @@ button.ws-row:hover {
   position: relative;
   max-width: 76%;
 }
-.msg-actions {
+.msg-meta {
   position: absolute;
-  top: -8px;
-  right: -8px;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-.bubble-wrap:hover .msg-actions {
-  opacity: 1;
-}
-.assistant-actions {
+  top: calc(100% + 1px);
+  right: 0;
+  height: 18px;
   display: flex;
-  justify-content: flex-end;
-  height: 0;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.12s ease;
 }
-.row.assistant:hover .assistant-actions {
+.bubble-wrap:hover .msg-meta,
+.row.assistant:hover .msg-meta {
   opacity: 1;
+  pointer-events: auto;
 }
 .copy-btn {
   width: auto;
@@ -1741,29 +1898,17 @@ button.ws-row:hover {
   background: var(--panel);
   border: 1px solid var(--border);
 }
+.msg-meta .copy-btn {
+  height: 18px;
+  padding: 0 6px;
+}
 
 /* ---------- 时间戳 ---------- */
 .msg-time {
   font-size: 10px;
   color: var(--muted);
-  opacity: 0;
-  transition: opacity 0.12s ease;
+  line-height: 18px;
   white-space: nowrap;
-}
-.bubble-wrap:hover .msg-time,
-.row.assistant:hover .msg-time {
-  opacity: 1;
-}
-.bubble-wrap .msg-time {
-  margin-top: 3px;
-  text-align: right;
-}
-.assistant-actions {
-  gap: 8px;
-  align-items: center;
-}
-.assistant-actions .msg-time {
-  line-height: 20px;
 }
 
 /* ---------- @ 文件引用 ---------- */
@@ -1933,6 +2078,75 @@ kbd {
   color: var(--ok-fg);
 }
 
+/* ---------- 全局右键菜单 ---------- */
+.context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 216px;
+  max-width: 292px;
+  max-height: min(520px, calc(100vh - 16px));
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 16px 42px rgba(var(--shadow-rgb), 0.46);
+  outline: none;
+  user-select: none;
+}
+.context-menu-item {
+  width: 100%;
+  height: 29px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--text-dim);
+  text-align: left;
+  white-space: nowrap;
+}
+.context-menu-item.active {
+  background: var(--row-active);
+  color: var(--text);
+}
+.context-menu-item:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
+}
+.context-menu-item.danger {
+  color: var(--danger);
+}
+.context-menu-item.danger.active {
+  background: var(--danger-bg-soft);
+  color: var(--danger-fg);
+}
+.context-menu-icon {
+  flex: none;
+  width: 16px;
+  display: grid;
+  place-items: center;
+  color: currentColor;
+}
+.context-menu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.context-menu-shortcut {
+  flex: none;
+  margin-left: 18px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.context-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
 /* ---------- 侧栏拖拽 ---------- */
 .sidebar-resizer {
   position: absolute;
@@ -2012,6 +2226,115 @@ kbd {
   gap: 6px;
   margin-bottom: 6px;
   justify-content: flex-end;
+}
+.message-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 3px 8px;
+  line-height: 1.5;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.message-attachment:hover {
+  background: var(--panel-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.message-attachment:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 1px;
+}
+.message-attachment img {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex: none;
+}
+.message-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 上传附件预览 ---------- */
+.attachment-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  background: var(--scrim);
+}
+.attachment-viewer {
+  width: min(860px, 100%);
+  max-height: min(82vh, 900px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-soft);
+  box-shadow: 0 24px 70px rgba(var(--shadow-rgb), 0.55);
+}
+.attachment-viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px 9px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.attachment-viewer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.attachment-viewer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: auto;
+  padding: 14px;
+}
+.attachment-viewer-body img {
+  max-width: 100%;
+  max-height: 64vh;
+  margin: auto;
+  border-radius: 8px;
+}
+.attachment-viewer-body pre {
+  width: 100%;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 11.5px/1.65 ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--text-dim);
+}
+.attachment-viewer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.attachment-viewer-actions .ghost-btn {
+  text-decoration: none;
 }
 
 /* ---------- Agent / Variant / 斜杠 ---------- */

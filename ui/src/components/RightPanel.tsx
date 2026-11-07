@@ -1,5 +1,15 @@
 import { useMemo } from "react";
 import { useApp } from "../store";
+import {
+  copyItem,
+  referenceItem,
+  revealItem,
+  useContextMenu,
+} from "../contextMenu";
+import {
+  absoluteWorkspacePath,
+  relativeWorkspacePath,
+} from "../paths";
 import { Icon } from "./Icon";
 
 export default function RightPanel() {
@@ -16,13 +26,51 @@ export default function RightPanel() {
   const enterDir = useApp((s) => s.enterDir);
   const goUpDir = useApp((s) => s.goUpDir);
   const setFileQuery = useApp((s) => s.setFileQuery);
+  const directory = useApp((s) => s.directory);
+  const newSession = useApp((s) => s.newSession);
+  const toggleRight = useApp((s) => s.toggleRight);
+  const openSettings = useApp((s) => s.openSettings);
+  const menu = useContextMenu();
 
   const shown = useMemo(() => files, [files]);
 
   if (!open) return null;
 
   return (
-    <aside className="right">
+    <aside
+      className="right"
+      onContextMenu={(event) =>
+        menu.open(
+          event,
+          [
+            {
+              type: "item",
+              label: "新建会话",
+              icon: "compose",
+              shortcut: "⌘N",
+              disabled: !directory,
+              onSelect: () => newSession(),
+            },
+            {
+              type: "item",
+              label: "切换右侧面板",
+              icon: "panel-right",
+              shortcut: "⌘⇧B",
+              onSelect: toggleRight,
+            },
+            { type: "separator" },
+            {
+              type: "item",
+              label: "打开设置",
+              icon: "sliders",
+              shortcut: "⌘,",
+              onSelect: openSettings,
+            },
+          ],
+          { label: "右侧面板菜单" },
+        )
+      }
+    >
       <div className="right-tabs">
         <button className={tab === "changes" ? "active" : ""} onClick={() => setTab("changes")}>
           变更 {diff.length > 0 && <span className="count">{diff.length}</span>}
@@ -37,24 +85,106 @@ export default function RightPanel() {
           {diff.length === 0 && (
             <div className="empty-line">没有检测到文件变更（非 git 仓库或暂无改动）</div>
           )}
-          {diff.map((entry) => (
-            <details key={entry.file} className="diff-entry">
-              <summary>
-                <Icon name="chevron-right" size={14} className="caret" />
-                <span className="diff-file">{entry.file}</span>
-                <span className="diff-stat">
-                  {entry.additions ? <em className="add">+{entry.additions}</em> : null}
-                  {entry.deletions ? <em className="del">-{entry.deletions}</em> : null}
-                </span>
-              </summary>
-              {entry.patch && <pre className="patch">{entry.patch}</pre>}
-            </details>
-          ))}
+          {diff.map((entry) => {
+            const relative = directory
+              ? relativeWorkspacePath(directory, entry.file)
+              : entry.file;
+            const absolute = directory
+              ? absoluteWorkspacePath(directory, relative)
+              : entry.file;
+            return (
+              <details
+                key={entry.file}
+                className="diff-entry"
+                onContextMenu={(event) => {
+                  const details = event.currentTarget;
+                  menu.open(
+                    event,
+                    [
+                      {
+                        type: "item",
+                        label: details.open ? "收起变更" : "展开变更",
+                        icon: details.open ? "chevron-down" : "chevron-right",
+                        onSelect: () => {
+                          details.open = !details.open;
+                        },
+                      },
+                      { type: "separator" },
+                      copyItem("复制文件路径", relative, "文件路径已复制"),
+                      ...(directory
+                        ? [
+                            copyItem("复制绝对路径", absolute, "绝对路径已复制"),
+                            revealItem("在 Finder 中显示", absolute),
+                            referenceItem("引用到输入框", directory, relative),
+                          ]
+                        : []),
+                      ...(entry.patch
+                        ? [
+                            { type: "separator" as const },
+                            copyItem("复制补丁", entry.patch, "补丁已复制"),
+                          ]
+                        : []),
+                    ],
+                    { label: "变更文件菜单" },
+                  );
+                }}
+              >
+                <summary>
+                  <Icon name="chevron-right" size={14} className="caret" />
+                  <span className="diff-file">{entry.file}</span>
+                  <span className="diff-stat">
+                    {entry.additions ? <em className="add">+{entry.additions}</em> : null}
+                    {entry.deletions ? <em className="del">-{entry.deletions}</em> : null}
+                  </span>
+                </summary>
+                {entry.patch && <pre className="patch">{entry.patch}</pre>}
+              </details>
+            );
+          })}
         </div>
       )}
 
       {tab === "files" && preview && (
-        <div className="right-body preview">
+        <div
+          className="right-body preview"
+          onContextMenu={(event) => {
+            const relative = directory
+              ? relativeWorkspacePath(directory, preview.path)
+              : preview.path;
+            const absolute = directory
+              ? absoluteWorkspacePath(directory, relative)
+              : preview.path;
+            menu.open(
+              event,
+              [
+                ...(preview.type === "text"
+                  ? [
+                      copyItem("复制全部内容", preview.content, "文件内容已复制"),
+                      { type: "separator" as const },
+                    ]
+                  : []),
+                ...(directory
+                  ? [
+                      referenceItem("引用到输入框", directory, relative),
+                      revealItem("在 Finder 中显示", absolute),
+                    ]
+                  : []),
+                copyItem("复制相对路径", relative, "相对路径已复制"),
+                ...(directory
+                  ? [copyItem("复制绝对路径", absolute, "绝对路径已复制")]
+                  : []),
+                { type: "separator" },
+                {
+                  type: "item",
+                  label: "返回文件列表",
+                  icon: "arrow-left",
+                  onSelect: closePreview,
+                },
+              ],
+              { label: "文件预览菜单" },
+            );
+          }}
+        >
           <div className="preview-head">
             <button
               className="mini-btn"
@@ -101,26 +231,56 @@ export default function RightPanel() {
             </div>
           )}
           <div className="file-list">
-            {shown.map((file) => (
-              <button
-                key={file.path}
-                className="file-row"
-                title={file.path}
-                onClick={() =>
-                  file.type === "directory" ? void enterDir(file.path) : void openPreview(file.path)
-                }
-              >
-                <span className="file-kind">
-                  <Icon
-                    name={file.type === "directory" ? "folder" : "file"}
-                    size={15}
-                    className="file-icon"
-                  />
-                </span>
-                <span className="file-name">{file.name}</span>
-                {file.ignored && <span className="file-tag">ignored</span>}
-              </button>
-            ))}
+            {shown.map((file) => {
+              const relative = directory
+                ? relativeWorkspacePath(directory, file.path)
+                : file.path;
+              const absolute =
+                file.absolute ??
+                (directory ? absoluteWorkspacePath(directory, relative) : file.path);
+              const isDirectory = file.type === "directory";
+              const open = () =>
+                isDirectory ? enterDir(file.path) : openPreview(file.path);
+              return (
+                <button
+                  key={file.path}
+                  className="file-row"
+                  title={file.path}
+                  onClick={() => void open()}
+                  onContextMenu={(event) =>
+                    menu.open(
+                      event,
+                      [
+                        {
+                          type: "item",
+                          label: isDirectory ? "打开目录" : "打开预览",
+                          icon: isDirectory ? "folder" : "file",
+                          onSelect: open,
+                        },
+                        ...(!isDirectory && directory
+                          ? [referenceItem("引用到输入框", directory, relative)]
+                          : []),
+                        { type: "separator" },
+                        revealItem("在 Finder 中显示", absolute),
+                        copyItem("复制相对路径", relative, "相对路径已复制"),
+                        copyItem("复制绝对路径", absolute, "绝对路径已复制"),
+                      ],
+                      { label: isDirectory ? "目录菜单" : "文件菜单" },
+                    )
+                  }
+                >
+                  <span className="file-kind">
+                    <Icon
+                      name={isDirectory ? "folder" : "file"}
+                      size={15}
+                      className="file-icon"
+                    />
+                  </span>
+                  <span className="file-name">{file.name}</span>
+                  {file.ignored && <span className="file-tag">ignored</span>}
+                </button>
+              );
+            })}
             {shown.length === 0 && <div className="empty-line">没有文件</div>}
           </div>
         </div>

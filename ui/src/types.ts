@@ -32,6 +32,8 @@ export interface Part {
   messageID: string;
   type: string;
   text?: string;
+  /** CLI 生成的内部上下文（如 file:// 引用展开的 Read 调用），不面向用户展示 */
+  synthetic?: boolean;
   tool?: string;
   callID?: string;
   state?: ToolState;

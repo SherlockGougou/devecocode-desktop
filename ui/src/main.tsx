@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { initTheme } from "./theme";
+import { ContextMenuProvider } from "./contextMenu";
 import App from "./App";
 import "./styles.css";
 
@@ -9,6 +10,8 @@ initTheme();
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <ContextMenuProvider>
+      <App />
+    </ContextMenuProvider>
   </React.StrictMode>,
 );

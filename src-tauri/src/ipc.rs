@@ -267,6 +267,23 @@ pub fn open_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 在 Finder 中定位文件或目录，而不是直接打开它。
+#[tauri::command]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("路径不存在：{path}"));
+    }
+    let status = std::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .status()
+        .map_err(|err| format!("在 Finder 中定位失败：{err}"))?;
+    if !status.success() {
+        return Err(format!("在 Finder 中定位失败：{status}"));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
     app.restart();
