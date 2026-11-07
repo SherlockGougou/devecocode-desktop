@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
 mod ipc;
+mod menubar;
 mod windrag;
 
 #[derive(Clone, Serialize)]
@@ -41,6 +42,7 @@ fn main() {
         .manage(ipc::ServerConn::default())
         .manage(ipc::SettingsState::default())
         .manage(ipc::BackendCtl::default())
+        .manage(ipc::DeviceAwakeState::default())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -54,6 +56,7 @@ fn main() {
             ipc::startup_directory,
             ipc::path_exists,
             ipc::pick_workspace_folder,
+            ipc::list_font_families,
             ipc::get_settings,
             ipc::save_settings,
             ipc::probe_cli,
@@ -62,28 +65,56 @@ fn main() {
             ipc::quick_look_thumbnail,
             ipc::restart_app,
             ipc::export_session,
+            ipc::device_probe,
+            ipc::device_capture,
+            ipc::device_awake_status,
+            ipc::device_set_awake,
+            ipc::device_screenshot_bytes,
+            ipc::device_copy_screenshot,
+            ipc::device_save_screenshot,
             ipc::set_window_title,
             ipc::backend_state,
             ipc::retry_backend,
+            deveco_desktop::git::git_state,
+            deveco_desktop::git::git_commit,
+            deveco_desktop::git::git_push,
+            menubar::sync_tray_context,
             windrag::window_outer_position,
             windrag::move_window_by_pointer
         ])
         .setup(|app| {
             build_menu(app.handle())?;
-            build_tray(app.handle())?;
+            menubar::build(app.handle())?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move { run_backend(handle).await });
             Ok(())
         })
         .on_menu_event(|app, event| {
             // 菜单动作交给前端执行（前端才掌握会话状态）
-            let _ = app.emit("deveco://menu", event.id().0.clone());
+            const APP_MENU_ACTIONS: &[&str] = &[
+                "new_session",
+                "export_session",
+                "settings",
+                "toggle_right",
+                "shortcuts",
+                "open_logs",
+                "reload_ui",
+            ];
+            let id = event.id().0.as_str();
+            if APP_MENU_ACTIONS.contains(&id) {
+                let _ = app.emit("deveco://menu", id.to_string());
+            }
         })
         .on_window_event(|window, event| {
             // 关窗不退进程：托盘常驻，避免每次唤起都重启 161MB 的服务
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                menubar::sync_tray_visibility_soon(window.app_handle());
+            } else if let tauri::WindowEvent::Focused(_) = event {
+                // 非常驻模式跟随窗口的真实可见状态：隐藏 / 最小化时显示入口，
+                // 重新出现在前台后收起。仅失焦但窗口仍可见时不应误显示。
+                menubar::sync_tray_visibility(window.app_handle());
             }
         })
         .build(tauri::generate_context!())
@@ -94,6 +125,7 @@ fn main() {
         // 这类退出路径不会走到 Rust 的 Drop。
         if let tauri::RunEvent::Exit = event {
             SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+            handle.state::<ipc::DeviceAwakeState>().shutdown_blocking();
             shutdown_server(handle);
         }
     });
@@ -143,6 +175,7 @@ async fn run_backend(app: AppHandle) {
             tokio::select! {
                 _ = tokio::time::sleep(wait) => {}
                 _ = ctl.retry.notified() => log::info!("用户要求立即重试后端"),
+                _ = ctl.restart.notified() => log::info!("用户要求重启本地服务"),
             }
             continue;
         }
@@ -164,7 +197,7 @@ async fn run_backend(app: AppHandle) {
         let project = supervisor.project_label();
         let base = supervisor.base_url().unwrap_or_default().to_string();
 
-        stream_until_down(
+        let outcome = stream_until_down(
             &app,
             &url,
             auth.as_deref(),
@@ -174,6 +207,17 @@ async fn run_backend(app: AppHandle) {
             &ctl,
         )
         .await;
+
+        if matches!(outcome, StreamOutcome::Restart) {
+            log::info!("用户要求重启本地服务，回收当前进程组");
+            supervisor.shutdown().await;
+            if shutting_down() {
+                return;
+            }
+            publish_phase(&app, Phase::Recovering { attempt: 1 });
+            attempt = 1;
+            continue;
+        }
 
         if shutting_down() {
             log::info!("应用正在退出，跳过重建");
@@ -256,9 +300,16 @@ fn publish_phase(app: &AppHandle, phase: Phase) {
     if let Some(ctl) = app.try_state::<ipc::BackendCtl>() {
         ctl.set_phase(payload.clone());
     }
+    menubar::set_phase(app, phase.clone());
     if let Err(err) = app.emit("deveco://backend", payload) {
         log::warn!("广播后端状态失败：{err}");
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamOutcome {
+    Down,
+    Restart,
 }
 
 /// 订阅事件流，直到确认后端已不可用（能自愈的断线在这里退避重连，不回到外层）。
@@ -270,7 +321,7 @@ async fn stream_until_down(
     base: &str,
     supervisor: &mut Supervisor,
     ctl: &ipc::BackendCtl,
-) {
+) -> StreamOutcome {
     let mut debouncer = Debouncer::new(DEBOUNCE_WINDOW);
     let mut attempts: u32 = 0;
 
@@ -278,10 +329,15 @@ async fn stream_until_down(
         let started = Instant::now();
         let inner_app = app.clone();
         let inner_project = project.to_string();
-        let result = sse::stream_once(url, auth, |event| {
-            handle_event(&inner_app, &inner_project, &mut debouncer, &event);
-        })
-        .await;
+        let result = tokio::select! {
+            result = sse::stream_once(url, auth, |event| {
+                handle_event(&inner_app, &inner_project, &mut debouncer, &event);
+            }) => result,
+            _ = ctl.restart.notified() => {
+                log::info!("用户要求重启本地服务，结束当前事件流");
+                return StreamOutcome::Restart;
+            }
+        };
 
         // 连接活得够久说明刚才只是短暂抖动，重新计数，避免退避越拖越长
         if started.elapsed() > Duration::from_secs(30) {
@@ -301,13 +357,13 @@ async fn stream_until_down(
         // 只有确认进程已经退出时才交给监管者重建。
         if supervisor.liveness() == server::Liveness::Exited {
             log::warn!("serve 进程已退出，交给监管者重建：{base}");
-            return;
+            return StreamOutcome::Down;
         }
         if !server::health(base, auth).await {
             match supervisor.liveness() {
                 server::Liveness::Exited => {
                     log::warn!("健康检查未通过且 serve 已退出，交给监管者重建：{base}");
-                    return;
+                    return StreamOutcome::Down;
                 }
                 server::Liveness::Running => {
                     log::warn!(
@@ -316,7 +372,7 @@ async fn stream_until_down(
                 }
                 server::Liveness::Unowned => {
                     log::warn!("复用实例健康检查未通过，交给监管者重新接管：{base}");
-                    return;
+                    return StreamOutcome::Down;
                 }
             }
         }
@@ -325,7 +381,11 @@ async fn stream_until_down(
             _ = tokio::time::sleep(supervise::backoff(attempts)) => {}
             _ = ctl.retry.notified() => {
                 log::info!("用户要求立即重启后端，结束当前重连循环");
-                return;
+                return StreamOutcome::Down;
+            }
+            _ = ctl.restart.notified() => {
+                log::info!("用户要求重启本地服务，结束当前重连循环");
+                return StreamOutcome::Restart;
             }
         }
     }
@@ -360,6 +420,7 @@ fn handle_event(app: &AppHandle, project: &str, debouncer: &mut Debouncer, event
         data: payload,
     };
     let notice = classify(&scoped);
+    menubar::observe_notice(app, &notice);
     match notice {
         Notice::Ignored => return,
         Notice::Connected => {
@@ -425,38 +486,7 @@ fn focus_main(app: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
-}
-
-fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-    use tauri::tray::TrayIconBuilder;
-
-    let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-    let hide = MenuItem::with_id(app, "hide", "隐藏到托盘", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出 DevEco Code", true, None::<&str>)?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&show, &hide, &separator, &quit])?;
-
-    let mut builder = TrayIconBuilder::with_id("main")
-        .tooltip("DevEco Code")
-        .menu(&menu)
-        .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" => focus_main(app),
-            "hide" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
-                }
-            }
-            "quit" => app.exit(0),
-            _ => {}
-        });
-
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
-    }
-    builder.build(app)?;
-    Ok(())
+    menubar::sync_tray_visibility(app);
 }
 
 /// 日志同时写入 `~/Library/Logs/DevEco Code Desktop/app.log`。

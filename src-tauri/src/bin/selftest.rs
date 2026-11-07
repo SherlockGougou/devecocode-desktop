@@ -102,6 +102,10 @@ async fn main() {
         server::health(&base, None).await,
         base.clone(),
     );
+    match check_btw_route(&base).await {
+        Ok(detail) => report.pass("OpenAPI 包含 Agent 提交信息接口", detail),
+        Err(err) => report.fail("OpenAPI 包含 Agent 提交信息接口", err),
+    }
 
     // 4. 项目目录（通知文案里会用）
     let project_dir = supervisor
@@ -288,6 +292,25 @@ async fn proxy_roundtrip(base: &str) -> Result<String, String> {
         .map_err(|err| format!("清理会话失败：{err:#}"))?;
 
     Ok(format!("会话 {session_id}，读到 {count} 条消息，已清理"))
+}
+
+/// 只校验路由契约存在，不调用模型，因此自检不消耗 token。
+async fn check_btw_route(base: &str) -> Result<String, String> {
+    let doc = http::send(base, None, "GET", "/doc", &[], None)
+        .await
+        .map_err(|err| format!("读取 OpenAPI 失败：{err:#}"))?;
+    let paths = doc
+        .get("paths")
+        .and_then(|value| value.as_object())
+        .ok_or("OpenAPI 未返回 paths")?;
+    let has_route = paths
+        .get("/session/{sessionID}/btw")
+        .and_then(|value| value.get("post"))
+        .is_some();
+    if !has_route {
+        return Err("当前 CLI 未暴露 POST /session/{sessionID}/btw".into());
+    }
+    Ok("POST /session/{sessionID}/btw".into())
 }
 
 async fn wait_for_connected(url: &str) -> Result<Duration, String> {

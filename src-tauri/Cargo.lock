@@ -848,6 +848,7 @@ name = "deveco-desktop"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "core-foundation",
  "dirs 6.0.0",
  "env_logger",
  "futures-util",

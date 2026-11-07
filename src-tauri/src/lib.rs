@@ -6,7 +6,10 @@
 pub mod backend;
 pub mod cli;
 pub mod config;
+pub mod device;
 pub mod events;
+pub mod fonts;
+pub mod git;
 pub mod http;
 pub mod notify;
 pub mod preview;

@@ -4,10 +4,16 @@
 //! 1. WebView 不直连 `127.0.0.1:<port>`，绕开 CORS 与 ATS；
 //! 2. 连接信息（base_url / 口令）只存在于 Rust 侧，前端拿不到也用不着。
 
-use deveco_desktop::http;
+use deveco_desktop::{device, http};
 use serde_json::{Map, Value};
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tauri::image::Image;
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 /// 后端连接信息。启动完成后由主进程写入。
 #[derive(Default)]
@@ -88,13 +94,133 @@ pub async fn server_request(
 #[derive(Clone)]
 pub struct BackendCtl {
     pub retry: std::sync::Arc<tokio::sync::Notify>,
+    /// 强制重建：即使当前后端健康，也结束事件流并回收进程组
+    pub restart: std::sync::Arc<tokio::sync::Notify>,
     pub phase: std::sync::Arc<Mutex<serde_json::Value>>,
+}
+
+/// 设备“充电时保持亮屏”的前端开关和后端轮询状态。
+///
+/// 开关只保存在本次应用进程内；应用退出时会释放设备侧 keep-on 锁，
+/// 避免把用户原本的息屏时间永久改掉。
+#[derive(Clone, Default)]
+pub struct DeviceAwakeState {
+    inner: Arc<DeviceAwakeInner>,
+}
+
+#[derive(Default)]
+struct DeviceAwakeInner {
+    enabled: Mutex<HashMap<String, bool>>,
+    active: Mutex<HashMap<String, bool>>,
+    monitor_started: AtomicBool,
+}
+
+impl DeviceAwakeState {
+    pub fn enabled_for(&self, serial: &str) -> bool {
+        self.inner
+            .enabled
+            .lock()
+            .ok()
+            .and_then(|values| values.get(serial).copied())
+            .unwrap_or(false)
+    }
+
+    fn set_enabled(&self, serial: &str, enabled: bool) {
+        if let Ok(mut values) = self.inner.enabled.lock() {
+            values.insert(serial.to_string(), enabled);
+        }
+    }
+
+    fn active_for(&self, serial: &str) -> bool {
+        self.inner
+            .active
+            .lock()
+            .ok()
+            .and_then(|values| values.get(serial).copied())
+            .unwrap_or(false)
+    }
+
+    fn set_active(&self, serial: &str, active: bool) {
+        if let Ok(mut values) = self.inner.active.lock() {
+            values.insert(serial.to_string(), active);
+        }
+    }
+
+    fn enabled_serials(&self) -> Vec<String> {
+        self.inner
+            .enabled
+            .lock()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|(serial, enabled)| enabled.then_some(serial.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn ensure_monitor(&self) {
+        if self.inner.monitor_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let state = self.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                for serial in state.enabled_serials() {
+                    match device::battery_plugged(&serial).await {
+                        Ok(charging) => {
+                            let active = state.active_for(&serial);
+                            if charging && !active {
+                                if let Err(err) = device::set_keep_on(&serial, true).await {
+                                    log::warn!("开启设备亮屏锁失败（{serial}）：{err}");
+                                } else {
+                                    state.set_active(&serial, true);
+                                }
+                            } else if !charging && active {
+                                if let Err(err) = device::set_keep_on(&serial, false).await {
+                                    log::warn!("释放设备亮屏锁失败（{serial}）：{err}");
+                                } else {
+                                    state.set_active(&serial, false);
+                                }
+                            }
+                        }
+                        Err(err) => log::debug!("查询设备充电状态失败（{serial}）：{err}"),
+                    }
+                }
+            }
+        });
+    }
+
+    /// 应用退出时同步清理，调用方在 `RunEvent::Exit` 中使用。
+    pub fn shutdown_blocking(&self) {
+        let mut serials = self.enabled_serials();
+        if let Ok(values) = self.inner.active.lock() {
+            for (serial, active) in values.iter() {
+                if *active && !serials.contains(serial) {
+                    serials.push(serial.clone());
+                }
+            }
+        }
+        for serial in serials {
+            if let Err(err) = device::set_keep_on_blocking(&serial, false) {
+                log::warn!("退出时释放设备亮屏锁失败（{serial}）：{err}");
+            }
+        }
+        if let Ok(mut values) = self.inner.enabled.lock() {
+            values.clear();
+        }
+        if let Ok(mut values) = self.inner.active.lock() {
+            values.clear();
+        }
+    }
 }
 
 impl Default for BackendCtl {
     fn default() -> Self {
         Self {
             retry: Default::default(),
+            restart: Default::default(),
             // 未收到第一次广播前前端就可能来查，必须是合法初值而不是 null
             phase: std::sync::Arc::new(Mutex::new(serde_json::json!({
                 "state": "starting",
@@ -122,6 +248,11 @@ impl BackendCtl {
     /// 唤醒主循环的退避等待（没有等待者时是空操作，下一次等待会立刻通过）
     pub fn request_retry(&self) {
         self.retry.notify_one();
+    }
+
+    /// 强制结束当前事件流，让监管循环回收并重建 serve。
+    pub fn request_restart(&self) {
+        self.restart.notify_one();
     }
 }
 
@@ -248,6 +379,15 @@ pub fn data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|dir| dir.join("DevEco Code Desktop"))
 }
 
+/// 枚举系统字体家族，供设置页的下拉框使用。
+#[tauri::command]
+pub async fn list_font_families() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(deveco_desktop::fonts::available_font_families)
+        .await
+        .map_err(|err| format!("字体列表任务失败：{err}"))?
+        .map_err(|err| format!("{err:#}"))
+}
+
 #[tauri::command]
 pub fn get_settings(state: tauri::State<'_, SettingsState>) -> Result<Value, String> {
     let config = state
@@ -266,6 +406,7 @@ pub fn get_settings(state: tauri::State<'_, SettingsState>) -> Result<Value, Str
 /// 保存设置。返回 `restartRequired`：CLI 路径、端口、口令这类改动要重启才能生效。
 #[tauri::command]
 pub fn save_settings(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SettingsState>,
     config: Value,
 ) -> Result<Value, String> {
@@ -288,6 +429,7 @@ pub fn save_settings(
             .map_err(|err| format!("写入配置失败：{err}"))?;
     }
     *state.config.lock().map_err(|_| "配置锁中毒")? = incoming.clone();
+    crate::menubar::apply_preferences(&app, incoming.menu_bar.clone());
     log::info!("设置已保存（restartRequired={restart_required}）");
 
     Ok(serde_json::json!({
@@ -353,6 +495,150 @@ pub async fn quick_look_thumbnail(path: String) -> Result<tauri::ipc::Response, 
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
     app.restart();
+}
+
+// ---------------------------------------------------------------------------
+// HarmonyOS 设备截图（hdc）
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn device_probe() -> Result<device::DeviceProbe, String> {
+    device::probe().await
+}
+
+#[tauri::command]
+pub async fn device_capture(serial: Option<String>) -> Result<device::DeviceShot, String> {
+    let dir = device::screenshots_dir()?;
+    device::capture(serial.as_deref(), &dir).await
+}
+
+#[tauri::command]
+pub async fn device_awake_status(
+    state: tauri::State<'_, DeviceAwakeState>,
+    serial: String,
+) -> Result<device::DeviceAwakeStatus, String> {
+    let enabled = state.enabled_for(&serial);
+    let active = state.active_for(&serial);
+    let charging = device::battery_plugged(&serial).await.unwrap_or(active);
+    Ok(device::DeviceAwakeStatus {
+        enabled,
+        charging,
+        active,
+    })
+}
+
+#[tauri::command]
+pub async fn device_set_awake(
+    state: tauri::State<'_, DeviceAwakeState>,
+    serial: String,
+    enabled: bool,
+) -> Result<device::DeviceAwakeStatus, String> {
+    state.set_enabled(&serial, enabled);
+    state.ensure_monitor();
+
+    let charging = match device::battery_plugged(&serial).await {
+        Ok(charging) => charging,
+        Err(err) if enabled => {
+            state.set_enabled(&serial, false);
+            return Err(err);
+        }
+        Err(_) => false,
+    };
+
+    if enabled {
+        if let Err(err) = device::set_keep_on(&serial, charging).await {
+            state.set_enabled(&serial, false);
+            state.set_active(&serial, false);
+            return Err(err);
+        }
+        state.set_active(&serial, charging);
+    } else {
+        if let Err(err) = device::set_keep_on(&serial, false).await {
+            return Err(err);
+        }
+        state.set_active(&serial, false);
+    }
+
+    Ok(device::DeviceAwakeStatus {
+        enabled,
+        charging,
+        active: state.active_for(&serial),
+    })
+}
+
+#[tauri::command]
+pub fn device_screenshot_bytes(path: String) -> Result<tauri::ipc::Response, String> {
+    let path = device::validate_screenshot_path(&path)?;
+    let bytes = std::fs::read(&path).map_err(|err| format!("读取设备截图失败：{err}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// 复制设备截图到系统剪贴板。
+///
+/// 设备截图保存为 JPEG 以控制体积；剪贴板插件只接受 PNG/ICO 字节，
+/// 所以复制时临时转成 PNG，写完立即删除。
+#[tauri::command]
+pub async fn device_copy_screenshot(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<(), String> {
+    let source = device::validate_screenshot_path(&path)?;
+    let temp_dir = tempfile::tempdir().map_err(|err| format!("创建临时目录失败：{err}"))?;
+    let png = temp_dir.path().join("device-screenshot.png");
+    let mut command = tokio::process::Command::new("sips");
+    command
+        .args(["-s", "format", "png"])
+        .arg(&source)
+        .arg("--out")
+        .arg(&png)
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(8), command.output())
+        .await
+        .map_err(|_| "转换截图格式超时".to_string())?
+        .map_err(|err| format!("调用 sips 失败：{err}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "转换截图格式失败（{}）：{}",
+            output.status,
+            detail.trim()
+        ));
+    }
+    let image = Image::from_path(&png).map_err(|err| format!("读取 PNG 截图失败：{err}"))?;
+    app.clipboard()
+        .write_image(&image)
+        .map_err(|err| format!("写入剪贴板失败：{err}"))?;
+    log::info!("设备截图已复制到剪贴板");
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn device_save_screenshot(
+    app: tauri::AppHandle,
+    path: String,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    let source = device::validate_screenshot_path(&path)?;
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("保存设备截图")
+            .set_file_name(default_name)
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|err| format!("保存对话框异常：{err}"))?;
+
+    let Some(target) = picked else {
+        return Ok(None);
+    };
+    let target = target
+        .into_path()
+        .map_err(|err| format!("无法读取保存路径：{err}"))?;
+    std::fs::copy(&source, &target).map_err(|err| format!("保存截图失败：{err}"))?;
+    log::info!("设备截图已另存为：{}", target.display());
+    Ok(Some(target.to_string_lossy().to_string()))
 }
 
 /// 窗口标题跟随当前会话，方便 Mission Control / 程序坞里辨认

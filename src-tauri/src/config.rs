@@ -14,6 +14,7 @@ pub struct Config {
     pub cli_path: Option<String>,
     pub notifications: Notifications,
     pub server: ServerCfg,
+    pub menu_bar: MenuBarCfg,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,12 +44,29 @@ pub struct ServerCfg {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MenuBarCfg {
+    /// 单色使用 macOS template 图像，自动适配浅色 / 深色菜单栏
+    pub icon_style: MenuBarIconStyle,
+    /// 关闭后仅在主窗口隐藏时显示，避免长期占用菜单栏空间
+    pub always_visible: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MenuBarIconStyle {
+    Monochrome,
+    Color,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             cli_path: None,
             notifications: Notifications::default(),
             server: ServerCfg::default(),
+            menu_bar: MenuBarCfg::default(),
         }
     }
 }
@@ -73,6 +91,15 @@ impl Default for ServerCfg {
             preferred_port: 0,
             secure: false,
             password: None,
+        }
+    }
+}
+
+impl Default for MenuBarCfg {
+    fn default() -> Self {
+        Self {
+            icon_style: MenuBarIconStyle::Monochrome,
+            always_visible: true,
         }
     }
 }
@@ -165,6 +192,8 @@ mod tests {
         assert!(!cfg.notifications.on_step);
         assert_eq!(cfg.server.hostname, "127.0.0.1");
         assert_eq!(cfg.server.preferred_port, 0);
+        assert_eq!(cfg.menu_bar.icon_style, MenuBarIconStyle::Monochrome);
+        assert!(cfg.menu_bar.always_visible);
     }
 
     #[test]
@@ -175,10 +204,22 @@ mod tests {
         cfg.cli_path = Some("/opt/homebrew/bin/deveco".into());
         cfg.notifications.on_step = true;
         cfg.server.preferred_port = 4096;
+        cfg.menu_bar.icon_style = MenuBarIconStyle::Color;
+        cfg.menu_bar.always_visible = false;
         cfg.save(&path).unwrap();
 
         let loaded = Config::load(&path);
         assert_eq!(loaded, cfg);
+    }
+
+    #[test]
+    fn 菜单栏偏好使用稳定字段名() {
+        let mut cfg = Config::default();
+        cfg.menu_bar.icon_style = MenuBarIconStyle::Color;
+        cfg.menu_bar.always_visible = false;
+        let value = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(value["menu_bar"]["icon_style"], "color");
+        assert_eq!(value["menu_bar"]["always_visible"], false);
     }
 
     #[test]
@@ -203,6 +244,8 @@ mod tests {
         assert_eq!(cfg.server.preferred_port, 5000);
         assert_eq!(cfg.server.hostname, "127.0.0.1");
         assert!(cfg.notifications.enabled);
+        assert_eq!(cfg.menu_bar.icon_style, MenuBarIconStyle::Monochrome);
+        assert!(cfg.menu_bar.always_visible);
     }
 
     #[test]

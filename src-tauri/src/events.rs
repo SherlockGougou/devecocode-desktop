@@ -16,6 +16,7 @@ pub enum Notice {
         detail: String,
     },
     PermissionResolved {
+        request_id: String,
         session_id: String,
         reply: String,
     },
@@ -110,6 +111,9 @@ pub fn classify(ev: &SseEvent) -> Notice {
             detail: list_at(&props, "/resources"),
         },
         "permission.replied" | "permission.v2.replied" => Notice::PermissionResolved {
+            request_id: str_at(&props, "/requestID")
+                .or_else(|| str_at(&props, "/id"))
+                .unwrap_or_default(),
             session_id: str_at(&props, "/sessionID").unwrap_or_default(),
             reply: str_at(&props, "/reply").unwrap_or_else(|| "resolved".into()),
         },
@@ -226,6 +230,20 @@ mod tests {
     }
 
     #[test]
+    fn 授权回复带回请求id用于清除菜单栏计数() {
+        assert_eq!(
+            classify(&ev(
+                r#"{"type":"permission.replied","properties":{"requestID":"per_9","sessionID":"ses_9","reply":"once"}}"#,
+            )),
+            Notice::PermissionResolved {
+                request_id: "per_9".into(),
+                session_id: "ses_9".into(),
+                reply: "once".into(),
+            }
+        );
+    }
+
+    #[test]
     fn 识别空闲与错误() {
         assert_eq!(
             classify(&ev(
@@ -307,6 +325,7 @@ mod tests {
         assert!(render(&Notice::Connected, "p").is_none());
         assert!(render(
             &Notice::PermissionResolved {
+                request_id: "per".into(),
                 session_id: "s".into(),
                 reply: "once".into()
             },
