@@ -1,7 +1,7 @@
 //! 无头自检：不打开窗口，验证「发现 CLI → 拉起 serve → 健康检查 → 订阅事件流
 //! → 事件分类/通知文案」整条链路，最后验证进程能被正确回收。
 //!
-//! 用法：`cargo run --bin deveco-selftest`
+//! 用法：`cargo run --features selftest --bin deveco-selftest`
 //! 退出码 0 表示全部通过。
 
 use deveco_desktop::{
@@ -114,7 +114,9 @@ async fn main() {
     report.check(
         "读取 /api/location",
         project_dir.is_some(),
-        project_dir.clone().unwrap_or_else(|| "未返回 project.directory".into()),
+        project_dir
+            .clone()
+            .unwrap_or_else(|| "未返回 project.directory".into()),
     );
 
     // 5. UI 实际使用的读写路径：建会话 → 写消息 → 读消息 → 删会话
@@ -433,8 +435,10 @@ async fn self_check_failed_boot(report: &mut Report) {
         return;
     }
 
-    let mut cfg = Config::default();
-    cfg.cli_path = Some(script.to_string_lossy().to_string());
+    let cfg = Config {
+        cli_path: Some(script.to_string_lossy().to_string()),
+        ..Default::default()
+    };
     let mut supervisor = Supervisor::new(cfg);
     let started = Instant::now();
     let result = supervisor.ensure().await;

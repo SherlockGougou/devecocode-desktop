@@ -741,11 +741,10 @@ fn icon_rgba(status: TrayStatus, style: MenuBarIconStyle) -> Vec<u8> {
             }
             let alpha = (covered as f32 / samples * 255.0).round() as u8;
             let index = ((y as usize) * size + x as usize) * 4;
-            if covered > 0 {
-                rgba[index] = (red / covered) as u8;
-                rgba[index + 1] = (green / covered) as u8;
-                rgba[index + 2] = (blue / covered) as u8;
-            }
+            let divisor = covered.max(1);
+            rgba[index] = (red / divisor) as u8;
+            rgba[index + 1] = (green / divisor) as u8;
+            rgba[index + 2] = (blue / divisor) as u8;
             rgba[index + 3] = alpha;
         }
     }
@@ -857,6 +856,8 @@ fn inside_rounded_rect(
     distance(x, y, cx, cy) <= radius
 }
 
+// 纯几何函数，参数与坐标一一对应；拆成结构体反而降低调试点可读性。
+#[allow(clippy::too_many_arguments)]
 fn inside_rounded_rect_stroke(
     x: f32,
     y: f32,

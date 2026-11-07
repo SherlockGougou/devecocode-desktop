@@ -1,0 +1,66 @@
+name: Bug 报告
+description: 报告可复现的崩溃、错误行为或界面问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先确认问题能在最新 `main` 或最新 Release 上复现，并移除日志中的凭据、私有路径和 token。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题描述
+      description: 实际发生了什么，期望是什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开…
+        2. 点击…
+        3. 观察到…
+    validations:
+      required: true
+
+  - type: input
+    id: app-version
+    attributes:
+      label: 应用版本
+      placeholder: 0.2.0 或 commit SHA
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS 版本
+      placeholder: "例如 macOS 15.1 (24B83)"
+    validations:
+      required: true
+
+  - type: input
+    id: cli-version
+    attributes:
+      label: deveco CLI 版本
+      description: 运行 `deveco --version` 的结果
+      placeholder: 0.2.5
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志与截图
+      description: 可附 `~/Library/Logs/DevEco Code Desktop/app.log` 中的相关片段或界面截图。
+      render: shell
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已移除凭据、token、私有仓库地址和个人敏感信息。
+          required: true

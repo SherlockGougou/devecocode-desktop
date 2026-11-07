@@ -1,7 +1,7 @@
-//! 桌面主进程：拉起 CLI、加载官方 Web UI、把 Agent 事件转成系统通知。
+//! 桌面主进程：拉起并监管本机 CLI、承载 React 三栏界面、把 Agent 事件转成系统通知。
 //!
-//! 设计要点：**不重写 UI**。官方 `deveco serve` 的 `/` 已经是完整的 DevEco Code
-//! Web 应用，这里只做进程生命周期、托盘、单实例与通知。
+//! Tauri 只负责窗口、菜单栏、SSE 中继和后端生命周期；聊天与会话界面位于 `ui/`，
+//! 所有 CLI 请求经 `ipc::server_request` 代理。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -180,7 +180,13 @@ async fn run_backend(app: AppHandle) {
             continue;
         }
 
-        apply_backend(&app, &supervisor, &loaded, config_path.as_ref(), &mut ready_once);
+        apply_backend(
+            &app,
+            &supervisor,
+            &loaded,
+            config_path.as_ref(),
+            &mut ready_once,
+        );
 
         let Some(url) = supervisor.global_event_url() else {
             attempt = attempt.saturating_add(1);
@@ -620,7 +626,6 @@ fn install_signal_handlers() {
     }
 }
 
-
 /// 原生菜单：把常用动作挂到 macOS 菜单栏与快捷键上
 fn build_menu(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
@@ -677,11 +682,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
                 .accelerator("CmdOrCtrl+/")
                 .build(app)?,
         )
+        .item(&MenuItemBuilder::with_id("open_logs", "打开日志目录").build(app)?)
         .item(
-            &MenuItemBuilder::with_id("open_logs", "打开日志目录")
+            &MenuItemBuilder::with_id("reload_ui", "重新加载界面")
+                .accelerator("CmdOrCtrl+R")
                 .build(app)?,
         )
-        .item(&MenuItemBuilder::with_id("reload_ui", "重新加载界面").accelerator("CmdOrCtrl+R").build(app)?)
         .build()?;
 
     let window_menu = SubmenuBuilder::new(app, "窗口")

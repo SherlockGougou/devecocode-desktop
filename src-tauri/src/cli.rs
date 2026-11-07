@@ -74,7 +74,7 @@ pub fn parse_version(raw: &str) -> Option<Version> {
     })
 }
 
-/// 我们依赖的是 opencode 系的 v1 契约（/session、/event、/permission）。
+/// 我们依赖的是 opencode 系的 v1 契约（/session、/global/event、/permission）。
 /// 低于 0.2.0 时提示用户升级，但不阻断——契约更老也更简单。
 pub fn is_below_supported(v: Version) -> bool {
     v < Version {

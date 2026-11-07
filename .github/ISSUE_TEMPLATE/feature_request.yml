@@ -1,0 +1,26 @@
+name: 功能建议
+description: 提议新的功能或体验改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 描述当前工作流中的具体痛点，而不是只给实现方案。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 你希望如何解决？如有替代方案也请说明。
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: 边界与影响
+      description: 是否会修改 CLI 契约、权限、数据目录或 macOS 系统集成？

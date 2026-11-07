@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::image::Image;
-use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_plugin_dialog::DialogExt;
 
 /// 后端连接信息。启动完成后由主进程写入。
 #[derive(Default)]
@@ -390,16 +390,8 @@ pub async fn list_font_families() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub fn get_settings(state: tauri::State<'_, SettingsState>) -> Result<Value, String> {
-    let config = state
-        .config
-        .lock()
-        .map_err(|_| "配置锁中毒")?
-        .clone();
-    let runtime = state
-        .runtime
-        .lock()
-        .map_err(|_| "运行信息锁中毒")?
-        .clone();
+    let config = state.config.lock().map_err(|_| "配置锁中毒")?.clone();
+    let runtime = state.runtime.lock().map_err(|_| "运行信息锁中毒")?.clone();
     Ok(serde_json::json!({ "config": config, "runtime": runtime }))
 }
 
@@ -420,8 +412,8 @@ pub fn save_settings(
         )
     };
 
-    let restart_required = previous.cli_path != incoming.cli_path
-        || previous.server != incoming.server;
+    let restart_required =
+        previous.cli_path != incoming.cli_path || previous.server != incoming.server;
 
     if let Some(path) = &path {
         incoming
@@ -553,9 +545,7 @@ pub async fn device_set_awake(
         }
         state.set_active(&serial, charging);
     } else {
-        if let Err(err) = device::set_keep_on(&serial, false).await {
-            return Err(err);
-        }
+        device::set_keep_on(&serial, false).await?;
         state.set_active(&serial, false);
     }
 
@@ -578,10 +568,7 @@ pub fn device_screenshot_bytes(path: String) -> Result<tauri::ipc::Response, Str
 /// 设备截图保存为 JPEG 以控制体积；剪贴板插件只接受 PNG/ICO 字节，
 /// 所以复制时临时转成 PNG，写完立即删除。
 #[tauri::command]
-pub async fn device_copy_screenshot(
-    app: tauri::AppHandle,
-    path: String,
-) -> Result<(), String> {
+pub async fn device_copy_screenshot(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let source = device::validate_screenshot_path(&path)?;
     let temp_dir = tempfile::tempdir().map_err(|err| format!("创建临时目录失败：{err}"))?;
     let png = temp_dir.path().join("device-screenshot.png");

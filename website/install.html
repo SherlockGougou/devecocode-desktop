@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="DevEco Code Desktop 的 macOS 下载、安装、首次打开、CLI 配置、更新与卸载说明。"
+    />
+    <meta name="theme-color" content="#10120f" />
+    <link rel="icon" href="assets/app-icon.png" />
+    <title>安装与使用 · DevEco Code Desktop</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+
+    <header class="site-header">
+      <nav class="nav shell" aria-label="主导航">
+        <a class="brand" href="index.html" aria-label="返回 DevEco Code Desktop 首页">
+          <img src="assets/app-icon.png" alt="" width="32" height="32" />
+          <span>DevEco Code <i>Desktop</i></span>
+        </a>
+        <div class="nav-links">
+          <a href="index.html#features">功能</a>
+          <a href="index.html#workflow">工作流</a>
+          <a href="index.html#install">安装</a>
+          <a href="install.html" aria-current="page">使用说明</a>
+        </div>
+        <div class="nav-actions">
+          <a class="nav-link" data-repo-link href="https://github.com/" target="_blank" rel="noreferrer">
+            GitHub <span aria-hidden="true">↗</span>
+          </a>
+          <a class="button button-small" href="#download">下载</a>
+        </div>
+      </nav>
+    </header>
+
+    <main id="main" class="page-main shell">
+      <div class="page-intro">
+        <a class="back-link" href="index.html"><span aria-hidden="true">←</span> 返回首页</a>
+        <p class="eyebrow"><span class="status-dot"></span> macOS 安装指南</p>
+        <h1>把它放进 Applications，<br />然后开始工作。</h1>
+        <p class="hero-lead">
+          这页覆盖从下载到第一次对话的完整流程，也说明未签名构建在 macOS 上会遇到什么。
+          只从本项目 Releases 下载安装包。
+        </p>
+      </div>
+
+      <div class="page-layout">
+        <article class="page-content">
+          <section>
+            <h2>系统要求</h2>
+            <ul>
+              <li>macOS 12 或更高版本；</li>
+              <li>Apple Silicon 或 Intel Mac；</li>
+              <li>Node.js 与 npm，用于安装 DevEco Code CLI；</li>
+              <li>一个已登录的 DevEco Code CLI。</li>
+            </ul>
+            <p>桌面端不内置 CLI。应用可以启动，但没有 CLI 时无法连接模型或读取会话。</p>
+          </section>
+
+          <section id="download">
+            <h2>下载和安装</h2>
+            <ol>
+              <li>在 <a data-release-link href="https://github.com/">Releases</a> 页面选择适合你的 DMG：</li>
+            </ol>
+            <ul>
+              <li>Apple Silicon：文件名带 <code>aarch64</code> 或 <code>arm64</code>；</li>
+              <li>Intel：文件名带 <code>x64</code> 或 <code>x86_64</code>。</li>
+            </ul>
+            <p>双击 DMG，将 <strong>DevEco Code</strong> 拖入“应用程序”，然后推出磁盘映像。</p>
+          </section>
+
+          <section>
+            <h2>首次打开</h2>
+            <p>
+              当前发布包不是 Apple Developer ID 签名，也没有经过公证。macOS 可能阻止直接双击；
+              这是未签名社区构建的预期行为。
+            </p>
+            <ol>
+              <li>在 Finder 中右键 <code>DevEco Code.app</code>，选择“打开”；</li>
+              <li>在确认对话框中再次选择“打开”；</li>
+              <li>如果仍被阻止，打开“系统设置 → 隐私与安全性”，点击“仍要打开”。</li>
+            </ol>
+            <p>
+              如果系统提示应用“已损坏”，并且你确认安装包来自本项目 Releases，可以移除
+              quarantine 属性：
+            </p>
+            <pre><code>xattr -dr com.apple.quarantine "/Applications/DevEco Code.app"</code></pre>
+            <p>
+              这会绕过 macOS 的隔离检查，只应对你信任且来源明确的安装包使用。不要用它运行
+              来源不明的软件。
+            </p>
+          </section>
+
+          <section>
+            <h2>连接本机 CLI</h2>
+            <p>在终端安装并登录 DevEco Code CLI：</p>
+            <pre><code>npm i -g @deveco/deveco-code
+deveco providers   # 或 deveco auth
+deveco --version</code></pre>
+            <p>
+              应用会按“设置中的路径 → DEVECO_BIN_PATH → 常见安装路径 → login shell → PATH”
+              查找 <code>deveco</code>。如果左栏底部显示 CLI 不可用：
+            </p>
+            <ol>
+              <li>在终端执行 <code>which deveco</code>，确认实际路径；</li>
+              <li>打开应用“设置 → CLI 与服务”；</li>
+              <li>手动选择该可执行文件，保存并重启应用。</li>
+            </ol>
+          </section>
+
+          <section>
+            <h2>开始一个会话</h2>
+            <ol>
+              <li>点击左栏“新建会话”或工作区旁的加号；</li>
+              <li>选择已有工作区，或通过“新建工作区…”选择项目目录；</li>
+              <li>在输入框发送消息，输入 <code>@</code> 可以引用工作区文件；</li>
+              <li>Agent 请求权限时，在对话流末尾选择“允许一次 / 总是允许 / 拒绝”；</li>
+              <li>右侧面板查看变更、文件、任务和 HarmonyOS 设备截图。</li>
+            </ol>
+            <p>
+              关闭主窗口会隐藏到菜单栏，托盘菜单可以重新显示或退出应用。首次读取工作区时，
+              macOS 可能请求文稿目录访问权限。
+            </p>
+          </section>
+
+          <section>
+            <h2>更新与卸载</h2>
+            <p>目前没有自动更新。更新时退出旧版本，下载新的 DMG 并覆盖“应用程序”中的旧应用。</p>
+            <p>
+              卸载时先完全退出应用，再删除 <code>DevEco Code.app</code>。如确认不再需要本地配置、
+              导出和日志，可以手动删除：
+            </p>
+            <pre><code>rm -rf "$HOME/Library/Application Support/DevEco Code Desktop"
+rm -rf "$HOME/Library/Logs/DevEco Code Desktop"</code></pre>
+            <p>
+              不要为了卸载桌面端删除 <code>~/.local/share/deveco/</code>，除非你明确要同时清除
+              CLI 会话数据。
+            </p>
+          </section>
+
+          <section>
+            <h2>常见问题</h2>
+            <h3>提示无法验证开发者</h3>
+            <p>右键“打开”，或在“系统设置 → 隐私与安全性 → 仍要打开”。这是未签名应用的预期提示。</p>
+            <h3>提示应用已损坏</h3>
+            <p>
+              先确认下载来源和架构。仅在确认安装包来自本项目 Releases 时使用上面的
+              <code>xattr</code> 命令；仍无法解决时不要继续运行，重新下载并检查文件。
+            </p>
+            <h3>找不到 CLI</h3>
+            <p>
+              在终端确认 <code>which deveco</code> 和 <code>deveco --version</code>，然后在设置页
+              手动选择路径。GUI 应用不会自动继承交互式 shell 的完整 PATH。
+            </p>
+            <h3>锁屏后没有响应</h3>
+            <p>CLI 在锁屏或休眠时可能阻塞，解锁后恢复。先解锁，再按提示重试。</p>
+            <h3>设备页没有截图</h3>
+            <p>
+              确认手机已开启开发者模式和 USB 调试，<code>hdc</code> 可执行文件在 PATH 或 SDK 中，
+              并在手机上授权本机调试。当前版本只支持单帧截图。
+            </p>
+          </section>
+        </article>
+
+        <aside class="page-aside">
+          <p class="card-kicker">QUICK NOTE</p>
+          <h2>未签名，未公证。</h2>
+          <p>
+            应用保持本地优先和可审查的构建流程，但没有 Apple Developer ID 签名，也没有经过
+            Apple 公证。系统不会替你验证发布者。
+          </p>
+          <a class="button" data-release-link href="https://github.com/">打开 Releases <span aria-hidden="true">↗</span></a>
+          <p class="aside-note">
+            需要帮助？先看 <a class="text-link" data-repo-link href="https://github.com/">GitHub 仓库</a>
+            的 issue 与文档。
+          </p>
+        </aside>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-grid">
+        <div>
+          <a class="brand" href="index.html">
+            <img src="assets/app-icon.png" alt="" width="28" height="28" />
+            <span>DevEco Code <i>Desktop</i></span>
+          </a>
+          <p>为本机 Agent 工作流做一个安静、可靠的 macOS 外壳。</p>
+        </div>
+        <div class="footer-links">
+          <a data-repo-link href="https://github.com/" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+          <a data-release-link href="https://github.com/">Releases</a>
+          <a href="index.html">返回首页</a>
+        </div>
+        <div class="footer-meta">
+          <span>v0.2.0 · macOS 12+</span>
+          <span>© <span data-year>2026</span> DevEco Code Desktop contributors</span>
+        </div>
+      </div>
+      <div class="shell footer-legal">
+        MIT License · 与华为、DevEco 官方无隶属关系。DevEco、HarmonyOS 及相关名称和标识归各自权利人所有。
+      </div>
+    </footer>
+  </body>
+</html>

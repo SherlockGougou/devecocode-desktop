@@ -84,8 +84,10 @@ mod tests {
 
     #[test]
     fn 授权请求优先于其他类别() {
-        let mut cfg = Notifications::default();
-        cfg.on_idle = false;
+        let cfg = Notifications {
+            on_idle: false,
+            ..Default::default()
+        };
         assert!(should_notify(&cfg, &permission("per_1"), true));
         assert!(!should_notify(
             &cfg,
@@ -118,8 +120,10 @@ mod tests {
 
     #[test]
     fn 总开关关闭时全部静默() {
-        let mut cfg = Notifications::default();
-        cfg.enabled = false;
+        let cfg = Notifications {
+            enabled: false,
+            ..Default::default()
+        };
         assert!(!should_notify(&cfg, &permission("per_3"), false));
     }
 

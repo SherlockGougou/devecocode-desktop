@@ -107,7 +107,9 @@ impl Supervisor {
     }
 
     pub fn base_url(&self) -> Option<&str> {
-        self.backend.as_ref().map(|item| item.server.base_url.as_str())
+        self.backend
+            .as_ref()
+            .map(|item| item.server.base_url.as_str())
     }
 
     pub fn auth(&self) -> Option<String> {
@@ -158,9 +160,17 @@ impl Supervisor {
             }
         }
 
-        let action = if self.started_before { "重建" } else { "启动" };
+        let action = if self.started_before {
+            "重建"
+        } else {
+            "启动"
+        };
         log::info!("正在{action}后端…");
-        match Backend::boot(&mut self.cfg, |message| log::info!("{action}后端：{message}")).await {
+        match Backend::boot(&mut self.cfg, |message| {
+            log::info!("{action}后端：{message}")
+        })
+        .await
+        {
             Ok(backend) => {
                 log::info!("后端已就绪：{}", backend.server.base_url);
                 self.backend = Some(backend);
@@ -239,7 +249,10 @@ mod tests {
     #[test]
     fn 错误原因压成单行并截断() {
         let raw = "deveco serve 启动后立即退出。输出：\n\n  [deveco stderr] boom\n\n";
-        assert_eq!(one_line(raw), "deveco serve 启动后立即退出。输出： [deveco stderr] boom");
+        assert_eq!(
+            one_line(raw),
+            "deveco serve 启动后立即退出。输出： [deveco stderr] boom"
+        );
 
         let long = "错误".repeat(200);
         let short = one_line(&long);

@@ -1,8 +1,8 @@
 //! SSE（`text/event-stream`）解析与订阅。
 //!
-//! 服务端的 `/event` 是一行一个 `data: {json}`，中间用空行分隔。这里自己实现
-//! 一个最小解析器而不是引入额外依赖：规则固定、可单测，也不会因为第三方库升级
-//! 带来的行为差异影响通知链路。
+//! 事件流是一行一个 `data: {json}`，中间用空行分隔。这里自己实现一个最小解析器
+//! 而不是引入额外依赖：规则固定、可单测，也不会因为第三方库升级带来的行为差异
+//! 影响通知链路。
 
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
@@ -81,7 +81,7 @@ where
     if let Some(pw) = password {
         req = req.basic_auth("deveco", Some(pw));
     }
-    let resp = req.send().await.context("连接 /event 失败")?;
+    let resp = req.send().await.context("连接事件流失败")?;
     if !resp.status().is_success() {
         bail!("订阅事件流返回 HTTP {}", resp.status());
     }

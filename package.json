@@ -2,16 +2,19 @@
   "name": "deveco-code-desktop",
   "version": "0.2.0",
   "private": true,
-  "description": "DevEco Code 的 macOS 桌面外壳：驱动本机 deveco CLI，复用官方 Web UI，补齐系统通知",
+  "description": "DevEco Code 的 macOS 桌面客户端：驱动本机 deveco CLI，提供自研三栏界面与系统集成",
+  "license": "MIT",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
     "build:debug": "tauri build --debug",
     "icon": "tauri icon src-tauri/icons/source.png",
-    "selftest": "cargo run --manifest-path src-tauri/Cargo.toml --bin deveco-selftest",
+    "tauri": "tauri",
+    "selftest": "cargo run --manifest-path src-tauri/Cargo.toml --features selftest --bin deveco-selftest",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "check:version": "node scripts/check-release-version.mjs",
     "check": "npm --prefix ui run build && cargo test --manifest-path src-tauri/Cargo.toml",
-    "check:selftest": "cargo run --manifest-path src-tauri/Cargo.toml --bin deveco-selftest"
+    "check:selftest": "cargo run --manifest-path src-tauri/Cargo.toml --features selftest --bin deveco-selftest"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.4"

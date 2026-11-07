@@ -1,13 +1,13 @@
 //! `deveco serve` 子进程的生命周期：启动、端口发现、健康检查、退出。
 //!
-//! 官方 CLI 支持 `--port 0` 并在 stdout 打印
-//! `deveco server listening on http://127.0.0.1:<port>`，
-//! 因此这里不假设固定端口，而是解析这一行——这是「跟随官方更新」里最稳的接口之一。
+//! 应用侧先挑选空闲端口并显式传给 CLI；`--port 0` 会被当成“未指定”并落到默认
+//! 4096，不能用来做随机端口。启动后解析 stdout 的
+//! `deveco server listening on http://127.0.0.1:<port>`，不假设固定端口。
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -242,7 +242,9 @@ impl DevEcoServer {
                     } else {
                         tail.join("\n")
                     };
-                    return Err(cleanup(format!("deveco serve 启动后立即退出，输出：{detail}")));
+                    return Err(cleanup(format!(
+                        "deveco serve 启动后立即退出，输出：{detail}"
+                    )));
                 }
                 Ok(Err(err)) => {
                     return Err(cleanup(format!("读取 deveco serve 输出失败：{err}")));

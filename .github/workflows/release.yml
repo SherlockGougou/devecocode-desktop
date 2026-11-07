@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要构建并发布的版本标签，例如 v0.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix ui ci
+
+      - name: Verify version matches tag
+        run: node scripts/check-release-version.mjs "$RELEASE_TAG"
+
+      - name: Build and publish unsigned macOS bundle
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 有意不注入 APPLE_* 证书或公证凭据，保持 ad-hoc 签名。
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: "DevEco Code Desktop ${{ env.RELEASE_TAG }}"
+          releaseBody: |
+            > **这是未使用 Apple Developer ID 签名、未公证的社区构建。**
+            > 首次打开如果被 macOS 拦截，请右键应用图标选择“打开”，或到
+            > “系统设置 → 隐私与安全性”点击“仍要打开”。只从本项目的
+            > Releases 页面下载，不要使用来源不明的镜像。
+
+            ## 安装
+
+            1. 根据 Mac 架构下载对应的 DMG：Apple Silicon 使用 `aarch64`，Intel 使用 `x64`。
+            2. 打开 DMG，把 `DevEco Code` 拖入“应用程序”。
+            3. 安装并登录本机 `deveco` CLI：
+               `npm i -g @deveco/deveco-code`，然后运行 `deveco providers`。
+            4. 首次启动按提示允许文稿目录和通知权限。
+
+            完整说明见仓库的 `docs/installation.md`。
+          releaseDraft: false
+          prerelease: false
+          generateReleaseNotes: true
+          retryAttempts: 2
+          tauriScript: "npm run tauri"
+          args: "--target ${{ matrix.target }}"
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: "DevEco-Code-Desktop-[arch]-[bundle]"

@@ -185,6 +185,24 @@ pub fn render(notice: &Notice, project: &str) -> Option<NoticeText> {
     }
 }
 
+/// 全局事件流（`/global/event`）把每个事件包在 `{ directory, project, payload }` 里。
+/// 返回 (事件所属目录, payload JSON 文本)；已是裸事件时原样返回。
+pub fn unwrap_global(data: &str) -> (Option<String>, String) {
+    let Ok(value) = serde_json::from_str::<Value>(data) else {
+        return (None, data.to_string());
+    };
+    match value.get("payload") {
+        Some(payload) => (
+            value
+                .get("directory")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            payload.to_string(),
+        ),
+        None => (None, data.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,23 +350,5 @@ mod tests {
             "p"
         )
         .is_none());
-    }
-}
-
-/// 全局事件流（`/global/event`）把每个事件包在 `{ directory, project, payload }` 里。
-/// 返回 (事件所属目录, payload JSON 文本)；已是裸事件时原样返回。
-pub fn unwrap_global(data: &str) -> (Option<String>, String) {
-    let Ok(value) = serde_json::from_str::<Value>(data) else {
-        return (None, data.to_string());
-    };
-    match value.get("payload") {
-        Some(payload) => (
-            value
-                .get("directory")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            payload.to_string(),
-        ),
-        None => (None, data.to_string()),
     }
 }

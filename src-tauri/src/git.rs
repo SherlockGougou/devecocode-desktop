@@ -83,11 +83,7 @@ fn git_program() -> &'static str {
     }
 }
 
-async fn run_git(
-    directory: &Path,
-    args: &[&str],
-    timeout: Duration,
-) -> Result<GitOutput, String> {
+async fn run_git(directory: &Path, args: &[&str], timeout: Duration) -> Result<GitOutput, String> {
     let mut command = Command::new(git_program());
     command
         .arg("--no-pager")
@@ -110,10 +106,7 @@ async fn run_git(
             stderr: output.stderr,
         }),
         Ok(Err(err)) => Err(format!("执行 git 失败：{err}")),
-        Err(_) => Err(format!(
-            "git 命令超时（{} 秒）",
-            timeout.as_secs()
-        )),
+        Err(_) => Err(format!("git 命令超时（{} 秒）", timeout.as_secs())),
     }
 }
 
@@ -134,7 +127,10 @@ fn git_error(action: &str, output: &GitOutput) -> String {
 }
 
 fn lines(text: &str) -> Vec<&str> {
-    text.lines().map(str::trim).filter(|line| !line.is_empty()).collect()
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect()
 }
 
 fn parse_status_files(raw: &str) -> Vec<GitFileStatus> {
@@ -244,14 +240,24 @@ async fn read_state(directory: &str) -> Result<GitRepoState, String> {
         return Err(git_error("读取 Git 状态", &status));
     }
     let files = parse_status_files(&status.stdout_text());
-    let untracked = files.iter().filter(|file| file.status == "untracked").count();
+    let untracked = files
+        .iter()
+        .filter(|file| file.status == "untracked")
+        .count();
     let staged = files.iter().filter(|file| file.staged).count();
     let unstaged = files.iter().filter(|file| file.unstaged).count();
 
     let mut additions = 0;
     let mut deletions = 0;
     for args in [
-        &["diff", "--numstat", "--no-ext-diff", "--no-renames", "--", "."][..],
+        &[
+            "diff",
+            "--numstat",
+            "--no-ext-diff",
+            "--no-renames",
+            "--",
+            ".",
+        ][..],
         &[
             "diff",
             "--cached",
@@ -279,7 +285,14 @@ async fn read_state(directory: &str) -> Result<GitRepoState, String> {
     {
         let output = run_git(
             path,
-            &["diff", "--no-index", "--numstat", "--", "/dev/null", &file.path],
+            &[
+                "diff",
+                "--no-index",
+                "--numstat",
+                "--",
+                "/dev/null",
+                &file.path,
+            ],
             Duration::from_secs(10),
         )
         .await?;
@@ -291,12 +304,7 @@ async fn read_state(directory: &str) -> Result<GitRepoState, String> {
 
     let upstream_result = run_git(
         path,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{u}",
-        ],
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
         QUERY_TIMEOUT,
     )
     .await?;
@@ -364,10 +372,7 @@ pub async fn git_state(directory: String) -> Result<GitRepoState, String> {
 
 /// 暂存当前工作区全部改动并提交。不会自动推送，也不会 amend。
 #[tauri::command]
-pub async fn git_commit(
-    directory: String,
-    message: String,
-) -> Result<GitCommandResult, String> {
+pub async fn git_commit(directory: String, message: String) -> Result<GitCommandResult, String> {
     let path = Path::new(&directory);
     let message = message.trim();
     if message.is_empty() {
@@ -401,12 +406,7 @@ pub async fn git_commit(
         _ => return Err(git_error("检查暂存内容", &staged)),
     }
 
-    let commit = run_git(
-        path,
-        &["commit", "-m", message],
-        COMMIT_TIMEOUT,
-    )
-    .await?;
+    let commit = run_git(path, &["commit", "-m", message], COMMIT_TIMEOUT).await?;
     if !commit.success() {
         return Err(git_error("提交", &commit));
     }
@@ -440,12 +440,7 @@ pub async fn git_push(directory: String) -> Result<GitCommandResult, String> {
     let output = if state.upstream.is_some() {
         run_git(path, &["push"], PUSH_TIMEOUT).await?
     } else if let Some(remote) = state.remote.as_deref() {
-        run_git(
-            path,
-            &["push", "-u", remote, branch],
-            PUSH_TIMEOUT,
-        )
-        .await?
+        run_git(path, &["push", "-u", remote, branch], PUSH_TIMEOUT).await?
     } else {
         return Err("当前分支没有 upstream，且找不到可用的 origin 远端".into());
     };
@@ -485,7 +480,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         run(dir.path(), &["init", "-b", "main"]);
         run(dir.path(), &["config", "user.name", "DevEco Test"]);
-        run(dir.path(), &["config", "user.email", "deveco-test@example.invalid"]);
+        run(
+            dir.path(),
+            &["config", "user.email", "deveco-test@example.invalid"],
+        );
         fs::write(dir.path().join("tracked.txt"), "old\n").unwrap();
         run(dir.path(), &["add", "tracked.txt"]);
         run(dir.path(), &["commit", "-m", "initial"]);
@@ -559,12 +557,9 @@ mod tests {
     #[tokio::test]
     async fn 没有改动时拒绝提交() {
         let dir = init_repo();
-        let err = git_commit(
-            dir.path().to_str().unwrap().to_string(),
-            "empty".into(),
-        )
-        .await
-        .unwrap_err();
+        let err = git_commit(dir.path().to_str().unwrap().to_string(), "empty".into())
+            .await
+            .unwrap_err();
         assert!(err.contains("没有可提交"));
     }
 
@@ -572,12 +567,9 @@ mod tests {
     async fn detached_head拒绝提交和推送() {
         let dir = init_repo();
         run(dir.path(), &["checkout", "--detach"]);
-        let commit = git_commit(
-            dir.path().to_str().unwrap().to_string(),
-            "detached".into(),
-        )
-        .await
-        .unwrap_err();
+        let commit = git_commit(dir.path().to_str().unwrap().to_string(), "detached".into())
+            .await
+            .unwrap_err();
         assert!(commit.contains("detached HEAD"));
         let push = git_push(dir.path().to_str().unwrap().to_string())
             .await

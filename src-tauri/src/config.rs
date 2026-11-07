@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     /// 用户手选的 `deveco` 可执行文件路径（最高优先级，覆盖自动探测）
@@ -37,8 +37,8 @@ pub struct ServerCfg {
     pub preferred_port: u16,
     /// 是否为本地 server 设置 Basic Auth 口令。
     ///
-    /// 默认关闭：开启后 WebView 加载官方 UI 需要携带凭据，未验证 WKWebView
-    /// 对 `http://user:pass@host` 的支持，因此先按 CLI 自身的默认行为运行。
+    /// 默认关闭。开启后 Rust 代理访问 CLI 时携带凭据，前端不接触口令。
+    /// 随机口令保存在应用配置中，不是系统钥匙串。
     pub secure: bool,
     /// `secure = true` 时使用的口令；为空则启动阶段随机生成并写回配置
     pub password: Option<String>,
@@ -58,17 +58,6 @@ pub struct MenuBarCfg {
 pub enum MenuBarIconStyle {
     Monochrome,
     Color,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            cli_path: None,
-            notifications: Notifications::default(),
-            server: ServerCfg::default(),
-            menu_bar: MenuBarCfg::default(),
-        }
-    }
 }
 
 impl Default for Notifications {
@@ -200,12 +189,21 @@ mod tests {
     fn 配置可往返读写() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/config.json");
-        let mut cfg = Config::default();
-        cfg.cli_path = Some("/opt/homebrew/bin/deveco".into());
-        cfg.notifications.on_step = true;
-        cfg.server.preferred_port = 4096;
-        cfg.menu_bar.icon_style = MenuBarIconStyle::Color;
-        cfg.menu_bar.always_visible = false;
+        let cfg = Config {
+            cli_path: Some("/opt/homebrew/bin/deveco".into()),
+            notifications: Notifications {
+                on_step: true,
+                ..Default::default()
+            },
+            server: ServerCfg {
+                preferred_port: 4096,
+                ..Default::default()
+            },
+            menu_bar: MenuBarCfg {
+                icon_style: MenuBarIconStyle::Color,
+                always_visible: false,
+            },
+        };
         cfg.save(&path).unwrap();
 
         let loaded = Config::load(&path);
@@ -214,9 +212,13 @@ mod tests {
 
     #[test]
     fn 菜单栏偏好使用稳定字段名() {
-        let mut cfg = Config::default();
-        cfg.menu_bar.icon_style = MenuBarIconStyle::Color;
-        cfg.menu_bar.always_visible = false;
+        let cfg = Config {
+            menu_bar: MenuBarCfg {
+                icon_style: MenuBarIconStyle::Color,
+                always_visible: false,
+            },
+            ..Default::default()
+        };
         let value = serde_json::to_value(&cfg).unwrap();
         assert_eq!(value["menu_bar"]["icon_style"], "color");
         assert_eq!(value["menu_bar"]["always_visible"], false);
@@ -249,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn 默认不启用口令以兼容官方界面() {
+    fn 默认不启用本地服务口令() {
         let mut cfg = Config::default();
         assert!(!cfg.server.secure);
         assert_eq!(cfg.effective_password(), None);
@@ -257,8 +259,13 @@ mod tests {
 
     #[test]
     fn 开启安全后口令生成稳定且可复用() {
-        let mut cfg = Config::default();
-        cfg.server.secure = true;
+        let mut cfg = Config {
+            server: ServerCfg {
+                secure: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let pw = cfg.effective_password().unwrap();
         assert_eq!(pw.len(), 32);
         assert!(pw.chars().all(|c| c.is_ascii_alphanumeric()));
