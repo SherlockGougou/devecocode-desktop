@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import type { Attachment, MentionRef } from "../types";
 import { api } from "../api";
 import { useApp } from "../store";
@@ -6,6 +6,13 @@ import { MAX_REFS, parseMentions } from "../mentions";
 import { onAppEvent } from "../appEvents";
 import { copyItem, revealItem, useContextMenu } from "../contextMenu";
 import { absoluteWorkspacePath, relativeWorkspacePath } from "../paths";
+import {
+  MAX_ATTACHMENTS,
+  MAX_ATTACHMENT_BYTES,
+  blobToAttachment,
+  clipboardImageToAttachment,
+  pastedImageName,
+} from "../attachments";
 import { Icon } from "./Icon";
 
 /** 弹层最多展示多少条候选 */
@@ -46,11 +53,25 @@ function loadMentionFiles(directory: string, query: string): Promise<string[]> {
   return api.searchFiles(directory, query);
 }
 
+function workspaceName(path: string | null) {
+  if (!path) return "选择工作区";
+  const parts = path.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+function normalizePickerPath(path: string) {
+  return path === "/" ? path : path.replace(/\/+$/, "");
+}
+
 export default function Composer() {
   const send = useApp((s) => s.send);
   const stop = useApp((s) => s.stop);
   const streaming = useApp((s) => s.streaming);
   const directory = useApp((s) => s.directory);
+  const sessionID = useApp((s) => s.sessionID);
+  const projects = useApp((s) => s.projects);
+  const changeDraftWorkspace = useApp((s) => s.changeDraftWorkspace);
+  const pickWorkspaceFolder = useApp((s) => s.pickWorkspaceFolder);
   const models = useApp((s) => s.models);
   const agents = useApp((s) => s.agents);
   const selectedAgent = useApp((s) => s.selectedAgent);
@@ -58,7 +79,6 @@ export default function Composer() {
   const commands = useApp((s) => s.commands);
   const selectedVariant = useApp((s) => s.selectedVariant);
   const selectVariant = useApp((s) => s.selectVariant);
-  const [agentOpen, setAgentOpen] = useState(false);
   const selectedModel = useApp((s) => s.selectedModel);
   const loadModels = useApp((s) => s.loadModels);
   const selectModel = useApp((s) => s.selectModel);
@@ -71,7 +91,11 @@ export default function Composer() {
   const [mentionResults, setMentionResults] = useState<string[]>([]);
   const [mentionStatus, setMentionStatus] = useState<MentionStatus>("idle");
   const [mentionIndex, setMentionIndex] = useState(0);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [variantOpen, setVariantOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspacePicking, setWorkspacePicking] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const failedText = useApp((s) => s.failedText);
@@ -80,7 +104,10 @@ export default function Composer() {
   const lastSentRefs = useRef<MentionRef[]>([]);
   const [keyword, setKeyword] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
-  const pickerRef = useRef<HTMLDivElement>(null);
+  const agentPickerRef = useRef<HTMLDivElement>(null);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
+  const variantPickerRef = useRef<HTMLDivElement>(null);
+  const workspacePickerRef = useRef<HTMLDivElement>(null);
   const menu = useContextMenu();
 
   useEffect(() => {
@@ -250,14 +277,30 @@ export default function Composer() {
     [directory, insertReference, showNotice],
   );
 
+  // 四个工具栏菜单互斥；点外部或按 Esc 一起收起，避免弹层叠在一起。
   useEffect(() => {
-    if (!pickerOpen) return;
-    const onClick = (event: MouseEvent) => {
-      if (!pickerRef.current?.contains(event.target as Node)) setPickerOpen(false);
+    if (!agentOpen && !modelOpen && !variantOpen && !workspaceOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!agentPickerRef.current?.contains(target)) setAgentOpen(false);
+      if (!modelPickerRef.current?.contains(target)) setModelOpen(false);
+      if (!variantPickerRef.current?.contains(target)) setVariantOpen(false);
+      if (!workspacePickerRef.current?.contains(target)) setWorkspaceOpen(false);
     };
-    window.addEventListener("mousedown", onClick);
-    return () => window.removeEventListener("mousedown", onClick);
-  }, [pickerOpen]);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setAgentOpen(false);
+      setModelOpen(false);
+      setVariantOpen(false);
+      setWorkspaceOpen(false);
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [agentOpen, modelOpen, variantOpen, workspaceOpen]);
 
   // 当前模型：优先用户本次选择的，其次最近一条带模型的消息
   const currentModel = useMemo(() => {
@@ -329,34 +372,104 @@ export default function Composer() {
     void send(value, files, mentioned);
   };
 
-  const MAX_FILE = 8 * 1024 * 1024;
-
-  const readFile = (file: File) =>
-    new Promise<Attachment | null>((resolve) => {
-      if (file.size > MAX_FILE) {
-        resolve(null);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        resolve({
-          id: `${file.name}-${file.lastModified}`,
-          name: file.name,
-          mime: file.type || "application/octet-stream",
-          url: String(reader.result ?? ""),
-          size: file.size,
-        });
-      };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(file);
-    });
+  /** 把一批附件并入当前列表，超出上限的部分丢弃并明确提示 */
+  const addAttachments = (incoming: Attachment[]) => {
+    if (incoming.length === 0) return;
+    const room = Math.max(0, MAX_ATTACHMENTS - attachments.length);
+    if (room === 0) {
+      showNotice(`最多添加 ${MAX_ATTACHMENTS} 个附件，请先移除已有附件`);
+      return;
+    }
+    setAttachments((current) =>
+      [...current, ...incoming.slice(0, room)].slice(0, MAX_ATTACHMENTS),
+    );
+    if (incoming.length > room) {
+      showNotice(`最多添加 ${MAX_ATTACHMENTS} 个附件，超出的已忽略`);
+    }
+  };
 
   const pickFiles = async (list: FileList | null) => {
     if (!list) return;
-    const picked = await Promise.all(Array.from(list).slice(0, 4).map(readFile));
-    const valid = picked.filter((item): item is Attachment => Boolean(item));
-    if (valid.length > 0) setAttachments((current) => [...current, ...valid].slice(0, 4));
-    if (fileInputRef.current) fileInputRef.current.value = "";
+    const files = Array.from(list);
+    try {
+      const picked = await Promise.all(
+        files
+          .slice(0, MAX_ATTACHMENTS)
+          .map((file) => blobToAttachment(file, file.name)),
+      );
+      const valid = picked.filter((item): item is Attachment => Boolean(item));
+      if (files.some((file) => file.size > MAX_ATTACHMENT_BYTES)) {
+        showNotice("超过 8MB 的附件已忽略");
+      }
+      addAttachments(valid);
+    } catch (error) {
+      showNotice(`读取附件失败：${String(error)}`);
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  /** 粘贴的图片没有文件名，按图片类型生成截图名称 */
+  const pasteImages = async (files: File[]) => {
+    try {
+      const picked = await Promise.all(
+        files.slice(0, MAX_ATTACHMENTS).map((file) => {
+          const mime = file.type || "image/png";
+          return blobToAttachment(file, pastedImageName(mime), mime, "pasted");
+        }),
+      );
+      const valid = picked.filter((item): item is Attachment => Boolean(item));
+      if (files.some((file) => file.size > MAX_ATTACHMENT_BYTES)) {
+        showNotice("超过 8MB 的截图已忽略");
+      }
+      addAttachments(valid);
+    } catch (error) {
+      showNotice(`读取截图失败：${String(error)}`);
+    }
+  };
+
+  const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+
+    const images: File[] = [];
+    for (const item of Array.from(clipboard.items)) {
+      if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+      const file = item.getAsFile();
+      if (file) images.push(file);
+    }
+    if (images.length === 0) {
+      for (const file of Array.from(clipboard.files)) {
+        if (file.type.startsWith("image/")) images.push(file);
+      }
+    }
+    if (images.length > 0) {
+      event.preventDefault();
+      void pasteImages(images);
+      return;
+    }
+
+    // 有文本就交给 textarea 正常粘贴；只剩未知/文件类型时再走原生图片读取兜底
+    const hasText = Array.from(clipboard.types).some(
+      (type) => type === "text/plain" || type === "text/html" || type === "text/rtf",
+    );
+    if (hasText) return;
+    event.preventDefault();
+    void clipboardImageToAttachment().then((image) => {
+      if (image) addAttachments([image]);
+      else showNotice("无法读取剪贴板图片，请重试或点击回形针添加");
+    });
+  };
+
+  const chooseWorkspaceFolder = async () => {
+    if (workspacePicking) return;
+    setWorkspaceOpen(false);
+    setWorkspacePicking(true);
+    try {
+      await pickWorkspaceFolder();
+    } finally {
+      setWorkspacePicking(false);
+    }
   };
 
   return (
@@ -369,6 +482,93 @@ export default function Composer() {
           className="file-input"
           onChange={(event) => void pickFiles(event.target.files)}
         />
+        {!sessionID && (
+          <div className="composer-workspace">
+            <span className="composer-workspace-label">工作区</span>
+            <div className="toolbar-picker workspace-picker" ref={workspacePickerRef}>
+              <button
+                type="button"
+                className={`workspace-pill ${workspaceOpen ? "open" : ""}`}
+                onClick={() => {
+                  setWorkspaceOpen((open) => !open);
+                  setAgentOpen(false);
+                  setModelOpen(false);
+                  setVariantOpen(false);
+                }}
+                disabled={workspacePicking}
+                title={directory ?? "选择新会话的工作区"}
+                aria-label={`选择新会话工作区，当前 ${workspaceName(directory)}`}
+                aria-haspopup="menu"
+                aria-expanded={workspaceOpen}
+              >
+                <Icon name="workspace" size={14} />
+                <span className="workspace-pill-name">
+                  {workspacePicking ? "正在选择…" : workspaceName(directory)}
+                </span>
+                <Icon name="chevron-down" size={13} className="toolbar-caret" />
+              </button>
+              {workspaceOpen && (
+                <div
+                  className="composer-pop workspace-pop"
+                  role="menu"
+                  aria-label="选择新会话工作区"
+                >
+                  <div className="composer-pop-head">选择新会话工作区</div>
+                  <div className="workspace-pop-note">发送首条消息后固定</div>
+                  <div className="model-list workspace-list">
+                    {projects.map((project) => {
+                      const active =
+                        normalizePickerPath(project.worktree) ===
+                        normalizePickerPath(directory ?? "");
+                      return (
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={active}
+                          key={project.worktree}
+                          className={`toolbar-menu-item ${active ? "active" : ""}`}
+                          onClick={() => {
+                            setWorkspaceOpen(false);
+                            void changeDraftWorkspace(project.worktree);
+                          }}
+                          title={project.worktree}
+                        >
+                          <Icon name="workspace" size={14} />
+                          <span className="toolbar-menu-copy">
+                            <span className="toolbar-menu-title">
+                              {workspaceName(project.worktree)}
+                            </span>
+                            <span className="toolbar-menu-desc">{project.worktree}</span>
+                          </span>
+                          <Icon
+                            name="check"
+                            size={14}
+                            className={`toolbar-menu-check ${active ? "on" : ""}`}
+                          />
+                        </button>
+                      );
+                    })}
+                    {projects.length === 0 && (
+                      <div className="empty-line">还没有工作区，请从本机选择文件夹</div>
+                    )}
+                  </div>
+                  <div className="workspace-pop-footer">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="workspace-create"
+                      onClick={() => void chooseWorkspaceFolder()}
+                    >
+                      <Icon name="plus" size={14} />
+                      新建工作区…
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            <span className="composer-workspace-hint">发送后固定</span>
+          </div>
+        )}
         {refs.length > 0 && (
           <div className="ref-row">
             {refs.map((ref) => (
@@ -439,8 +639,12 @@ export default function Composer() {
                   )
                 }
               >
-                <Icon name={file.mime.startsWith("image/") ? "image" : "file"} size={14} />
-                {file.name}
+                {file.mime.startsWith("image/") ? (
+                  <img className="attachment-thumb" src={file.url} alt="" />
+                ) : (
+                  <Icon name="file" size={14} />
+                )}
+                <span className="attachment-name">{file.name}</span>
                 <button
                   className="chip-remove"
                   onClick={() => setAttachments((current) => current.filter((item) => item.id !== file.id))}
@@ -565,78 +769,104 @@ export default function Composer() {
               submit();
             }
           }}
+          onPaste={handlePaste}
           onBlur={() => setMention(null)}
           placeholder={
             directory
-              ? "发消息给 DevEco Code，输入 @ 引用工作区文件，Shift + Enter 换行"
+              ? "发消息，@ 引用文件，可粘贴截图，Enter 发送"
               : "请先在左侧选择工作区"
           }
           rows={1}
           disabled={!directory}
         />
         <div className="composer-actions">
-          <div className="composer-left">
+          <div className="composer-tools composer-tools-left">
             <button
-              className="attach-btn"
+              type="button"
+              className="toolbar-icon-btn"
               onClick={() => fileInputRef.current?.click()}
-              title="添加附件（最多 4 个，单个不超过 8MB）"
+              title="添加附件或粘贴截图（最多 4 个，单个不超过 8MB）"
+              aria-label="添加附件"
               disabled={!directory}
             >
               <Icon name="paperclip" size={17} />
             </button>
-            <div className="agent-picker">
+            <div className="toolbar-picker agent-picker" ref={agentPickerRef}>
               <button
-                className="model-chip"
-                onClick={() => setAgentOpen((open) => !open)}
-                title="切换 Agent（Build / Plan / Debug…）"
+                type="button"
+                className={`toolbar-pill agent-pill ${agentOpen ? "open" : ""}`}
+                onClick={() => {
+                  setAgentOpen((open) => !open);
+                  setModelOpen(false);
+                  setVariantOpen(false);
+                }}
+                title={`切换 Agent（当前：${selectedAgent}）`}
+                aria-label={`切换 Agent，当前 ${selectedAgent}`}
+                aria-haspopup="menu"
+                aria-expanded={agentOpen}
               >
                 <span className="agent-dot" />
-                {selectedAgent}
+                <span className="toolbar-label">{selectedAgent}</span>
+                <Icon name="chevron-down" size={13} className="toolbar-caret" />
               </button>
               {agentOpen && (
-                <div className="model-pop">
+                <div className="composer-pop agent-pop" role="menu" aria-label="切换 Agent">
+                  <div className="composer-pop-head">Agent</div>
                   {agents.map((agent) => (
                     <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={agent.name === selectedAgent}
                       key={agent.name}
-                      className={`model-item ${agent.name === selectedAgent ? "active" : ""}`}
+                      className={`toolbar-menu-item ${agent.name === selectedAgent ? "active" : ""}`}
                       onClick={() => {
                         selectAgent(agent.name);
                         setAgentOpen(false);
                       }}
-                      title={agent.description}
+                      title={agent.description ?? agent.name}
                     >
-                      <span className="model-name">{agent.name}</span>
+                      <span className="toolbar-menu-copy">
+                        <span className="toolbar-menu-title">{agent.name}</span>
+                        {agent.description && (
+                          <span className="toolbar-menu-desc">{agent.description}</span>
+                        )}
+                      </span>
+                      <Icon
+                        name="check"
+                        size={14}
+                        className={`toolbar-menu-check ${
+                          agent.name === selectedAgent ? "on" : ""
+                        }`}
+                      />
                     </button>
                   ))}
                   {agents.length === 0 && <div className="empty-line">没有可用 Agent</div>}
                 </div>
               )}
             </div>
-            {variants.length > 0 && (
+          </div>
+          <div className="composer-tools composer-tools-right">
+            <div className="toolbar-picker model-picker" ref={modelPickerRef}>
               <button
-                className={`variant-chip ${selectedVariant ? "on" : ""}`}
-                title="推理强度（model variant）"
+                type="button"
+                className={`toolbar-pill model-pill ${modelOpen ? "open" : ""}`}
                 onClick={() => {
-                  const index = selectedVariant ? variants.indexOf(selectedVariant) : -1;
-                  const next = index + 1 >= variants.length ? null : variants[index + 1];
-                  selectVariant(next);
+                  setModelOpen((open) => !open);
+                  setAgentOpen(false);
+                  setVariantOpen(false);
                 }}
-              >
-                {selectedVariant ?? "默认档"}
-              </button>
-            )}
-            <div className="model-picker" ref={pickerRef}>
-              <button
-                className={`model-chip ${pickerOpen ? "open" : ""}`}
-                onClick={() => setPickerOpen((open) => !open)}
-                title="切换模型"
+                title={`切换模型（当前：${modelLabel}）`}
+                aria-label={`切换模型，当前 ${modelLabel}`}
+                aria-haspopup="dialog"
+                aria-expanded={modelOpen}
               >
                 <span className="model-dot" />
-                {modelLabel}
-                <Icon name="chevron-down" size={14} className="model-caret" />
+                <span className="toolbar-label">{modelLabel}</span>
+                <Icon name="chevron-down" size={13} className="toolbar-caret" />
               </button>
-              {pickerOpen && (
-                <div className="model-pop">
+              {modelOpen && (
+                <div className="composer-pop model-pop" role="dialog" aria-label="选择模型">
+                  <div className="composer-pop-head">模型</div>
                   <input
                     className="model-search"
                     autoFocus
@@ -651,15 +881,24 @@ export default function Composer() {
                         currentModel?.providerID === item.providerID;
                       return (
                         <button
+                          type="button"
                           key={`${item.providerID}/${item.id}`}
-                          className={`model-item ${active ? "active" : ""}`}
+                          className={`toolbar-menu-item ${active ? "active" : ""}`}
                           onClick={() => {
                             selectModel({ providerID: item.providerID, modelID: item.id });
-                            setPickerOpen(false);
+                            setModelOpen(false);
                           }}
+                          title={`${item.name ?? item.id} · ${item.providerID}`}
                         >
-                          <span className="model-name">{item.name ?? item.id}</span>
-                          <span className="model-provider">{item.providerID}</span>
+                          <span className="toolbar-menu-copy">
+                            <span className="toolbar-menu-title">{item.name ?? item.id}</span>
+                            <span className="toolbar-menu-desc">{item.providerID}</span>
+                          </span>
+                          <Icon
+                            name="check"
+                            size={14}
+                            className={`toolbar-menu-check ${active ? "on" : ""}`}
+                          />
                         </button>
                       );
                     })}
@@ -668,24 +907,99 @@ export default function Composer() {
                 </div>
               )}
             </div>
-            <span className="composer-hint">{streaming ? "Agent 正在执行…" : "Enter 发送"}</span>
+            {variants.length > 0 && (
+              <div className="toolbar-picker variant-picker" ref={variantPickerRef}>
+                <button
+                  type="button"
+                  className={`toolbar-pill variant-pill ${
+                    variantOpen ? "open" : ""
+                  } ${selectedVariant ? "on" : ""}`}
+                  title={`推理深度（当前：${selectedVariant ?? "默认"}）`}
+                  aria-label={`推理深度，当前 ${selectedVariant ?? "默认"}`}
+                  aria-haspopup="menu"
+                  aria-expanded={variantOpen}
+                  onClick={() => {
+                    setVariantOpen((open) => !open);
+                    setAgentOpen(false);
+                    setModelOpen(false);
+                  }}
+                >
+                  <Icon name="spark" size={14} className="variant-icon" />
+                  <span className="variant-label">推理</span>
+                  <span className="variant-value">{selectedVariant ?? "默认"}</span>
+                  <Icon name="chevron-down" size={13} className="toolbar-caret" />
+                </button>
+                {variantOpen && (
+                  <div className="composer-pop variant-pop" role="menu" aria-label="推理深度">
+                    <div className="composer-pop-head">推理深度</div>
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={!selectedVariant}
+                      className={`toolbar-menu-item ${!selectedVariant ? "active" : ""}`}
+                      onClick={() => {
+                        selectVariant(null);
+                        setVariantOpen(false);
+                      }}
+                    >
+                      <span className="toolbar-menu-copy">
+                        <span className="toolbar-menu-title">默认</span>
+                        <span className="toolbar-menu-desc">跟随模型默认档位</span>
+                      </span>
+                      <Icon
+                        name="check"
+                        size={14}
+                        className={`toolbar-menu-check ${!selectedVariant ? "on" : ""}`}
+                      />
+                    </button>
+                    {variants.map((variant) => (
+                      <button
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={selectedVariant === variant}
+                        key={variant}
+                        className={`toolbar-menu-item ${
+                          selectedVariant === variant ? "active" : ""
+                        }`}
+                        onClick={() => {
+                          selectVariant(variant);
+                          setVariantOpen(false);
+                        }}
+                      >
+                        <span className="toolbar-menu-copy">
+                          <span className="toolbar-menu-title">{variant}</span>
+                        </span>
+                        <Icon
+                          name="check"
+                          size={14}
+                          className={`toolbar-menu-check ${
+                            selectedVariant === variant ? "on" : ""
+                          }`}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {streaming ? (
+              <button type="button" className="stop-btn" onClick={() => void stop()}>
+                <Icon name="stop" size={12} />
+                停止
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="send-btn"
+                onClick={submit}
+                disabled={(!text.trim() && attachments.length === 0) || !directory}
+                title="发送（Enter）"
+                aria-label="发送"
+              >
+                <Icon name="arrow-up" size={18} strokeWidth={2} />
+              </button>
+            )}
           </div>
-          {streaming ? (
-            <button className="stop-btn" onClick={() => void stop()}>
-              <Icon name="stop" size={12} />
-              停止
-            </button>
-          ) : (
-            <button
-              className="send-btn"
-              onClick={submit}
-              disabled={(!text.trim() && attachments.length === 0) || !directory}
-              title="发送（Enter）"
-              aria-label="发送"
-            >
-              <Icon name="arrow-up" size={18} strokeWidth={2} />
-            </button>
-          )}
         </div>
       </div>
     </div>
