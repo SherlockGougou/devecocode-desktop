@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useApp } from "../store";
+import { getThemeChoice, setThemeChoice, type ThemeChoice } from "../theme";
 import type { AppConfig, CliConfigSummary, RuntimeInfo } from "../types";
 
 type Status = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind: "error"; message: string };
@@ -13,6 +14,7 @@ export default function Settings() {
   const [cliConfig, setCliConfig] = useState<CliConfigSummary | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [restartRequired, setRestartRequired] = useState(false);
+  const [theme, setTheme] = useState<ThemeChoice>(getThemeChoice());
 
   useEffect(() => {
     void api
@@ -131,6 +133,36 @@ export default function Settings() {
             <Row label="CLI 版本" value={runtime?.cliVersion ?? "未知"} />
             <Row label="服务地址" value={runtime?.baseUrl ?? "未就绪"} mono />
             <Row label="应用版本" value={runtime?.appVersion ?? "-"} />
+          </section>
+
+          <section>
+            <h3>外观</h3>
+            <div className="settings-row">
+              <div className="settings-label">
+                <span>主题</span>
+                <small>跟随系统时，切换 macOS 外观会立即同步</small>
+              </div>
+              <div className="seg">
+                {(
+                  [
+                    ["system", "跟随系统"],
+                    ["light", "亮色"],
+                    ["dark", "暗色"],
+                  ] as Array<[ThemeChoice, string]>
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    className={`seg-btn ${theme === value ? "on" : ""}`}
+                    onClick={() => {
+                      setTheme(value);
+                      setThemeChoice(value);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </section>
 
           <section>

@@ -12,8 +12,97 @@
   --ok: #63d18b;
   --warn: #e0b341;
   --danger: #ef6b62;
+
+  /* 组件级语义色：亮色主题只覆盖这些变量，不改布局 */
+  --shadow-rgb: 0, 0, 0;
+  --scrim: rgba(0, 0, 0, 0.55);
+  --hover-tint: rgba(215, 210, 202, 0.06);
+  --hit-outline: rgba(215, 210, 202, 0.18);
+  --scroll-thumb: #2b2825;
+  --scroll-thumb-hover: #3a3632;
+  --boot-mark-bg: #1f1d1b;
+  --track-bg: #211f1d;
+  --btn-bg: #e7e3dd;
+  --btn-fg: #17150f;
+  --btn-bg-hover: #f2eee8;
+  --control-bg: #2a2724;
+  --control-fg-muted: #6d675f;
+  --seg-on-bg: #2a2724;
+  --danger-border: #4a2b28;
+  --danger-bg: #2a1614;
+  --danger-bg-soft: #1d1413;
+  --danger-bg-strong: #241413;
+  --danger-fg: #f0b7b2;
+  --warn-border: #4a4128;
+  --warn-border-soft: #3a3524;
+  --warn-bg: #191710;
+  --warn-bg-soft: #211e15;
+  --warn-bg-strong: #1d180d;
+  --warn-fg: #e8d79a;
+  --ok-border: #2b4a34;
+  --ok-bg: #14251a;
+  --ok-fg: #b7e2c2;
+  --switch-on: #3f6b4d;
+  --switch-knob: #e8f3ea;
+  --switch-thumb: #8b857d;
+  --link: #8fb8ff;
+  --separator: #3a3632;
+  --border-strong: #3a3733;
   color-scheme: dark;
 }
+/* 亮色主题：只覆盖变量、不改布局。由 theme.ts 在启动时按系统外观写入
+   data-theme；显式指定过（例如将来的「强制亮/暗」设置）就不再覆盖。 */
+:root[data-theme="light"] {
+  --bg: #f6f3ee;
+  --bg-soft: #f1ede7;
+  --panel: #faf8f4;
+  --panel-2: #efebe4;
+  --border: #ddd6cc;
+  --border-soft: #e8e2d9;
+  --text: #1f1c18;
+  --text-dim: #4a443d;
+  --muted: #6b645b;
+  --accent: #3b352e;
+  --ok: #2f7d52;
+  --warn: #8a6114;
+  --danger: #c0392b;
+  --shadow-rgb: 60, 50, 40;
+  --scrim: rgba(40, 34, 28, 0.35);
+  --hover-tint: rgba(31, 26, 21, 0.05);
+  --hit-outline: rgba(31, 26, 21, 0.22);
+  --scroll-thumb: #d7d0c6;
+  --scroll-thumb-hover: #c3bbb0;
+  --boot-mark-bg: #eae4db;
+  --track-bg: #e6e0d7;
+  --btn-bg: #1f1b16;
+  --btn-fg: #faf8f4;
+  --btn-bg-hover: #2d2822;
+  --control-bg: #e8e2d9;
+  --control-fg-muted: #9a9288;
+  --seg-on-bg: #ffffff;
+  --danger-border: #e7c4bd;
+  --danger-bg: #fdeceb;
+  --danger-bg-soft: #fbe9e7;
+  --danger-bg-strong: #fbe6e3;
+  --danger-fg: #a8332a;
+  --warn-border: #e6d4a5;
+  --warn-border-soft: #ecdcb2;
+  --warn-bg: #fdf7e6;
+  --warn-bg-soft: #f8efd8;
+  --warn-bg-strong: #fdf4dc;
+  --warn-fg: #7f5c0c;
+  --ok-border: #bcdcc8;
+  --ok-bg: #eaf6ee;
+  --ok-fg: #1c6a3e;
+  --switch-on: #2f7d52;
+  --switch-knob: #ffffff;
+  --switch-thumb: #b3aba1;
+  --link: #1d5fd0;
+  --separator: #cfc8bf;
+  --border-strong: #d6cfc5;
+  color-scheme: light;
+}
+
 
 * {
   box-sizing: border-box;
@@ -56,13 +145,13 @@ textarea {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2b2825;
+  background: var(--scroll-thumb);
   border-radius: 6px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a3632;
+  background: var(--scroll-thumb-hover);
   background-clip: content-box;
 }
 
@@ -80,7 +169,7 @@ textarea {
   width: 44px;
   height: 44px;
   border-radius: 12px;
-  background: #1f1d1b;
+  background: var(--boot-mark-bg);
   border: 1px solid var(--border);
   display: grid;
   place-items: center;
@@ -99,7 +188,7 @@ textarea {
 .boot-bar {
   width: 180px;
   height: 2px;
-  background: #211f1d;
+  background: var(--track-bg);
   overflow: hidden;
   border-radius: 2px;
   margin-top: 6px;
@@ -218,13 +307,13 @@ textarea {
   gap: 6px;
   height: 34px;
   border-radius: 9px;
-  background: #e7e3dd;
-  color: #17150f;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
   font-size: 12.5px;
   font-weight: 550;
 }
 .new-session:hover {
-  background: #f2eee8;
+  background: var(--btn-bg-hover);
 }
 .new-session:disabled {
   opacity: 0.4;
@@ -409,7 +498,7 @@ textarea {
 }
 .ghost-btn.danger:hover {
   color: var(--danger);
-  border-color: #4a2b28;
+  border-color: var(--danger-border);
 }
 .chat-scroll {
   flex: 1;
@@ -450,8 +539,8 @@ textarea {
   height: 30px;
   padding: 0 14px;
   border-radius: 8px;
-  background: #e7e3dd;
-  color: #17150f;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
   font-size: 12px;
   font-weight: 550;
 }
@@ -461,7 +550,7 @@ textarea {
   font-size: 11.5px;
 }
 .primary-btn:hover {
-  background: #f2eee8;
+  background: var(--btn-bg-hover);
 }
 .primary-btn:disabled {
   opacity: 0.45;
@@ -509,8 +598,8 @@ textarea {
 .msg-error {
   color: var(--danger);
   font-size: 12px;
-  border: 1px solid #4a2b28;
-  background: #1d1413;
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg-soft);
   padding: 7px 10px;
   border-radius: 8px;
 }
@@ -613,8 +702,8 @@ textarea {
 .permission {
   max-width: 860px;
   margin: 0 auto 16px;
-  border: 1px solid #3a3524;
-  background: #191710;
+  border: 1px solid var(--warn-border-soft);
+  background: var(--warn-bg);
   border-radius: 11px;
   padding: 12px 14px;
 }
@@ -626,8 +715,8 @@ textarea {
 }
 .permission-badge {
   font-size: 10.5px;
-  color: #e8d79a;
-  border: 1px solid #4a4128;
+  color: var(--warn-fg);
+  border: 1px solid var(--warn-border);
   border-radius: 5px;
   padding: 1px 6px;
 }
@@ -644,7 +733,7 @@ textarea {
 .permission-patterns code {
   font: 11.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
   color: var(--text-dim);
-  background: #211e15;
+  background: var(--warn-bg-soft);
   border-radius: 6px;
   padding: 4px 8px;
   white-space: pre-wrap;
@@ -688,7 +777,7 @@ textarea {
   margin: 2px 0;
 }
 .markdown a {
-  color: #8fb8ff;
+  color: var(--link);
   text-decoration: none;
 }
 .markdown a:hover {
@@ -748,7 +837,7 @@ textarea {
   padding: 10px 12px 8px;
 }
 .composer-box:focus-within {
-  border-color: #3a3733;
+  border-color: var(--border-strong);
 }
 .composer textarea {
   width: 100%;
@@ -775,14 +864,14 @@ textarea {
   width: 26px;
   height: 26px;
   border-radius: 8px;
-  background: #e7e3dd;
-  color: #17150f;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
   font-size: 14px;
   line-height: 1;
 }
 .send-btn:disabled {
-  background: #2a2724;
-  color: #6d675f;
+  background: var(--control-bg);
+  color: var(--control-fg-muted);
   cursor: not-allowed;
 }
 .stop-btn {
@@ -795,7 +884,7 @@ textarea {
 }
 .stop-btn:hover {
   color: var(--danger);
-  border-color: #4a2b28;
+  border-color: var(--danger-border);
 }
 
 /* ---------- 状态栏 ---------- */
@@ -826,7 +915,7 @@ textarea {
   color: var(--warn);
 }
 .status-sep {
-  color: #3a3632;
+  color: var(--separator);
 }
 .status-grow {
   flex: 1;
@@ -968,12 +1057,12 @@ textarea {
   max-width: 720px;
   padding: 8px 14px;
   border-radius: 9px;
-  background: #2a1614;
-  border: 1px solid #4a2b28;
-  color: #f0b7b2;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-fg);
   font-size: 12px;
   cursor: pointer;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.4);
 }
 
 .brand-ver {
@@ -991,7 +1080,7 @@ textarea {
   position: fixed;
   inset: 0;
   z-index: 40;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--scrim);
   backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
@@ -1005,7 +1094,7 @@ textarea {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 14px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 24px 60px rgba(var(--shadow-rgb), 0.5);
   overflow: hidden;
 }
 .settings-head {
@@ -1114,7 +1203,7 @@ textarea {
   width: 96px;
 }
 .settings-input:focus {
-  border-color: #3a3733;
+  border-color: var(--border-strong);
 }
 .settings-note {
   margin: 8px 0 0;
@@ -1168,7 +1257,7 @@ textarea {
   width: 38px;
   height: 22px;
   border-radius: 11px;
-  background: #2a2724;
+  background: var(--control-bg);
   border: 1px solid var(--border);
   position: relative;
   transition: background 0.15s ease;
@@ -1180,16 +1269,16 @@ textarea {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #8b857d;
+  background: var(--switch-thumb);
   transition: transform 0.15s ease, background 0.15s ease;
 }
 .switch.on {
-  background: #3f6b4d;
-  border-color: #3f6b4d;
+  background: var(--switch-on);
+  border-color: var(--switch-on);
 }
 .switch.on span {
   transform: translateX(16px);
-  background: #e8f3ea;
+  background: var(--switch-knob);
 }
 .switch:disabled {
   opacity: 0.4;
@@ -1300,7 +1389,7 @@ textarea {
   height: 24px;
   padding: 0 7px;
   border-radius: 6px;
-  border: 1px solid #3a3733;
+  border: 1px solid var(--border-strong);
   background: var(--panel);
   font-size: 12px;
 }
@@ -1354,7 +1443,7 @@ textarea {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 16px 40px rgba(var(--shadow-rgb), 0.5);
   padding: 8px;
   z-index: 20;
 }
@@ -1555,7 +1644,7 @@ textarea {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 16px 40px rgba(var(--shadow-rgb), 0.5);
   padding: 6px;
   z-index: 25;
 }
@@ -1594,7 +1683,7 @@ textarea {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 14px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 24px 60px rgba(var(--shadow-rgb), 0.5);
   overflow: hidden;
 }
 .shortcuts-body {
@@ -1664,14 +1753,14 @@ kbd {
   text-align: right;
 }
 .find-hit {
-  background: rgba(215, 210, 202, 0.06);
+  background: var(--hover-tint);
   border-radius: 10px;
-  outline: 1px solid rgba(215, 210, 202, 0.18);
+  outline: 1px solid var(--hit-outline);
 }
 .toast.ok {
-  background: #14251a;
-  border-color: #2b4a34;
-  color: #b7e2c2;
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
+  color: var(--ok-fg);
 }
 
 /* ---------- 侧栏拖拽 ---------- */
@@ -1753,7 +1842,7 @@ kbd {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #8fb8ff;
+  background: var(--link);
 }
 .variant-chip {
   height: 26px;
@@ -1765,7 +1854,7 @@ kbd {
 }
 .variant-chip.on {
   color: var(--warn);
-  border-color: #4a4128;
+  border-color: var(--warn-border);
 }
 .variant-chip:hover {
   background: var(--panel-2);
@@ -1778,4 +1867,75 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   direction: ltr;
+}
+
+/* ---------- 后端状态提示条 ---------- */
+.backend-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  font-size: 11.5px;
+  border-bottom: 1px solid var(--border);
+}
+.backend-banner.warn {
+  background: var(--warn-bg-strong);
+  color: var(--warn);
+}
+.backend-banner.bad {
+  background: var(--danger-bg-strong);
+  color: var(--danger);
+}
+.backend-banner .dot {
+  background: currentColor;
+  flex: none;
+}
+.backend-text {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.backend-text strong {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.backend-text span {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-item.bad .dot {
+  background: var(--danger);
+}
+.conn.bad::before {
+  background: var(--danger);
+}
+
+/* ---------- 分段选择（主题等少量互斥选项） ---------- */
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.seg-btn {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.seg-btn:hover {
+  color: var(--text);
+}
+.seg-btn.on {
+  background: var(--seg-on-bg);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(var(--shadow-rgb), 0.16);
 }
