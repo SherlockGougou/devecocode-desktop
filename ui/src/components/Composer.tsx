@@ -1,8 +1,70 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Attachment } from "../types";
+import type { Attachment, MentionRef } from "../types";
 import { api } from "../api";
 import { useApp } from "../store";
 import { Icon } from "./Icon";
+
+/** 一次最多引用多少个文件：超过后不再插入，避免把整个目录塞进上下文 */
+const MAX_REFS = 8;
+/** 弹层最多展示多少条候选 */
+const MAX_MENTION_ITEMS = 8;
+
+/** 正在填写的 @ 引用：start/end 是它在文本里的范围（end 通常就是光标处） */
+type MentionDraft = { query: string; start: number; end: number };
+type MentionStatus = "idle" | "loading" | "ready" | "error";
+
+/**
+ * 从光标往前找「行首或空白之后的 @」，判断用户是不是正在填写引用。
+ * 「前一个字符必须是行首或空白」用来排除邮箱（a@b）之类误触发；
+ * 引号形式允许路径中间有空格，直到补上右侧引号为止。
+ */
+function detectMention(value: string, caret: number): MentionDraft | null {
+  const before = value.slice(0, caret);
+  const at = before.lastIndexOf("@");
+  if (at === -1) return null;
+  const prev = at === 0 ? "" : before[at - 1];
+  if (prev && !/\s/.test(prev)) return null;
+  const rest = before.slice(at + 1);
+  if (rest.startsWith('"')) {
+    const inner = rest.slice(1);
+    if (inner.includes('"')) return null;
+    return { query: inner, start: at, end: caret };
+  }
+  // 没有引号时遇到空白或另一个 @，说明这条引用已经输入完毕
+  if (/[\s@]/.test(rest)) return null;
+  return { query: rest, start: at, end: caret };
+}
+
+/**
+ * 从文本解析全部 @ 引用，触发规则与 detectMention 保持一致。
+ * 文本是唯一事实来源：输入框上方的 chip、发送时的 file part 都从它派生。
+ * 未闭合的引号 token 不算引用（用户可能还在输入）；按路径去重。
+ */
+function parseMentions(value: string): MentionRef[] {
+  const pattern = /(?:^|\s)(@"[^"\n]+"|@[^\s@"][^\s@]*)/gm;
+  const refs: MentionRef[] = [];
+  const seen = new Set<string>();
+  for (const match of value.matchAll(pattern)) {
+    const token = match[1];
+    const start = (match.index ?? 0) + match[0].length - token.length;
+    const path = token.startsWith('@"') ? token.slice(2, -1) : token.slice(1);
+    // 目录项（以 / 结尾）不能作为文件引用，和弹层过滤保持同一规则
+    if (!path || path.endsWith("/") || seen.has(path)) continue;
+    seen.add(path);
+    refs.push({ path, token, start, end: start + token.length });
+    if (refs.length >= MAX_REFS) break;
+  }
+  return refs;
+}
+
+/**
+ * 取 @ 弹层的候选文件。
+ * `/find/file` 的 query 必须存在，但值可以是空串——空串返回工作区文件列表，
+ * 所以刚敲下 @ 时也能直接列出候选（Rust 代理已保留空值参数）。
+ */
+function loadMentionFiles(directory: string, query: string): Promise<string[]> {
+  return api.searchFiles(directory, query);
+}
 
 export default function Composer() {
   const send = useApp((s) => s.send);
@@ -20,16 +82,22 @@ export default function Composer() {
   const selectedModel = useApp((s) => s.selectedModel);
   const loadModels = useApp((s) => s.loadModels);
   const selectModel = useApp((s) => s.selectModel);
+  const showNotice = useApp((s) => s.showNotice);
   const messages = useApp((s) => s.messages);
   const [text, setText] = useState("");
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [mention, setMention] = useState<{ query: string; start: number; end: number } | null>(null);
-  const [mentionFiles, setMentionFiles] = useState<string[]>([]);
+  /** @ 引用：始终与 text 同步，见 applyText 的注释 */
+  const [refs, setRefs] = useState<MentionRef[]>([]);
+  const [mention, setMention] = useState<MentionDraft | null>(null);
+  const [mentionResults, setMentionResults] = useState<string[]>([]);
+  const [mentionStatus, setMentionStatus] = useState<MentionStatus>("idle");
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const failedText = useApp((s) => s.failedText);
   const clearFailedText = useApp((s) => s.clearFailedText);
+  /** 上次发送的引用：失败恢复原文时用它把 chip 一起还回来 */
+  const lastSentRefs = useRef<MentionRef[]>([]);
   const [keyword, setKeyword] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -45,53 +113,113 @@ export default function Composer() {
     area.style.height = `${Math.min(area.scrollHeight, 220)}px`;
   }, [text]);
 
-  // 发送失败时把原文还回输入框
+  /**
+   * 文本与引用必须一起更新：文本是唯一事实来源，
+   * 手动删掉文本里的 @token 后 chip 会跟着消失，不需要另存一份状态去对齐。
+   */
+  const applyText = (next: string, nextRefs?: MentionRef[]) => {
+    setText(next);
+    setRefs(nextRefs ?? parseMentions(next));
+  };
+
+  // 发送失败时把原文还回输入框，引用 chip 也要一起恢复
   useEffect(() => {
     if (!failedText) return;
-    setText((current) => (current.trim() ? current : failedText));
+    // 用户已经重新输入了别的内容：保留新草稿，不覆盖
+    if (!text.trim()) {
+      // 只恢复 token 仍在原文里的引用，用户已经删掉的不再复活
+      const restored = lastSentRefs.current.filter((ref) => failedText.includes(ref.token));
+      applyText(failedText, restored);
+    }
+    lastSentRefs.current = [];
     clearFailedText();
+    // 只在失败文本变化时触发；text 取当前渲染值即可
   }, [failedText, clearFailedText]);
 
-  // @ 引用：输入 @ 后按关键字搜索工作区文件
+  // 切换工作区后旧引用路径全部失效：草稿与 chip 一起清空，
+  // 避免把上一个工作区的 file:// 路径发给模型
+  const lastDirectoryRef = useRef(directory);
+  useEffect(() => {
+    if (lastDirectoryRef.current === directory) return;
+    lastDirectoryRef.current = directory;
+    applyText("", []);
+    setMention(null);
+  }, [directory]);
+
+  // @ 引用：输入 @ 后按关键字搜索工作区文件（空关键字返回工作区文件列表）
   useEffect(() => {
     if (!mention || !directory) {
-      setMentionFiles([]);
+      setMentionResults([]);
+      setMentionStatus("idle");
       return;
     }
     const query = mention.query;
+    let cancelled = false;
+    setMentionStatus("loading");
+    setMentionIndex(0);
+    // 停 180ms 再查，避免每敲一个字符都打一次 /find/file
     const timer = setTimeout(() => {
-      void api
-        .searchFiles(directory, query)
+      void loadMentionFiles(directory, query)
         .then((files) => {
-          setMentionFiles(files.slice(0, 8));
-          setMentionIndex(0);
+          if (cancelled) return;
+          setMentionResults(files);
+          setMentionStatus("ready");
         })
-        .catch(() => setMentionFiles([]));
-    }, 200);
-    return () => clearTimeout(timer);
+        .catch(() => {
+          if (cancelled) return;
+          setMentionResults([]);
+          setMentionStatus("error");
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [mention, directory]);
 
-  const detectMention = (value: string, caret: number) => {
-    const before = value.slice(0, caret);
-    const match = /@([^\s@]*)$/.exec(before);
-    if (!match) {
+  // 候选：过滤目录项（/find/file 用 / 结尾表示目录）和已经引用过的文件
+  const mentionItems = useMemo(
+    () =>
+      mentionResults
+        .filter((file) => file && !file.endsWith("/"))
+        .filter((file) => !refs.some((ref) => ref.path === file))
+        .slice(0, MAX_MENTION_ITEMS),
+    [mentionResults, refs],
+  );
+  const activeMentionIndex = Math.min(mentionIndex, Math.max(0, mentionItems.length - 1));
+
+  const applyMention = (path: string) => {
+    // 用当前光标重新定位：用户可能已经移动过光标，旧 draft 的下标不可信
+    const draft = detectMention(text, areaRef.current?.selectionStart ?? text.length);
+    if (!draft) {
       setMention(null);
       return;
     }
-    setMention({ query: match[1], start: caret - match[0].length, end: caret });
-  };
-
-  const applyMention = (path: string) => {
-    if (!mention) return;
-    const area = areaRef.current;
-    const next = `${text.slice(0, mention.start)}@${path} ${text.slice(mention.end)}`;
-    setText(next);
+    if (refs.length >= MAX_REFS) {
+      showNotice(`最多引用 ${MAX_REFS} 个文件，请先移除已有引用`);
+      return;
+    }
+    // 路径含空格时用引号包起来，否则解析不回去
+    const label = path.includes(" ") ? `@"${path}"` : `@${path}`;
+    const next = `${text.slice(0, draft.start)}${label} ${text.slice(draft.end)}`;
+    applyText(next);
     setMention(null);
-    const caret = mention.start + path.length + 2;
+    // 光标落到插入的 token + 一个空格之后
+    const caret = draft.start + label.length + 1;
     requestAnimationFrame(() => {
+      const area = areaRef.current;
       area?.focus();
       area?.setSelectionRange(caret, caret);
     });
+  };
+
+  const removeRef = (ref: MentionRef) => {
+    // 重新解析一次：文本可能已经被编辑过，旧下标不可信
+    const current = parseMentions(text).find((item) => item.path === ref.path);
+    if (!current) return;
+    // 顺手吞掉 token 后面紧跟的一个空格，避免留下连续空格
+    const end = text[current.end] === " " ? current.end + 1 : current.end;
+    applyText(text.slice(0, current.start) + text.slice(end));
   };
 
   useEffect(() => {
@@ -143,7 +271,7 @@ export default function Composer() {
   const [slashIndex, setSlashIndex] = useState(0);
 
   const applyCommand = (name: string) => {
-    setText(`/${name} `);
+    applyText(`/${name} `, []);
     requestAnimationFrame(() => areaRef.current?.focus());
   };
 
@@ -164,9 +292,13 @@ export default function Composer() {
     const value = text.trim();
     if ((!value && attachments.length === 0) || !directory || streaming) return;
     const files = attachments;
-    setText("");
+    // 位置按真正发出去的文本重算（trim 会挪动下标），保证 source.text 与 text part 对得上
+    const mentioned = parseMentions(value);
+    lastSentRefs.current = mentioned;
+    applyText("", []);
     setAttachments([]);
-    void send(value, files);
+    setMention(null);
+    void send(value, files, mentioned);
   };
 
   const MAX_FILE = 8 * 1024 * 1024;
@@ -209,6 +341,25 @@ export default function Composer() {
           className="file-input"
           onChange={(event) => void pickFiles(event.target.files)}
         />
+        {refs.length > 0 && (
+          <div className="ref-row">
+            {refs.map((ref) => (
+              <span className="ref-chip" key={ref.path} title={`引用：${ref.path}`}>
+                <Icon name="file" size={13} />
+                <span className="ref-chip-path">{ref.path}</span>
+                <button
+                  className="chip-remove"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => removeRef(ref)}
+                  title="移除引用"
+                  aria-label={`移除引用 ${ref.path}`}
+                >
+                  <Icon name="close" size={13} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="attachment-row">
             {attachments.map((file) => (
@@ -234,6 +385,7 @@ export default function Composer() {
               <button
                 key={command.name}
                 className={`mention-item ${index === slashIndex ? "active" : ""}`}
+                onMouseDown={(event) => event.preventDefault()}
                 onMouseEnter={() => setSlashIndex(index)}
                 onClick={() => applyCommand(command.name)}
                 title={command.description ?? command.name}
@@ -244,30 +396,48 @@ export default function Composer() {
             ))}
           </div>
         )}
-        {mention && mentionFiles.length > 0 && (
+        {mention && slashMatches.length === 0 && (
           <div className="mention-pop">
-            <div className="mention-hint">引用文件（↑↓ 选择，Enter 插入，Esc 取消）</div>
-            {mentionFiles.map((file, index) => (
-              <button
-                key={file}
-                className={`mention-item ${index === mentionIndex ? "active" : ""}`}
-                onMouseEnter={() => setMentionIndex(index)}
-                onClick={() => applyMention(file)}
-                title={file}
-              >
-                {file}
-              </button>
-            ))}
+            <div className="mention-hint">
+              {mentionStatus === "loading"
+                ? "正在搜索工作区文件…"
+                : "引用文件（↑↓ 选择，Enter 插入，Esc 取消）"}
+            </div>
+            {mentionStatus === "error" ? (
+              <div className="mention-empty">文件搜索不可用</div>
+            ) : refs.length >= MAX_REFS ? (
+              <div className="mention-empty">已达引用上限（{MAX_REFS} 个），移除后可继续引用</div>
+            ) : mentionStatus === "ready" && mentionItems.length === 0 ? (
+              <div className="mention-empty">
+                {mention.query.trim() ? "没有匹配的文件" : "工作区没有可引用文件"}
+              </div>
+            ) : (
+              mentionItems.map((file, index) => (
+                <button
+                  key={file}
+                  className={`mention-item ${index === activeMentionIndex ? "active" : ""}`}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => setMentionIndex(index)}
+                  onClick={() => applyMention(file)}
+                  title={file}
+                >
+                  {file}
+                </button>
+              ))
+            )}
           </div>
         )}
         <textarea
           ref={areaRef}
           value={text}
           onChange={(event) => {
-            setText(event.target.value);
-            detectMention(event.target.value, event.target.selectionStart ?? 0);
+            const value = event.target.value;
+            applyText(value);
+            setMention(detectMention(value, event.target.selectionStart ?? value.length));
           }}
           onKeyDown={(event) => {
+            // IME 组字过程中的按键交给输入法：否则中文/日文候选词会被当成快捷键吞掉
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             if (slashMatches.length > 0) {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
@@ -286,38 +456,46 @@ export default function Composer() {
               }
               if (event.key === "Escape") {
                 event.preventDefault();
-                setText("");
+                applyText("", []);
                 return;
               }
             }
-            if (mention && mentionFiles.length > 0) {
-              if (event.key === "ArrowDown") {
-                event.preventDefault();
-                setMentionIndex((index) => (index + 1) % mentionFiles.length);
-                return;
-              }
-              if (event.key === "ArrowUp") {
-                event.preventDefault();
-                setMentionIndex((index) => (index - 1 + mentionFiles.length) % mentionFiles.length);
-                return;
-              }
-              if (event.key === "Enter" || event.key === "Tab") {
-                event.preventDefault();
-                applyMention(mentionFiles[mentionIndex]);
-                return;
-              }
+            if (mention) {
               if (event.key === "Escape") {
                 event.preventDefault();
                 setMention(null);
                 return;
               }
+              if (mentionItems.length > 0) {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setMentionIndex((index) => (index + 1) % mentionItems.length);
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setMentionIndex((index) => (index - 1 + mentionItems.length) % mentionItems.length);
+                  return;
+                }
+                // Shift+Enter / Shift+Tab 保留原义（换行/反向焦点），不当作选择
+                if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey) {
+                  event.preventDefault();
+                  applyMention(mentionItems[activeMentionIndex]);
+                  return;
+                }
+              }
             }
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               submit();
             }
           }}
-          placeholder={directory ? "发消息给 DevEco Code，Shift + Enter 换行" : "请先在左侧选择工作区"}
+          onBlur={() => setMention(null)}
+          placeholder={
+            directory
+              ? "发消息给 DevEco Code，输入 @ 引用工作区文件，Shift + Enter 换行"
+              : "请先在左侧选择工作区"
+          }
           rows={1}
           disabled={!directory}
         />

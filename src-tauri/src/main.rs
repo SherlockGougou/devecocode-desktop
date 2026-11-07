@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
 mod ipc;
+mod windrag;
 
 #[derive(Clone, Serialize)]
 struct StatusPayload {
@@ -48,7 +49,6 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             ipc::server_request,
-            ipc::open_classic_view,
             ipc::startup_directory,
             ipc::path_exists,
             ipc::get_settings,
@@ -59,7 +59,9 @@ fn main() {
             ipc::export_session,
             ipc::set_window_title,
             ipc::backend_state,
-            ipc::retry_backend
+            ipc::retry_backend,
+            windrag::window_outer_position,
+            windrag::move_window_by_pointer
         ])
         .setup(|app| {
             build_menu(app.handle())?;
@@ -591,11 +593,6 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .item(
             &MenuItemBuilder::with_id("toggle_right", "切换右侧面板")
                 .accelerator("CmdOrCtrl+Shift+B")
-                .build(app)?,
-        )
-        .item(
-            &MenuItemBuilder::with_id("classic", "经典界面")
-                .accelerator("CmdOrCtrl+Shift+C")
                 .build(app)?,
         )
         .separator()

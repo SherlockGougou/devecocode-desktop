@@ -5,7 +5,7 @@
 ## 项目定位
 
 macOS 桌面客户端，驱动本机 `deveco` CLI（opencode 的 HarmonyOS 定制分支）的 HTTP + SSE 契约，
-自研三栏界面；官方 Web UI 只作为「经典界面」兜底窗口。**不重写 agent 能力，也不打包 CLI。**
+自研三栏界面；官方 Web UI 不再提供入口（原「经典界面」窗口已移除）。**不重写 agent 能力，也不打包 CLI。**
 
 ## 常用命令
 
@@ -33,7 +33,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin deveco-selftest   # 端到�
 | `src-tauri/src/events.rs` | 事件分类（授权/空闲/错误/阶段）与通知文案；全局事件解包 |
 | `src-tauri/src/notify.rs` | 通知策略与去抖（纯函数，时钟注入） |
 | `src-tauri/src/http.rs` | 访问 CLI 的 HTTP 客户端（lib 层，自检复用） |
-| `src-tauri/src/ipc.rs` | 前端 ↔ CLI 的命令桥：通用代理、设置、导出、经典界面、窗口标题 |
+| `src-tauri/src/ipc.rs` | 前端 ↔ CLI 的命令桥：通用代理、设置、导出、窗口标题 |
 | `src-tauri/src/main.rs` | Tauri 主进程：窗口、托盘、菜单、单实例、信号处理、SSE→通知 |
 | `ui/src/store.ts` | 前端状态：会话、消息、权限、SSE 合并、发送 |
 | `ui/src/api.ts` | invoke 包装（**所有请求走 Rust 代理**） |
@@ -48,11 +48,14 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin deveco-selftest   # 端到�
    统一用 `SIGTERM`（launcher 会转发）→ 超时后 `SIGKILL` 整组，并保留 `SIGTERM/SIGINT/SIGHUP` 兜底。
 4. **路径必须规范化**。macOS 上 `/tmp` 是 `/private/tmp` 的符号链接，CLI 返回的 `worktree` 是规范化后的路径。
 5. **会话列表按 `?directory=` 查询**；`/project` 可能对同一路径返回多条不同 id 的记录，前端按 `worktree` 去重。
-6. **`/find/file` 必须带 `query`**（不带是 400）。目录浏览用 `/file?path=`，内容预览用 `/file/content?path=`。
+6. **`/find/file` 必须带 `query`**（不带是 400；值可以是空字符串，空串返回工作区文件列表，@ 弹层靠它列全量）。
+   目录浏览用 `/file?path=`，内容预览用 `/file/content?path=`。
 7. **变更面板先试 `/session/{id}/diff`，为空再回退 `/vcs/diff?mode=git`**（非 git 项目自然为空）。
 8. **归档只是元数据**（`PATCH time.archived`），列表不会自动过滤，由前端过滤。
 9. **prompt 契约**：`POST /session/{id}/message` 支持 `parts`、`model{providerID,modelID}`、`agent`、`variant`、`noReply`。
    附件用 `FilePartInput { type:"file", mime, url, filename }`，`url` 为 data URL。
+   **工作区文件引用（@）用 `url: "file://<绝对路径>"` 的 file part**：serve 会自己读盘并合成 Read 工具调用
+   + 文件内容给模型，客户端不要把内容内联进消息；可附 `source.type="file"` 记录相对路径与 @token 位置。
 10. **前端不直连 `127.0.0.1`**：必须经 `server_request` 代理，否则会遇到 CORS/ATS，并且连接信息会泄漏到 WebView。
 
 ## 代码约定

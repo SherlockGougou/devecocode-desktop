@@ -7,6 +7,7 @@ import type {
   CommandInfo,
   FileDiff,
   FileNode,
+  MentionRef,
   Message,
   ModelInfo,
   Part,
@@ -114,7 +115,8 @@ export interface AppState {
   selectProject(directory: string): Promise<void>;
   openSession(id: string): Promise<void>;
   newSession(): Promise<void>;
-  send(text: string, attachments?: Attachment[]): Promise<void>;
+  /** refs 是 Composer 里 @ 引用的工作区文件；不传时行为与之前完全一致 */
+  send(text: string, attachments?: Attachment[], refs?: MentionRef[]): Promise<void>;
   stop(): Promise<void>;
   replyPermission(id: string, reply: "once" | "always" | "reject"): Promise<void>;
   onSse(raw: string): void;
@@ -252,9 +254,10 @@ export const useApp = create<AppState>()((set, get) => ({
 
   async selectProject(directory) {
     localStorage.setItem(LAST_DIR, directory);
+    // 侧栏是「一次只展开一个工作区」的手风琴：切过去时收起其它工作区
     set({
       directory,
-      expanded: { ...get().expanded, [directory]: true },
+      expanded: { [directory]: true },
       sessionID: null,
       messages: [],
       permissions: [],
@@ -319,6 +322,8 @@ export const useApp = create<AppState>()((set, get) => ({
       const list = get().sessions[directory] ?? [];
       set({
         sessions: { ...get().sessions, [directory]: upsertSession(list, session) },
+        // 侧栏一次只展开当前工作区：新建后确保它处于展开态，新会话能立刻看到
+        expanded: { [directory]: true },
       });
       await get().openSession(session.id);
     } catch (error) {
@@ -326,10 +331,11 @@ export const useApp = create<AppState>()((set, get) => ({
     }
   },
 
-  async send(text, attachments) {
+  async send(text, attachments, refs) {
     const directory = get().directory;
     const files = attachments ?? [];
-    if (!directory || (!text.trim() && files.length === 0)) return;
+    const mentions = refs ?? [];
+    if (!directory || (!text.trim() && files.length === 0 && mentions.length === 0)) return;
     let sessionID = get().sessionID;
     try {
       if (!sessionID) {
@@ -345,6 +351,9 @@ export const useApp = create<AppState>()((set, get) => ({
       const { selectedModel: model, selectedAgent, selectedVariant } = get();
       const parts: Array<Record<string, unknown>> = [];
       if (text.trim()) parts.push({ type: "text", text });
+      // @ 引用：文本里已经保留 @path，这里再补 file part（file:// 绝对路径），
+      // 由 serve 自己读盘并合成 Read 调用，模型才能看到文件内容
+      for (const ref of mentions) parts.push(buildMentionPart(directory, ref));
       for (const file of files) {
         parts.push({ type: "file", mime: file.mime, url: file.url, filename: file.name });
       }
@@ -450,7 +459,7 @@ export const useApp = create<AppState>()((set, get) => ({
         break;
       case "message.updated":
         if (props.sessionID === get().sessionID && props.info) {
-          // 助手消息在跑 → 正在执行；不管这条任务是从哪触发的（界面/经典界面/CLI）
+          // 助手消息在跑 → 正在执行；不管这条任务是从哪触发的（界面/CLI）
           const streaming = props.info.role === "assistant" ? true : get().streaming;
           set({ messages: upsertMessage(get().messages, props.info), streaming });
         }
@@ -634,7 +643,8 @@ export const useApp = create<AppState>()((set, get) => ({
   async toggleProject(directory) {
     const expanded = get().expanded;
     const open = !(expanded[directory] ?? false);
-    set({ expanded: { ...expanded, [directory]: open } });
+    // 打开时收起其它工作区，保持「一次只展开一个」
+    set({ expanded: open ? { [directory]: true } : {} });
     if (open && !get().loadedDirs[directory]) {
       try {
         const sessions = await api.sessions(directory);
@@ -864,4 +874,84 @@ async function loadDiff(directory: string, sessionID: string | null): Promise<Fi
     if (snapshot.length > 0) return snapshot;
   }
   return api.vcsDiff(directory).catch(() => []);
+}
+
+/**
+ * 引用文件的 MIME 只用于消息元数据：serve 对 file:// 路径会自己嗅探真实类型，
+ * 所以这里按扩展名给近似值即可（未知扩展名按纯文本，便于模型直接读）。
+ */
+const MIME_BY_EXTENSION: Record<string, string> = {
+  ts: "text/plain",
+  tsx: "text/plain",
+  js: "text/plain",
+  jsx: "text/plain",
+  ets: "text/plain",
+  mjs: "text/plain",
+  cjs: "text/plain",
+  json: "application/json",
+  md: "text/markdown",
+  css: "text/css",
+  scss: "text/css",
+  html: "text/html",
+  htm: "text/html",
+  xml: "application/xml",
+  yml: "text/yaml",
+  yaml: "text/yaml",
+  toml: "text/plain",
+  txt: "text/plain",
+  rs: "text/plain",
+  py: "text/plain",
+  go: "text/plain",
+  java: "text/plain",
+  kt: "text/plain",
+  swift: "text/plain",
+  sh: "text/plain",
+  sql: "text/plain",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+};
+
+function guessMime(path: string): string {
+  const dot = path.lastIndexOf(".");
+  const extension = dot > 0 ? path.slice(dot + 1).toLowerCase() : "";
+  return MIME_BY_EXTENSION[extension] ?? "text/plain";
+}
+
+/**
+ * 工作区相对路径 → file:// URL。
+ * 按 / 分段 encodeURIComponent：保留路径分隔符，但空格、中文、% 都转义，
+ * 否则带空格的文件名会被 serve 拆成多个路径片段。
+ */
+function fileURLFor(directory: string, relative: string): string {
+  const base = directory.replace(/\/+$/, "");
+  const absolute = `${base}/${relative.replace(/^\/+/, "")}`;
+  return `file://${absolute
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/")}`;
+}
+
+/**
+ * @ 引用 → prompt 的 file part。
+ * url 用 file:// 绝对路径（serve 读盘）；source 带工作区相对路径与文本位置，
+ * 消息里能还原成「引用了哪个文件、对应输入里的哪一段」。
+ */
+function buildMentionPart(directory: string, ref: MentionRef): Record<string, unknown> {
+  const relative = ref.path.replace(/^\/+/, "");
+  return {
+    type: "file",
+    mime: guessMime(relative),
+    filename: relative,
+    url: fileURLFor(directory, relative),
+    source: {
+      type: "file",
+      path: relative,
+      text: { value: ref.token, start: ref.start, end: ref.end },
+    },
+  };
 }

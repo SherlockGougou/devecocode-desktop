@@ -158,29 +158,6 @@ pub fn path_exists(path: String) -> bool {
     std::path::Path::new(&path).exists()
 }
 
-/// 「经典界面」：把官方 Web UI 单独开一个窗口，保留兜底入口。
-#[tauri::command]
-pub async fn open_classic_view(
-    app: tauri::AppHandle,
-    conn: tauri::State<'_, ServerConn>,
-) -> Result<(), String> {
-    let base = conn.base().ok_or("后端尚未就绪")?;
-    let url = tauri::Url::parse(&base).map_err(|err| err.to_string())?;
-    let label = format!(
-        "classic-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    );
-    tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::External(url))
-        .title("DevEco Code · 经典界面")
-        .inner_size(1280.0, 860.0)
-        .build()
-        .map_err(|err| err.to_string())?;
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // 设置页
 // ---------------------------------------------------------------------------

@@ -16,7 +16,6 @@ const GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
     title: "视图",
     items: [
       ["⌘⇧B", "切换右侧面板"],
-      ["⌘⇧C", "打开经典界面"],
       ["⌘R", "重新加载界面"],
       ["⌘/", "显示本帮助"],
     ],

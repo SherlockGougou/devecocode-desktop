@@ -78,7 +78,6 @@ export const api = {
   commands: (directory: string) => request<CommandInfo[]>("GET", "/command", { directory }),
   mcp: (directory: string) =>
     request<Record<string, McpServerInfo>>("GET", "/mcp", { directory }),
-  openClassicView: () => invoke("open_classic_view"),
   exportSession: (directory: string, sessionID: string) =>
     invoke<string>("export_session", { directory, sessionId: sessionID }),
   getSettings: () => invoke<{ config: AppConfig; runtime: RuntimeInfo }>("get_settings"),

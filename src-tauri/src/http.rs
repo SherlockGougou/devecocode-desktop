@@ -37,9 +37,11 @@ pub fn urlencode(text: &str) -> String {
 
 fn build_url(base: &str, path: &str, query: &[(String, String)]) -> String {
     let mut url = format!("{base}{path}");
+    // 空值参数必须保留：CLI 有些接口把「键存在但为空」当作合法输入
+    // （例如 /find/file?query= 表示列出工作区全部文件），丢掉键会变成 400。
+    // null 已经在 ipc.rs 里过滤掉了，这里不再二次过滤。
     let pairs: Vec<String> = query
         .iter()
-        .filter(|(_, value)| !value.is_empty())
         .map(|(key, value)| format!("{}={}", urlencode(key), urlencode(value)))
         .collect();
     if !pairs.is_empty() {
@@ -105,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn 拼接查询串时跳过空值() {
+    fn 拼接查询串时保留空值() {
         let url = build_url(
             "http://127.0.0.1:1",
             "/session",
@@ -114,7 +116,11 @@ mod tests {
                 ("empty".into(), String::new()),
             ],
         );
-        // 查询串里的 `/` 保持原样即可（与 CLI 自身解析一致），空格必须编码
-        assert_eq!(url, "http://127.0.0.1:1/session?directory=/tmp/a%20b");
+        // 查询串里的 `/` 保持原样即可（与 CLI 自身解析一致），空格必须编码；
+        // 空值要保留成 `empty=`，否则 /find/file?query= 这类接口会 400
+        assert_eq!(
+            url,
+            "http://127.0.0.1:1/session?directory=/tmp/a%20b&empty="
+        );
     }
 }

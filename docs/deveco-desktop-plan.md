@@ -192,6 +192,8 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 前端所有请求经 Rust 转发（绕开 CORS/ATS，连接信息不外泄）。
 **兜底的**：官方 Web UI 保留为「经典界面」独立窗口（`open_classic_view`）。
 
+> 2026-11-07 更新：产品决定去掉经典界面，所有入口与 `open_classic_view` 已删除，见 §22.12。
+
 实现范围（Phase 1）：标题栏 + 工作区树 + 会话列表 + 对话流（markdown/思考/工具卡片）+
 权限审批卡片 + composer + 状态栏 + 右面板（变更/文件）。未做：多 Tab（轨迹/版本/上下文）、
 设置页、通知点击定位。
@@ -246,7 +248,7 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
   通知类改动**即时生效**——SSE 事件处理每次实时读取配置，不需要重启。
 - **只读**：运行状态（CLI 路径/版本、服务地址、应用版本）与 CLI 自身配置
   （`GET /config` 的 model / small_model / permission / plugin）。
-- **诊断**：打开日志目录、打开配置文件、打开经典界面、重启应用（`app.restart()`）。
+- **诊断**：打开日志目录、打开配置文件、重启应用（`app.restart()`）。
 
 交互细节：面板内焦点陷阱（Tab 不跑到主界面）、`Esc` 关闭、`⌘S` 保存、保存按钮 dirty 才可用。
 
@@ -288,7 +290,7 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 
 | 功能 | 实现 |
 |---|---|
-| 原生菜单 | Tauri MenuBuilder：应用菜单（关于/设置 ⌘,/隐藏/退出）、文件（新建会话 ⌘N/关闭窗口）、编辑（标准项）、视图（右栏 ⌘⇧B/经典界面 ⌘⇧C/日志/重载 ⌘R）、窗口。菜单事件经 `deveco://menu` 交给前端执行 |
+| 原生菜单 | Tauri MenuBuilder：应用菜单（关于/设置 ⌘,/隐藏/退出）、文件（新建会话 ⌘N/关闭窗口）、编辑（标准项）、视图（右栏 ⌘⇧B/快捷键/日志/重载 ⌘R）、窗口。菜单事件经 `deveco://menu` 交给前端执行（经典界面菜单项已于 2026-11-07 移除） |
 | 窗口状态记忆 | `tauri-plugin-window-state` |
 | 窗口标题 | 命令 `ipc::set_window_title`，前端按「会话 · 项目」同步 |
 | 消息复制 | `navigator.clipboard`，悬停显示「复制」，实测剪贴板内容正确 |
@@ -602,3 +604,161 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 `70-real-light.png` 及 `41/42/46/53/54/63/64/68/69/71/72` 等局部放大图。
 
 未做：暗色真机截图（当前系统外观为浅色，未改动系统外观与主题偏好）；托盘菜单图标未定制。
+
+### 22.12 @ 文件引用、移除经典界面、新应用图标（2026-11-07 上午）
+
+三项产品需求一起做：输入框用 `@` 关联工作区文件、去掉右上角经典页面及所有入口、给 App 画一个匹配的图标。
+下文记录实测事实、实现要点与验证边界。
+
+#### 1. `@` 引用工作区文件
+
+先对真实 `deveco serve` 做契约实测（临时工作区、`noReply`，不消耗模型 token）：
+
+| 事实 | 证据 |
+|---|---|
+| `/find/file?query=` 的空值是合法的 | 返回工作区文件列表，目录项以 `/` 结尾；**缺少 `query` 键**才 400 `Missing key at ["query"]` |
+| `file` part 用 `url: "file://<绝对路径>"` 时由 serve 读盘 | 响应里合成 `Called the Read tool with the following input: {"filePath":…}` 与 `<path>…<content>…` 的 synthetic text，模型直接看到内容 |
+| 路径含空格/中文可直接编码进 URL | `%20` 与原样空格都能解析；中文按 UTF-8 百分号编码正常 |
+| `mime` 客户端给近似值即可 | 传 `text/plain` 的 png 仍被按 `image/png` 处理 |
+| 引用不存在的文件不会让消息失败 | 合成 `Read tool failed … File not found`，消息照常落库 |
+
+实现：
+
+- `Composer.tsx`：`@` 必须出现在行首或空白之后（`a@b` 邮件不触发），180ms 防抖查 `/find/file`；
+  `↑↓` 循环、`Enter/Tab` 插入、`Esc` 关闭、点击插入；候选过滤目录项与已引用文件，最多 8 条；
+  选中后写入 `@相对路径`，含空格时写 `@"path with space"`；输入框上方出现可删除的「引用」chip。
+- 文本是唯一事实来源：chip、发送时的 file part 都从文本 `parseMentions` 派生，手删 token 时 chip 自动消失，
+  删 chip 时同步切掉 token；发送失败恢复原文时按 token 是否仍在原文里恢复引用。
+- `store.send(text, attachments?, refs?)`：parts 顺序为 text → 每个引用的 file part → 原附件；
+  file part 带 `source: { type:"file", path, text:{ value: token, start, end } }`，位置按 trim 后真正发送的文本重算。
+- 修复 Rust 代理缺陷：`http::build_url` 原来 `filter(|(_, v)| !v.is_empty())`，会把 `query=` 整个丢掉，
+  导致空关键字搜索经代理变成 400。改为只过滤 null（在 `ipc.rs` 已做），并改写单测为「拼接查询串时保留空值」。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）通过；`cargo test` 40 项通过。
+- headless Chromium + mock IPC（生产构建产物，1440×900，暗/亮两套主题）验证弹层、键盘选择、chip、引用上限文案。
+- 捕获真实 prompt body：`@src/lib.rs` → text part + `file:///…/src/lib.rs` file part + source 0–12；
+  `@"docs/设计 文档.md"` → `file:///…/docs/%E8%AE%BE%E8%AE%A1%20%E6%96%87%E6%A1%A3.md`，source 0–16，mime `text/markdown`。
+
+未验证：WKWebView 真机截图与中文输入法实际输入（截图时机器处于锁屏登录界面，WebView 不绘制）；
+手动敲错路径时 serve 只回 Read 失败，不影响消息（实测）。
+
+#### 2. 移除「经典界面」
+
+产品决定不再保留官方 Web UI 兜底窗口，所有入口与死代码一并删除：
+
+- 前端：ChatView 头部按钮、设置页诊断按钮、快捷键面板 `⌘⇧C` 条目、`App.tsx` 的 `deveco://menu` `case "classic"`、
+  `api.openClassicView`，以及因此不再使用的 `ChatView` 的 `api` import。
+- Rust：`ipc::open_classic_view` 命令、`generate_handler!` 注册、视图菜单「经典界面」（含 `⌘⇧C` accelerator）。
+- 影响：`⌘⇧C` 不再可用；「后端重建后旧经典窗口仍指向旧端口」这条已知限制随之消失。
+- 自查：`grep -rn "经典界面\|open_classic_view\|openClassicView\|\"classic\"" ui/src src-tauri/src` 无输出；
+  README、AGENTS.md 同步。
+
+#### 3. 新应用图标
+
+- 设计：暖炭色 squircle（超椭圆 n=5，Apple 824/1024 网格，带顶部柔光与内侧玻璃边）+ 暖白 `D`
+  （Avenir Next Demi Bold）+ 界面 `--ok` 绿的终端提示符 `>`；`D` 与 `>` 的墨迹整体水平居中、`>` 底边与 `D` 基线齐平，
+  不做辉光，保证 32px 下仍是「D + 绿色折角」而不是一团绿斑。
+- 生成：`.agent-temp/icon/gen5.py` 程序化绘制（3× 超采样 + LANCZOS），
+  `npx tauri icon src-tauri/icons/source.png -o src-tauri/icons` 一次产出 `icon.icns`、`icon.ico`、
+  Windows Square*、Android、iOS 全尺寸；`source.png` 是唯一设计源。
+- 验证：`iconutil` 解包 icns 得到 16/32/128/256/512/1024 全套；`sips` 从 icns 渲染 1024 正常；
+  `.app/Contents/Resources/icon.icns` 已随 `build:debug` 更新，`CFBundleIconFile` 指向它。
+- 未验证：Dock/Finder 真机观感（锁屏未能截图）；托盘图标仍复用 app 图标，未做 macOS template 单色版（后续事项）。
+
+证据（本机 `.agent-temp/screens/`，未入库）：`85/86`（@ 弹层与引用 chip，暗色）、`87`（亮色）、
+`90/91`（真机窗口截图，锁屏下 WKWebView 空白）。
+
+### 22.13 顶栏拖不动窗口（2026-11-07 上午）
+
+现象：自绘顶栏（`titleBarStyle: Overlay` + `hiddenTitle`）按住拖不动窗口，正文能正常点击。
+
+排查与证据（本机 macOS 27.2 / 26B123，Tauri 2.12.5、tao 0.37.2 均为当时最新）：
+
+| 步骤 | 结果 |
+|---|---|
+| 查 ACL：`core:window:default` 只有窗口读取/`internal_toggle_maximize`，**不含** `start-dragging` | 官方 Window Customization 文档也要求自定义标题栏显式声明该权限 → 这是一处真缺陷，已补 |
+| 补权限后前端 `invoke('plugin:window|start_dragging')` | 返回成功（不报错），但窗口不动 |
+| tao `drag_window()` 用 `NSApp.currentEvent` 传给 `performWindowDragWithEvent:`，无当前事件时只 warn | 日志里没有该 warn，说明拿到了事件但不是那次 mousedown；同一路径双击却能让窗口 zoom（`internal_toggle_maximize` 不依赖事件） |
+| 改走 `NSWindow.movableByWindowBackground` + tao 在 `sendEvent:` 的同步钩子 | 开关读回确认已置位（`isMovableByWindowBackground` = true），合成拖动仍无位移 |
+| `agent-desktop` 合成拖动打原生 TextEdit 窗口标题栏 | 窗口按位移精确移动，说明测试手段本身有效，问题在应用侧 |
+
+结论：macOS 上这条「IPC → 原生起拖」的路子在本机拿不到有效的按下事件，两种写法都不产生拖动。
+最终实现改成应用内拖动：前端按住顶栏时按帧算目标位置，Rust 侧 `set_position` 设置窗口位置
+（`src-tauri/src/windrag.rs`）。
+
+实现要点：
+
+- `useTitleBarDrag`：`mousedown`（左键、且不在按钮上）记下屏幕坐标并取 `outer_position()` 作基准；
+  `mousemove` 用 `requestAnimationFrame` 合并成每帧一次 IPC，`mouseup` 收尾。
+- 坐标：`screenX/screenY` 是 CSS 像素，窗口位置是物理像素，Rust 侧乘 `scale_factor` 对齐。
+- 只在 macOS 启用；Windows/Linux 继续用 `data-tauri-drag-region`（那条路径在本机无从验证，保持原样），
+  因此 capabilities 里的 `core:window:allow-start-dragging` 仍然需要。
+- 按帧推位置换来的是可控实现，代价：没有系统级贴边分屏、跨 Space 拖动这类原生拖窗行为。
+
+验证（真机，`agent-desktop` 合成拖动 + `list-windows` 读窗口位置）：
+
+| 操作 | 证据 |
+|---|---|
+| 顶栏空白处拖动 (700,55) → (830,185) | 窗口 (1,33) → (131,163)，位移与拖动量一致 |
+| 品牌文字处拖动 (120,56) → (220,116) | 窗口 → (101,93)，位移 +100/+60 一致 |
+| 顶栏右侧面板按钮点击 | 右栏「变更/文件」打开，窗口位置不变 |
+| 正文（侧栏）点击 | 窗口位置不变 |
+
+`npm --prefix ui run build`（含 `tsc --noEmit`）通过；`cargo test` 40 项通过。
+
+未验证 / 已知差异：双击顶栏缩放（原 `data-tauri-drag-region` 自带）现在不再触发，需要的话另行补；
+未做多显示器与 Retina 混插的拖动实测；拖动时窗口位置由 IPC 逐帧设置，理论上比原生略慢一帧。
+
+### 22.14 侧栏工作区列表改版（2026-11-07 上午）
+
+需求：参考用户截图（DSH 自身侧栏「工作区」区块），把左栏改成工作区头部图标 + 文件夹行 + 会话行，
+并要求「展开的会话比工作区文件夹再缩进一级」。
+
+做法：
+
+- `Sidebar.tsx` 重写：头部「工作区」+ 搜索 / 归档 / 新建三个图标动作；工作区行用新增的 `workspace` 图标
+  （带翻盖横线的开口文件夹）；会话行拆成独立的 `ChatRow` 组件，内部管理重命名与删除确认状态。
+- 交互：单击工作区＝切换并展开，再点当前工作区＝收起；`expanded` 语义改为「一次只展开一个」
+  （`selectProject` / `toggleProject` / `newSession` 同步调整）。
+- 折叠：每个工作区默认显示最近 5 条会话，其余收成「展开其余 N 个会话」，展开后给出「收起」。
+- 搜索：从常驻输入框改为按图标展开；有过滤词时头部标题变「搜索结果」；Esc / × 关闭并清空。
+- 层级：工作区名称 x=43pt，会话标题再缩进 18pt（`chat-mark` 26 + 19 + `chat-main` padding 8 = 53pt 相对，绝对 61pt）；
+  `chat-more` 与空态提示同缩进，行宽保持一致。
+- 尺寸对齐 DSH 侧栏实测值（宽 280pt、工作区行 38pt、会话行 34pt、字号 15/15pt、文件夹图标 19pt、时间 11pt），
+  按 296pt 默认侧栏落地；当前会话用 `--row-active` 圆角底块，生成中左侧圆环旋转（`chat-ring.run`）。
+- 主题：新增 `--row-hover`、`--row-active`、`--folder-icon`、`--folder-accent`、`--folder-accent-soft`、`--ring-track`，
+  亮暗各一套；仅当前工作区文件夹使用蓝色（暖色主题里唯一冷色点缀）。
+
+验证（真机，`agent-desktop` 驱动 + 截屏）：
+
+| 操作 | 证据 |
+|---|---|
+| 点击其他工作区（SampleWorkspace） | 切到 SampleWorkspace 并展开，DevEcoCodeDesktop 自动收起 |
+| 再点当前工作区 | 会话列表收起，文件夹保留蓝色描边 |
+| 临时在 `/tmp` 建 6 个会话后展开 | 显示 5 条 + 「展开其余 1 个会话」；点击后第 6 条与「收起」出现（测试会话已 `DELETE /session` 清理） |
+| 悬停会话行 | 时间隐藏，重命名 / 归档 / 删除三个图标出现 |
+| 搜索图标 + 输入 `New` | 输入框展开、标题变「搜索结果」，命中当前工作区会话 |
+| 新建会话图标 | 在当前工作区创建会话，并自动展开该工作区 |
+
+`npm --prefix ui run build`（含 `tsc --noEmit`）通过。
+
+未验证 / 已知差异：
+
+- 暗色主题只做了变量覆盖，未逐项截图核对。
+- 侧栏宽度 220–460 的拖拽区间没有逐档截图；会话标题按可用宽度省略。
+- 重建 debug 包会让 macOS 重新询问「文稿 / 下载 / 桌面 / 照片」权限（adhoc 签名变化，TCC 记录失效）。
+  实测拒绝「文稿」后 `deveco serve` 读不到工作区并持续占用 400% CPU，REST 返回 `DirectoryUnreadableError`；
+  `tccutil reset SystemPolicyDocumentsFolder com.deveco.desktop` 后重新允许即可恢复。
+
+### 22.15 `npm run dev` 无法选择 bin（2026-11-07）
+
+现象：`npm run dev` 启动前端后立即失败，Tauri 执行的 `cargo run` 报
+`could not determine which binary to run`，可用 bin 为 `deveco-desktop` 与 `deveco-selftest`。
+
+根因：新增自检 bin 后，包的 `cargo run` 不再有唯一入口；Tauri dev 没有传 `--bin`。
+
+修复：在 `src-tauri/Cargo.toml` 的 `[package]` 增加 `default-run = "deveco-desktop"`。
+验证：`npm run dev` 能编译并拉起 `target/debug/deveco-desktop`；`npm --prefix ui run build`、
+`cargo test` 40 项通过。

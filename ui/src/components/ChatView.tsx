@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
 import { useApp } from "../store";
 import type { Message, Part } from "../types";
 import Markdown from "./Markdown";
@@ -167,10 +166,6 @@ export default function ChatView() {
           >
             <Icon name="download" size={15} />
             导出
-          </button>
-          <button className="ghost-btn" onClick={() => void api.openClassicView()}>
-            <Icon name="external" size={15} />
-            经典界面
           </button>
         </div>
       </div>

@@ -1,10 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "启动过渡页需要的能力：监听状态事件、申请通知权限",
+  "description": "主窗口需要的能力：启动过渡页监听状态事件、申请通知权限、自绘标题栏拖动窗口",
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:allow-start-dragging",
     "notification:default",
     "notification:allow-is-permission-granted",
     "notification:allow-request-permission"

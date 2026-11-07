@@ -64,9 +64,6 @@ export default function App() {
         case "toggle_right":
           state.toggleRight();
           break;
-        case "classic":
-          void api.openClassicView();
-          break;
         case "export_session":
           void state.exportCurrentSession();
           break;
@@ -194,6 +191,88 @@ export default function App() {
   );
 }
 
+const IS_MACOS = /Mac/i.test(navigator.userAgent);
+
+/**
+ * 按住顶栏拖动窗口（macOS 专用，实现在 `src-tauri/src/windrag.rs`）。
+ *
+ * 为什么不用 `data-tauri-drag-region`：它由注入脚本在 `mousedown` 里异步 IPC 触发
+ * `tao::drag_window()`，回到主线程时已拿不到那次按下事件，窗口不动（权限已按官方
+ * 文档补上，调用也不报错）。这里改成按帧把窗口位置推给 Rust 侧，不依赖平台的事件语义。
+ */
+function useTitleBarDrag(handleRef: React.RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    const handle = handleRef.current;
+    if (!IS_MACOS || !handle) return;
+
+    // base：按下时窗口左上角的物理像素；start：按下时的屏幕坐标（CSS 像素）
+    let base: [number, number] | null = null;
+    let start: { x: number; y: number } | null = null;
+    let pending: { x: number; y: number } | null = null;
+    let frame = 0;
+
+    const flush = () => {
+      frame = 0;
+      if (!base || !start || !pending) return;
+      void invoke("move_window_by_pointer", {
+        baseX: base[0],
+        baseY: base[1],
+        deltaX: pending.x - start.x,
+        deltaY: pending.y - start.y,
+      }).catch(() => {
+        // 拖动失败不该变成用户可见报错，最多是这一帧没跟上
+      });
+      pending = null;
+    };
+
+    const onMove = (e: MouseEvent) => {
+      if (!start) return;
+      pending = { x: e.screenX, y: e.screenY };
+      if (!frame) frame = requestAnimationFrame(flush);
+    };
+
+    const onUp = () => {
+      start = null;
+      base = null;
+      pending = null;
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    const onDown = (e: MouseEvent) => {
+      // 只认左键，且避开顶栏上的按钮
+      if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+      e.preventDefault();
+      start = { x: e.screenX, y: e.screenY };
+      base = null;
+      void invoke<[number, number]>("window_outer_position")
+        .then((pos) => {
+          base = [pos[0], pos[1]];
+        })
+        .catch(() => {
+          // 拿不到基准位置就当这次没拖，窗口不会乱跳
+        });
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    };
+
+    handle.addEventListener("mousedown", onDown);
+    return () => {
+      handle.removeEventListener("mousedown", onDown);
+      onUp();
+    };
+  }, [handleRef]);
+}
+
+/** 双击顶栏缩放窗口（macOS 系统习惯；原来由 Tauri 的 drag.js 提供）。 */
+function toggleMaximize() {
+  void invoke("plugin:window|internal_toggle_maximize").catch(() => {
+    // 缩放失败不影响其它交互
+  });
+}
+
 function TitleBar() {
   const rightOpen = useApp((s) => s.rightOpen);
   const toggleRight = useApp((s) => s.toggleRight);
@@ -201,15 +280,26 @@ function TitleBar() {
   const connOk = backend.state === "ready";
   const connBad = backend.state === "failed";
   const connText = connOk ? "已连接" : connBad ? "后端不可用" : "重连中";
+  const handleRef = useRef<HTMLDivElement>(null);
+  useTitleBarDrag(handleRef);
 
   return (
-    <header className="titlebar" data-tauri-drag-region>
-      <div className="titlebar-brand" data-tauri-drag-region>
-        <span className="brand-dot" />
-        DevEco Code
-        <span className="brand-ver">v0.2</span>
+    // 顶栏左边留给红黄绿灯（padding-left），中间整段是可拖动的窗口标题区。
+    // macOS 由 useTitleBarDrag 处理；其它平台仍交给 Tauri 的 drag region。
+    <header className="titlebar">
+      <div
+        ref={handleRef}
+        className="titlebar-handle"
+        onDoubleClick={IS_MACOS ? toggleMaximize : undefined}
+        {...(IS_MACOS ? {} : { "data-tauri-drag-region": "deep" })}
+      >
+        <div className="titlebar-brand">
+          <span className="brand-dot" />
+          DevEco Code
+          <span className="brand-ver">v0.2</span>
+        </div>
+        <div className="titlebar-drag" />
       </div>
-      <div className="titlebar-drag" data-tauri-drag-region />
       <div className="titlebar-actions">
         <span
           className={`conn ${connOk ? "ok" : ""} ${connBad ? "bad" : ""}`}

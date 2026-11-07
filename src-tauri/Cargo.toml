@@ -4,6 +4,7 @@ version = "0.2.0"
 description = "DevEco Code 桌面外壳"
 edition = "2021"
 rust-version = "1.77"
+default-run = "deveco-desktop"
 
 [lib]
 name = "deveco_desktop"

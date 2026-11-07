@@ -1,21 +1,132 @@
 import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../store";
+import type { Session } from "../types";
 import { Icon } from "./Icon";
+
+/** 每个工作区默认先显示最近几个会话，其余折叠成一行「展开其余 N 个会话」 */
+const SESSION_PREVIEW = 5;
 
 function basename(path: string) {
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] ?? path;
 }
 
+/** 会话行的相对时间：与参考截图一致，不带「前」也不加空格（刚刚 / 32分钟 / 1小时） */
 function timeAgo(ms?: number) {
   if (!ms) return "";
   const diff = Date.now() - ms;
   const minute = 60_000;
   if (diff < minute) return "刚刚";
-  if (diff < 60 * minute) return `${Math.floor(diff / minute)} 分钟前`;
-  if (diff < 24 * 60 * minute) return `${Math.floor(diff / (60 * minute))} 小时前`;
-  if (diff < 30 * 24 * 60 * minute) return `${Math.floor(diff / (24 * 60 * minute))} 天前`;
+  if (diff < 60 * minute) return `${Math.floor(diff / minute)}分钟`;
+  if (diff < 24 * 60 * minute) return `${Math.floor(diff / (60 * minute))}小时`;
+  if (diff < 30 * 24 * 60 * minute) return `${Math.floor(diff / (24 * 60 * minute))}天`;
   return new Date(ms).toLocaleDateString();
+}
+
+/** 单条会话：默认只有标题与相对时间，重命名/归档/删除只在悬停或聚焦时出现 */
+function ChatRow({
+  session,
+  active,
+  streaming,
+  onOpen,
+}: {
+  session: Session;
+  active: boolean;
+  streaming: boolean;
+  onOpen: () => void;
+}) {
+  const renameSession = useApp((s) => s.renameSession);
+  const archiveSession = useApp((s) => s.archiveSession);
+  const deleteSession = useApp((s) => s.deleteSession);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const title = session.title || "未命名会话";
+  const archived = session.time?.archived ?? false;
+
+  const commitRename = async () => {
+    const value = (editing ?? "").trim();
+    setEditing(null);
+    if (value && value !== session.title) await renameSession(session.id, value);
+  };
+
+  return (
+    <div
+      className={`chat-row ${active ? "active" : ""} ${archived ? "archived" : ""}`}
+    >
+      <span className="chat-mark" aria-hidden>
+        {active && <span className={`chat-ring ${streaming ? "run" : ""}`} />}
+      </span>
+      {editing !== null ? (
+        <input
+          className="chat-rename"
+          autoFocus
+          value={editing}
+          onChange={(event) => setEditing(event.target.value)}
+          onBlur={() => void commitRename()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") void commitRename();
+            if (event.key === "Escape") setEditing(null);
+          }}
+        />
+      ) : (
+        <button
+          className="chat-main"
+          onClick={onOpen}
+          onDoubleClick={() => setEditing(session.title ?? "")}
+          title={session.title ?? session.id}
+        >
+          <span className="chat-title">{title}</span>
+          <span className="chat-time">{timeAgo(session.time?.updated)}</span>
+        </button>
+      )}
+      {confirming ? (
+        <span className="chat-confirm">
+          <span>删除？</span>
+          <button
+            className="mini-btn text danger"
+            onClick={() => {
+              setConfirming(false);
+              void deleteSession(session.id);
+            }}
+          >
+            确认
+          </button>
+          <button className="mini-btn text" onClick={() => setConfirming(false)}>
+            取消
+          </button>
+        </span>
+      ) : (
+        editing === null && (
+          <span className="chat-actions">
+            <button
+              className="mini-btn"
+              title="重命名"
+              aria-label="重命名会话"
+              onClick={() => setEditing(session.title ?? "")}
+            >
+              <Icon name="pencil" size={14} />
+            </button>
+            <button
+              className="mini-btn"
+              title={archived ? "取消归档" : "归档会话"}
+              aria-label={archived ? "取消归档" : "归档会话"}
+              onClick={() => void archiveSession(session.id, !archived)}
+            >
+              <Icon name={archived ? "unarchive" : "archive"} size={14} />
+            </button>
+            <button
+              className="mini-btn danger"
+              title="删除会话"
+              aria-label="删除会话"
+              onClick={() => setConfirming(true)}
+            >
+              <Icon name="trash" size={14} />
+            </button>
+          </span>
+        )
+      )}
+    </div>
+  );
 }
 
 export default function Sidebar() {
@@ -28,6 +139,7 @@ export default function Sidebar() {
   const runSearch = useApp((s) => s.runSearch);
   const directory = useApp((s) => s.directory);
   const sessionID = useApp((s) => s.sessionID);
+  const streaming = useApp((s) => s.streaming);
   const filter = useApp((s) => s.filter);
   const selectProject = useApp((s) => s.selectProject);
   const toggleProject = useApp((s) => s.toggleProject);
@@ -35,25 +147,22 @@ export default function Sidebar() {
   const openSessionIn = useApp((s) => s.openSessionIn);
   const showArchived = useApp((s) => s.showArchived);
   const toggleArchivedView = useApp((s) => s.toggleArchivedView);
-  const archiveSession = useApp((s) => s.archiveSession);
   const newSession = useApp((s) => s.newSession);
   const setFilter = useApp((s) => s.setFilter);
   const openSettings = useApp((s) => s.openSettings);
-  const renameSession = useApp((s) => s.renameSession);
-  const deleteSession = useApp((s) => s.deleteSession);
-  const [editing, setEditing] = useState<{ id: string; value: string } | null>(null);
-  const [confirming, setConfirming] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [showAll, setShowAll] = useState<Record<string, boolean>>({});
 
+  const keyword = filter.trim().toLowerCase();
   const visible = useMemo(() => {
-    const keyword = filter.trim().toLowerCase();
+    if (!keyword) return projects;
     return projects.filter((project) => {
-      if (!keyword) return true;
       if (project.worktree.toLowerCase().includes(keyword)) return true;
       return (sessions[project.worktree] ?? []).some((session) =>
         (session.title ?? "").toLowerCase().includes(keyword),
       );
     });
-  }, [projects, sessions, filter]);
+  }, [projects, sessions, keyword]);
 
   useEffect(() => {
     if (!filter.trim()) return;
@@ -61,202 +170,171 @@ export default function Sidebar() {
     return () => clearTimeout(timer);
   }, [filter, runSearch]);
 
-  const commitRename = async () => {
-    if (!editing) return;
-    const { id, value } = editing;
-    setEditing(null);
-    if (value.trim()) await renameSession(id, value);
+  const toggleSearch = () => {
+    if (searchOpen) {
+      setSearchOpen(false);
+      setFilter("");
+      return;
+    }
+    setSearchOpen(true);
+  };
+
+  // 单击工作区＝切换过去；再次单击当前工作区＝收起它的会话列表（与参考截图一致，同时只展开一个）
+  const onWorkspace = (dir: string) => {
+    if (dir === directory && (expanded[dir] ?? false)) void toggleProject(dir);
+    else void selectProject(dir);
+  };
+
+  const renderWorkspace = (dir: string, isCurrent: boolean) => {
+    const isOpen = expanded[dir] ?? false;
+    const loaded = loadedDirs[dir] ?? false;
+    const rawList = sessions[dir] ?? [];
+    const list = showArchived ? rawList : rawList.filter((item) => !item.time?.archived);
+    const all = showAll[dir] ?? false;
+    const shown = all ? list : list.slice(0, SESSION_PREVIEW);
+    const hidden = list.length - shown.length;
+    return (
+      <div className="ws" key={dir}>
+        <button
+          className={`ws-row ${isCurrent ? "active" : ""}`}
+          onClick={() => onWorkspace(dir)}
+          title={dir}
+          aria-expanded={isOpen}
+        >
+          <span className="ws-icon">
+            <Icon name="workspace" size={19} strokeWidth={1.9} />
+          </span>
+          <span className="ws-name">{basename(dir)}</span>
+        </button>
+        {isOpen && (
+          <div className="ws-sessions">
+            {!loaded && <div className="empty-line">加载中…</div>}
+            {loaded && list.length === 0 && <div className="empty-line">还没有会话</div>}
+            {shown.map((session) => (
+              <ChatRow
+                key={session.id}
+                session={session}
+                active={isCurrent && session.id === sessionID}
+                streaming={isCurrent && session.id === sessionID && streaming}
+                onOpen={() => void openSession(session.id)}
+              />
+            ))}
+            {hidden > 0 && (
+              <button
+                className="chat-more"
+                onClick={() => setShowAll({ ...showAll, [dir]: true })}
+              >
+                展开其余 {hidden} 个会话
+              </button>
+            )}
+            {all && list.length > SESSION_PREVIEW && (
+              <button
+                className="chat-more"
+                onClick={() => setShowAll({ ...showAll, [dir]: false })}
+              >
+                收起
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
     <aside className="sidebar">
-      <button className="new-session" onClick={() => void newSession()} disabled={!directory}>
-        <Icon name="plus" size={16} strokeWidth={2} />
-        新会话
-      </button>
-
-      <div className="search">
-        <span className="search-icon">
-          <Icon name="search" size={16} />
+      <div className="ws-header">
+        <span className="ws-title">
+          {keyword ? (searching ? "搜索中…" : "搜索结果") : "工作区"}
         </span>
-        <input
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-          placeholder="搜索项目或会话"
-        />
-      </div>
-
-      <div className="section-title">
-        <span>{filter.trim() ? (searching ? "搜索中…" : "搜索结果") : "工作区"}</span>
-        {!filter.trim() && (
+        <div className="ws-actions">
           <button
-            className={`archive-toggle ${showArchived ? "active" : ""}`}
+            className={`ws-action ${searchOpen ? "on" : ""}`}
+            onClick={toggleSearch}
+            title="搜索工作区或会话"
+            aria-label="搜索工作区或会话"
+            aria-pressed={searchOpen}
+          >
+            <Icon name="search" size={17} />
+          </button>
+          <button
+            className={`ws-action ${showArchived ? "on" : ""}`}
             onClick={toggleArchivedView}
             title={showArchived ? "隐藏已归档会话" : "显示已归档会话"}
+            aria-label={showArchived ? "隐藏已归档会话" : "显示已归档会话"}
+            aria-pressed={showArchived}
           >
-            {showArchived ? "隐藏归档" : "显示归档"}
+            <Icon name="sliders" size={17} />
           </button>
-        )}
+          <button
+            className="ws-action"
+            onClick={() => void newSession()}
+            disabled={!directory}
+            title="新会话"
+            aria-label="新会话"
+          >
+            <Icon name="compose" size={17} />
+          </button>
+        </div>
       </div>
+
+      {searchOpen && (
+        <div className="sidebar-search">
+          <Icon name="search" size={14} />
+          <input
+            autoFocus
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="搜索工作区或会话"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setFilter("");
+                setSearchOpen(false);
+              }
+            }}
+          />
+          <button
+            className="search-clear"
+            onClick={() => {
+              setFilter("");
+              setSearchOpen(false);
+            }}
+            title="关闭搜索"
+            aria-label="关闭搜索"
+          >
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+      )}
+
       <div className="tree">
-        {filter.trim() &&
-          Object.entries(searchResults).map(([dir, list]) => (
-            <div key={`search-${dir}`} className="project">
-              <div className="project-row">
-                <span className="chevron-btn open" aria-hidden>
-                  <Icon name="chevron-right" size={15} />
-                </span>
-                <button className="project-name" onClick={() => void selectProject(dir)} title={dir}>
-                  {basename(dir)}
-                </button>
-                <span className="project-count">{list.length}</span>
+        {keyword
+          ? Object.entries(searchResults).map(([dir, list]) => (
+              <div className="ws" key={`search-${dir}`}>
+                <div className={`ws-row static ${dir === directory ? "active" : ""}`} title={dir}>
+                  <span className="ws-icon">
+                    <Icon name="workspace" size={19} strokeWidth={1.9} />
+                  </span>
+                  <span className="ws-name">{basename(dir)}</span>
+                </div>
+                <div className="ws-sessions">
+                  {list.map((session) => (
+                    <ChatRow
+                      key={session.id}
+                      session={session}
+                      active={session.id === sessionID && dir === directory}
+                      streaming={session.id === sessionID && dir === directory && streaming}
+                      onOpen={() => void openSessionIn(dir, session.id)}
+                    />
+                  ))}
+                </div>
               </div>
-              <div className="sessions">
-                {list.map((session) => (
-                  <div
-                    key={session.id}
-                    className={`session-row ${session.id === sessionID ? "active" : ""}`}
-                  >
-                    <button
-                      className="session-main"
-                      title={session.title ?? session.id}
-                      onClick={() => void openSessionIn(dir, session.id)}
-                    >
-                      <span className="session-title">{session.title || "未命名会话"}</span>
-                      <span className="session-time">{timeAgo(session.time?.updated)}</span>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        {filter.trim() && !searching && Object.keys(searchResults).length === 0 && (
+            ))
+          : visible.map((project) => renderWorkspace(project.worktree, project.worktree === directory))}
+        {keyword && !searching && Object.keys(searchResults).length === 0 && (
           <div className="empty-line">没有匹配的会话</div>
         )}
-        {!filter.trim() && visible.map((project) => {
-          const dir = project.worktree;
-          const isOpen = expanded[dir] ?? false;
-          const loaded = loadedDirs[dir] ?? false;
-          const rawList = sessions[dir] ?? [];
-          const list = showArchived
-            ? rawList
-            : rawList.filter((item) => !item.time?.archived);
-          const keyword = filter.trim().toLowerCase();
-          const shown = keyword
-            ? list.filter((s) => (s.title ?? "").toLowerCase().includes(keyword))
-            : list;
-          return (
-            <div key={dir} className="project">
-              <div className={`project-row ${dir === directory ? "active" : ""}`}>
-                <button
-                  className={`chevron-btn ${isOpen ? "open" : ""}`}
-                  onClick={() => void toggleProject(dir)}
-                  title={isOpen ? "折叠" : "展开"}
-                >
-                  <Icon name="chevron-right" size={15} strokeWidth={2} />
-                </button>
-                <button className="project-name" onClick={() => void selectProject(dir)} title={dir}>
-                  {basename(dir)}
-                </button>
-                <span className="project-count">{loaded ? list.length || "" : ""}</span>
-              </div>
-              {isOpen && (
-                <div className="sessions">
-                  {!loaded && <div className="empty-line">加载中…</div>}
-                  {loaded && shown.length === 0 && (
-                    <div className="empty-line">{keyword ? "没有匹配的会话" : "还没有会话"}</div>
-                  )}
-                  {shown.map((session) => {
-                    const isEditing = editing?.id === session.id;
-                    return (
-                      <div
-                        key={session.id}
-                        className={`session-row ${session.id === sessionID ? "active" : ""}`}
-                      >
-                        {isEditing ? (
-                          <input
-                            className="session-rename"
-                            autoFocus
-                            value={editing.value}
-                            onChange={(event) =>
-                              setEditing({ id: session.id, value: event.target.value })
-                            }
-                            onBlur={() => void commitRename()}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter") void commitRename();
-                              if (event.key === "Escape") setEditing(null);
-                            }}
-                          />
-                        ) : (
-                          <button
-                            className="session-main"
-                            onClick={() => void openSession(session.id)}
-                            onDoubleClick={() =>
-                              setEditing({ id: session.id, value: session.title ?? "" })
-                            }
-                            title={session.title ?? session.id}
-                          >
-                            <span className="session-title">{session.title || "未命名会话"}</span>
-                            <span className="session-time">{timeAgo(session.time?.updated)}</span>
-                          </button>
-                        )}
-                        {confirming === session.id && (
-                          <span className="session-confirm">
-                            <span>删除？</span>
-                            <button
-                              className="mini-btn text danger"
-                              onClick={() => {
-                                setConfirming(null);
-                                void deleteSession(session.id);
-                              }}
-                            >
-                              确认
-                            </button>
-                            <button
-                              className="mini-btn text"
-                              onClick={() => setConfirming(null)}
-                            >
-                              取消
-                            </button>
-                          </span>
-                        )}
-                        {!isEditing && confirming !== session.id && (
-                          <span className="session-actions">
-                            <button
-                              className="mini-btn"
-                              title="重命名"
-                              aria-label="重命名会话"
-                              onClick={() => setEditing({ id: session.id, value: session.title ?? "" })}
-                            >
-                              <Icon name="pencil" size={15} />
-                            </button>
-                            <button
-                              className="mini-btn"
-                              title={session.time?.archived ? "取消归档" : "归档会话"}
-                              aria-label={session.time?.archived ? "取消归档" : "归档会话"}
-                              onClick={() => void archiveSession(session.id, !session.time?.archived)}
-                            >
-                              <Icon name={session.time?.archived ? "unarchive" : "archive"} size={15} />
-                            </button>
-                            <button
-                              className="mini-btn danger"
-                              title="删除会话"
-                              aria-label="删除会话"
-                              onClick={() => setConfirming(session.id)}
-                            >
-                              <Icon name="trash" size={15} />
-                            </button>
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {visible.length === 0 && <div className="empty-line">没有匹配的项目</div>}
+        {!keyword && visible.length === 0 && <div className="empty-line">没有匹配的项目</div>}
       </div>
 
       <div className="sidebar-footer">

@@ -295,9 +295,6 @@ export default function Settings() {
               >
                 打开配置文件
               </button>
-              <button className="ghost-btn" onClick={() => void api.openClassicView()}>
-                打开经典界面
-              </button>
               <button className="ghost-btn danger" onClick={() => void api.restartApp()}>
                 重启应用
               </button>

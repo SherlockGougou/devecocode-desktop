@@ -167,6 +167,22 @@ export interface Attachment {
   size: number;
 }
 
+/**
+ * Composer 里 @ 引用的工作区文件。
+ * 输入文本是唯一事实来源：chip 与发送时的 file part 都从文本解析出来，
+ * token 是文本中实际出现的 `@path` 或 `@"path with space"`。
+ */
+export interface MentionRef {
+  /** 工作区相对路径（不含引号） */
+  path: string;
+  /** 文本中实际出现的 token（路径含空格时带引号） */
+  token: string;
+  /** token 在文本中的起始下标，发送时作为 source.text.start */
+  start: number;
+  /** token 在文本中的结束下标（不含），发送时作为 source.text.end */
+  end: number;
+}
+
 /** 后端状态：主进程自愈过程广播给界面的状态机 */
 export type BackendState = "starting" | "ready" | "reconnecting" | "recovering" | "failed";
 

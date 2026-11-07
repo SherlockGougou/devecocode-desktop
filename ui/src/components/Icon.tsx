@@ -31,6 +31,8 @@ export type IconName =
   | "paperclip"
   | "image"
   | "file"
+  | "compose"
+  | "workspace"
   | "folder"
   | "folder-up"
   | "refresh"
@@ -124,6 +126,20 @@ const ICONS: Record<IconName, ReactNode> = {
     <>
       <path d="M14.2 3.6H7.6a2 2 0 0 0-2 2v12.8a2 2 0 0 0 2 2h8.8a2 2 0 0 0 2-2V8z" />
       <path d="M14 3.6v4.6h4.6" />
+    </>
+  ),
+  // 新建会话：方形纸面 + 右上角加号（对齐参考截图的 compose 图标）
+  compose: (
+    <>
+      <path d="M20 11.4v6.4a2.2 2.2 0 0 1-2.2 2.2H6.2A2.2 2.2 0 0 1 4 17.8V7.4A2.2 2.2 0 0 1 6.2 5.2h5.6" />
+      <path d="M17.9 3.4v6.2M14.8 6.5h6.2" />
+    </>
+  ),
+  // 工作区文件夹：带翻盖横线的开口文件夹，单个图形在 16–18px 下也认得出是「目录」
+  workspace: (
+    <>
+      <path d="M3.7 7.8a2 2 0 0 1 2-2h3.2c.55 0 1.07.22 1.46.6l1.22 1.22h6.72a2 2 0 0 1 2 2v7.4a2 2 0 0 1-2 2H5.7a2 2 0 0 1-2-2z" />
+      <path d="M8.1 13.4h7.8" />
     </>
   ),
   folder: (
