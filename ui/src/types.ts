@@ -18,6 +18,7 @@ export interface Session {
   id: string;
   title?: string;
   directory?: string;
+  agent?: string;
   parentID?: string;
   slug?: string;
   cost?: number;
@@ -48,6 +49,7 @@ export interface ToolState {
   title?: string;
   metadata?: Record<string, unknown>;
   time?: { start?: number; end?: number };
+  error?: unknown;
 }
 
 export interface MessageInfo {
@@ -159,6 +161,37 @@ export interface FileNode {
   absolute?: string;
   type: "file" | "directory";
   ignored?: boolean;
+}
+
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
+export type TodoPriority = "high" | "medium" | "low";
+
+/** CLI `/session/{id}/todo` 与 `todo.updated` 的稳定结构。 */
+export interface TodoItem {
+  content: string;
+  status: TodoStatus;
+  priority: TodoPriority;
+}
+
+export type SessionStatus =
+  | { type: "idle" }
+  | { type: "busy" }
+  | { type: "retry"; attempt: number; message: string; next: number };
+
+/** 由 task 工具或 subtask part 推导出的子代理任务，仅用于界面展示。 */
+export interface SubagentTask {
+  /** part id；没有 part 的孤儿子会话用 `session:<id>` */
+  id: string;
+  parentSessionID: string;
+  sessionID: string | null;
+  agent: string;
+  description: string;
+  prompt: string;
+  status: "pending" | "running" | "completed" | "error";
+  startedAt?: number;
+  endedAt?: number;
+  error?: string;
+  child?: Session;
 }
 
 export interface Attachment {

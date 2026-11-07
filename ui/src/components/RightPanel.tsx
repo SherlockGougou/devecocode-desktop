@@ -1,5 +1,7 @@
 import { useMemo } from "react";
+import { api } from "../api";
 import { useApp } from "../store";
+import { hasCopyableText } from "../filePreview";
 import {
   copyItem,
   referenceItem,
@@ -10,7 +12,17 @@ import {
   absoluteWorkspacePath,
   relativeWorkspacePath,
 } from "../paths";
+import FilePreviewView from "./FilePreview";
 import { Icon } from "./Icon";
+import TasksPanel from "./TasksPanel";
+
+async function openDefaultApp(path: string) {
+  try {
+    await api.openPath(path);
+  } catch (error) {
+    useApp.setState({ error: String(error) });
+  }
+}
 
 export default function RightPanel() {
   const open = useApp((s) => s.rightOpen);
@@ -77,6 +89,9 @@ export default function RightPanel() {
         </button>
         <button className={tab === "files" ? "active" : ""} onClick={() => setTab("files")}>
           文件
+        </button>
+        <button className={tab === "tasks" ? "active" : ""} onClick={() => setTab("tasks")}>
+          任务
         </button>
       </div>
 
@@ -157,7 +172,7 @@ export default function RightPanel() {
             menu.open(
               event,
               [
-                ...(preview.type === "text"
+                ...(hasCopyableText(preview)
                   ? [
                       copyItem("复制全部内容", preview.content, "文件内容已复制"),
                       { type: "separator" as const },
@@ -173,6 +188,12 @@ export default function RightPanel() {
                 ...(directory
                   ? [copyItem("复制绝对路径", absolute, "绝对路径已复制")]
                   : []),
+                {
+                  type: "item" as const,
+                  label: "用默认应用打开",
+                  icon: "external" as const,
+                  onSelect: () => openDefaultApp(preview.absolute),
+                },
                 { type: "separator" },
                 {
                   type: "item",
@@ -197,12 +218,16 @@ export default function RightPanel() {
             <span className="preview-path" title={preview.path}>
               {preview.path}
             </span>
+            <button
+              className="mini-btn"
+              onClick={() => void openDefaultApp(preview.absolute)}
+              title="用默认应用打开"
+              aria-label="用默认应用打开"
+            >
+              <Icon name="external" size={14} />
+            </button>
           </div>
-          {preview.type === "text" ? (
-            <pre className="preview-body">{preview.content}</pre>
-          ) : (
-            <div className="empty-line">非文本文件（{preview.type}），暂不支持预览</div>
-          )}
+          <FilePreviewView preview={preview} />
         </div>
       )}
 
@@ -283,6 +308,12 @@ export default function RightPanel() {
             })}
             {shown.length === 0 && <div className="empty-line">没有文件</div>}
           </div>
+        </div>
+      )}
+
+      {tab === "tasks" && (
+        <div className="right-body tasks-body">
+          <TasksPanel />
         </div>
       )}
     </aside>

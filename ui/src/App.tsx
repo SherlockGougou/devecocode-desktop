@@ -12,6 +12,7 @@ import RightPanel from "./components/RightPanel";
 import Settings from "./components/Settings";
 import Shortcuts from "./components/Shortcuts";
 import { Icon } from "./components/Icon";
+import { AppIcon } from "./components/AppIcon";
 
 export default function App() {
   const booted = useRef(false);
@@ -134,7 +135,7 @@ export default function App() {
   if (booting) {
     return (
       <div className="boot">
-        <div className="boot-mark">D</div>
+        <AppIcon size={48} className="boot-icon" />
         <div className="boot-title">DevEco Code</div>
         <div className="boot-msg">{bootMessage}</div>
         <div className="boot-bar">
@@ -294,7 +295,7 @@ function TitleBar() {
         {...(IS_MACOS ? {} : { "data-tauri-drag-region": "deep" })}
       >
         <div className="titlebar-brand">
-          <span className="brand-dot" />
+          <AppIcon size={16} className="titlebar-icon" />
           DevEco Code
           <span className="brand-ver">v0.2</span>
         </div>
@@ -308,7 +309,7 @@ function TitleBar() {
               ? "事件流已连接"
               : connBad
                 ? `本地服务已停止：${backend.detail ?? "原因未知"}`
-                : "正在重连本地服务"
+                : (backend.detail ?? "正在重连本地服务")
           }
         >
           {connText}
@@ -339,9 +340,11 @@ function BackendBanner() {
     : backend.state === "recovering"
       ? `正在重启本地服务（第 ${backend.attempt} 次）`
       : `与本地服务的连接中断（第 ${backend.attempt} 次重连）`;
-  const detail = failed
-    ? backend.detail ?? "可能是 CLI 崩溃或被升级替换，可手动重试。"
-    : "正在自动恢复，期间消息可能延迟；恢复后会重新同步当前会话。";
+  const detail =
+    backend.detail ??
+    (failed
+      ? "可能是 CLI 崩溃或被升级替换，可手动重试。"
+      : "正在自动恢复，期间消息可能延迟；恢复后会重新同步当前会话。");
 
   return (
     <div className={`backend-banner ${failed ? "bad" : "warn"}`}>
@@ -350,10 +353,10 @@ function BackendBanner() {
         <strong>{title}</strong>
         <span title={detail}>{detail}</span>
       </div>
-      {failed && (
+      {(failed || backend.state === "reconnecting") && (
         <>
           <button className="ghost-btn" onClick={() => void retryBackend()}>
-            立即重试
+            {failed ? "立即重试" : "重启服务"}
           </button>
           <button className="ghost-btn" onClick={openSettings}>
             诊断

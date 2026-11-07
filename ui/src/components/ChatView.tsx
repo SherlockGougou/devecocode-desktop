@@ -16,6 +16,14 @@ import {
 } from "../paths";
 import Markdown from "./Markdown";
 import { Icon } from "./Icon";
+import { TaskProgressBar, TaskStatusBadge, formatTaskDuration } from "./TasksPanel";
+import {
+  buildSubagentTasks,
+  latestTaskActivity,
+  taskFromPart,
+  todoProgress,
+} from "../tasks";
+import { AppIcon } from "./AppIcon";
 
 const MAX_PREVIEW = 4000;
 const MAX_ATTACHMENT_PREVIEW = 120_000;
@@ -48,13 +56,20 @@ function messageText(parts: Part[]) {
 function messageHasContent(message: Message) {
   if (message.info.role === "user") {
     const text = messageText(message.parts);
-    return Boolean(text.trim()) || message.parts.some((part) => part.type === "file" && !part.synthetic);
+    return (
+      Boolean(text.trim()) ||
+      message.parts.some(
+        (part) =>
+          !part.synthetic && (part.type === "file" || part.type === "subtask"),
+      )
+    );
   }
   return message.parts.some(
     (part) =>
       !part.synthetic &&
       ((part.type === "text" && Boolean(part.text)) ||
         part.type === "tool" ||
+        part.type === "subtask" ||
         part.type === "reasoning"),
   );
 }
@@ -360,6 +375,80 @@ function ToolCard({ part }: { part: Part }) {
   );
 }
 
+function activitySnippet(activity: NonNullable<ReturnType<typeof latestTaskActivity>>) {
+  const value =
+    activity.kind === "tool"
+      ? activity.title
+      : activity.detail.replace(/\s+/g, " ").trim();
+  const suffix =
+    activity.kind === "tool" && activity.status === "running" ? " · 执行中" : "";
+  const text = `${value}${suffix}`;
+  return text.length > 150 ? `${text.slice(0, 150)}…` : text;
+}
+
+function SubagentPartCard({ part, fallbackTime }: { part: Part; fallbackTime?: number }) {
+  const parentSessionID = useApp((s) => s.sessionID);
+  const children = useApp((s) => s.sessionChildren);
+  const statuses = useApp((s) => s.sessionStatuses);
+  const openTasks = useApp((s) => s.openTasks);
+  const task = useMemo(
+    () => taskFromPart(part, parentSessionID, children, statuses, fallbackTime),
+    [part, parentSessionID, children, statuses, fallbackTime],
+  );
+  const childMessages = useApp((s) =>
+    task?.sessionID ? s.childMessages[task.sessionID] : undefined,
+  );
+  const childTodos = useApp((s) =>
+    task?.sessionID ? s.childTodos[task.sessionID] : undefined,
+  );
+  if (!task) return null;
+
+  const progress = todoProgress(childTodos ?? []);
+  const activity = latestTaskActivity(childMessages ?? []);
+  const duration = formatTaskDuration(task);
+  return (
+    <button
+      type="button"
+      className={`subagent-card ${task.status}`}
+      onClick={() => openTasks(task.id)}
+      title={`查看「${task.description}」的进展`}
+    >
+      <span className="subagent-card-head">
+        <span className="subagent-card-icon">
+          <Icon name="branch" size={15} />
+        </span>
+        <span className="subagent-card-copy">
+          <span className="subagent-card-title">{task.description}</span>
+          <span className="subagent-card-meta">
+            {task.agent}
+            {duration && ` · ${duration}`}
+            {progress.total > 0 && ` · 待办 ${progress.resolved}/${progress.total}`}
+          </span>
+        </span>
+        <TaskStatusBadge status={task.status} />
+        <Icon name="chevron-right" size={13} className="subagent-caret" />
+      </span>
+      {activity && (
+        <span className={`subagent-activity ${activity.kind}`}>
+          {activity.kind === "tool" && (
+            <span className={`subagent-activity-mark ${activity.status ?? ""}`}>
+              {activity.status === "running" || activity.status === "pending" ? (
+                <span className="tool-spinner" />
+              ) : activity.status === "error" ? (
+                <Icon name="alert" size={10} />
+              ) : (
+                <Icon name="check" size={10} strokeWidth={2.2} />
+              )}
+            </span>
+          )}
+          {activity.kind === "reasoning" && <Icon name="spark" size={10} />}
+          <span>{activitySnippet(activity)}</span>
+        </span>
+      )}
+    </button>
+  );
+}
+
 function ToolGroup({ parts }: { parts: Part[] }) {
   return (
     <div className="tool-group">
@@ -377,6 +466,10 @@ function groupParts(parts: Part[]): Block[] {
   const blocks: Block[] = [];
   for (const part of parts) {
     if (part.synthetic) continue;
+    if (part.type === "subtask" || (part.type === "tool" && part.tool === "task")) {
+      blocks.push({ kind: "part", part });
+      continue;
+    }
     if (part.type === "tool") {
       const last = blocks[blocks.length - 1];
       if (last?.kind === "tool") last.parts.push(part);
@@ -388,7 +481,7 @@ function groupParts(parts: Part[]): Block[] {
   return blocks;
 }
 
-function AssistantBlocks({ parts }: { parts: Part[] }) {
+function AssistantBlocks({ parts, fallbackTime }: { parts: Part[]; fallbackTime?: number }) {
   const menu = useContextMenu();
   return (
     <>
@@ -397,6 +490,9 @@ function AssistantBlocks({ parts }: { parts: Part[] }) {
           return <ToolGroup key={block.parts[0].id} parts={block.parts} />;
         }
         const part = block.part;
+        if (part.type === "subtask" || (part.type === "tool" && part.tool === "task")) {
+          return <SubagentPartCard key={part.id} part={part} fallbackTime={fallbackTime} />;
+        }
         if (part.type === "text") {
           return part.text ? <Markdown key={part.id} text={part.text} /> : null;
         }
@@ -465,6 +561,53 @@ function LiveLabel({ text }: { text: string }) {
       </span>
       <span>{text}</span>
     </div>
+  );
+}
+
+function SessionTaskBar() {
+  const messages = useApp((s) => s.messages);
+  const sessionID = useApp((s) => s.sessionID);
+  const children = useApp((s) => s.sessionChildren);
+  const statuses = useApp((s) => s.sessionStatuses);
+  const todos = useApp((s) => s.todos);
+  const openTasks = useApp((s) => s.openTasks);
+  const tasks = useMemo(
+    () => buildSubagentTasks(messages, sessionID, children, statuses),
+    [messages, sessionID, children, statuses],
+  );
+  if (todos.length === 0 && tasks.length === 0) return null;
+
+  const progress = todoProgress(todos);
+  const running = tasks.filter(
+    (task) => task.status === "running" || task.status === "pending",
+  ).length;
+  const current = progress.active?.content;
+  return (
+    <button
+      type="button"
+      className="session-task-strip"
+      onClick={() => openTasks()}
+      title="查看待办与子代理进度"
+    >
+      <span className="session-task-kind">
+        <Icon name={todos.length > 0 ? "list" : "branch"} size={13} />
+        {todos.length > 0 ? `待办 ${progress.resolved}/${progress.total}` : "子代理"}
+      </span>
+      {current && <span className="session-task-current">{current}</span>}
+      {!current && tasks.length > 0 && (
+        <span className="session-task-current">
+          {running > 0 ? tasks.find((task) => task.status === "running")?.description : `${tasks.length} 个任务已结束`}
+        </span>
+      )}
+      {progress.total > 0 && <TaskProgressBar progress={progress} />}
+      {running > 0 && (
+        <span className="session-task-running">
+          <span className="dot" />
+          {running} 个子代理进行中
+        </span>
+      )}
+      <Icon name="chevron-right" size={13} className="session-task-caret" />
+    </button>
   );
 }
 
@@ -599,6 +742,12 @@ export default function ChatView() {
             },
             {
               type: "item",
+              label: "查看任务与待办",
+              icon: "branch",
+              onSelect: () => useApp.getState().openTasks(),
+            },
+            {
+              type: "item",
               label: "打开设置",
               icon: "sliders",
               shortcut: "⌘,",
@@ -626,6 +775,7 @@ export default function ChatView() {
           </button>
         </div>
       </div>
+      <SessionTaskBar />
 
       {findOpen && (
         <div className="findbar">
@@ -668,13 +818,13 @@ export default function ChatView() {
       >
         {!sessionID && (
           <div className="welcome">
-            <div className="welcome-mark">D</div>
+            <AppIcon size={44} className="welcome-icon" />
             <h2>开始一个会话</h2>
-            <p>在下方输入需求，或从左侧选择一个已有会话。</p>
-            <button className="primary-btn" onClick={() => void newSession()} disabled={!directory}>
-              <Icon name="plus" size={15} strokeWidth={2} />
-              新建会话
-            </button>
+            <p>
+              {directory
+                ? "在下方输入需求；发送首条消息前仍可切换工作区。"
+                : "在下方选择或新建工作区，然后输入需求。"}
+            </p>
           </div>
         )}
 
@@ -763,7 +913,10 @@ function MessageRow({
   if (message.info.role === "user") {
     const text = messageText(message.parts);
     const files = message.parts.filter((part) => part.type === "file" && !part.synthetic);
-    if (!text.trim() && files.length === 0) return null;
+    const subtasks = message.parts.filter(
+      (part) => part.type === "subtask" && !part.synthetic,
+    );
+    if (!text.trim() && files.length === 0 && subtasks.length === 0) return null;
     const { links, used } = resolveMentionFiles(text, files);
     const uploads = files.filter((part) => !used.has(part.id));
     return (
@@ -792,6 +945,13 @@ function MessageRow({
               />
             </div>
           )}
+          {subtasks.map((part) => (
+            <SubagentPartCard
+              key={part.id}
+              part={part}
+              fallbackTime={message.info.time?.created}
+            />
+          ))}
           <MessageMeta text={text} time={formatTime(message.info.time?.created)} />
         </div>
       </div>
@@ -812,7 +972,7 @@ function MessageRow({
       }
     >
       <div className="avatar-slot">
-        {continued ? <span className="step-dot" /> : <div className="avatar">D</div>}
+        {continued ? <span className="step-dot" /> : <AppIcon size={24} className="avatar" />}
       </div>
       <div className="assistant-body">
         {message.info.error && (
@@ -820,7 +980,10 @@ function MessageRow({
             {message.info.error.data?.message ?? message.info.error.name ?? "执行出错"}
           </div>
         )}
-        <AssistantBlocks parts={message.parts} />
+        <AssistantBlocks
+          parts={message.parts}
+          fallbackTime={message.info.time?.created}
+        />
         {live && <LiveActivity parts={message.parts} />}
         <MessageMeta
           text={text}

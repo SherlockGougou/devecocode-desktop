@@ -14,12 +14,20 @@ import type {
   Project,
   RuntimeInfo,
   Session,
+  SessionStatus,
+  TodoItem,
 } from "./types";
 
 type Query = Record<string, string | number | boolean | undefined>;
 
 /** 所有请求都走 Rust 侧代理：避免 CORS，并复用 CLI 连接信息。 */
-async function request<T>(method: string, path: string, query?: Query, body?: unknown): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  query?: Query,
+  body?: unknown,
+  timeoutMs?: number,
+): Promise<T> {
   const cleanQuery: Record<string, string> = {};
   if (query) {
     for (const [key, value] of Object.entries(query)) {
@@ -31,18 +39,29 @@ async function request<T>(method: string, path: string, query?: Query, body?: un
     path,
     query: cleanQuery,
     body: body ?? null,
+    timeoutMs: timeoutMs ?? null,
   })) as T;
 }
 
 export const api = {
   health: () => request<{ healthy: boolean }>("GET", "/api/health"),
-  projects: () => request<Project[]>("GET", "/project"),
-  sessions: (directory: string) =>
-    request<Session[]>("GET", "/session", { directory, roots: "true", limit: 200 }),
+  projects: (timeoutMs?: number) =>
+    request<Project[]>("GET", "/project", undefined, undefined, timeoutMs),
+  sessions: (directory: string, timeoutMs?: number) =>
+    request<Session[]>("GET", "/session", { directory, roots: "true", limit: 200 }, undefined, timeoutMs),
   searchSessions: (directory: string, search: string) =>
     request<Session[]>("GET", "/session", { directory, search, roots: "true", limit: 50 }),
-  messages: (directory: string, sessionID: string) =>
-    request<Message[]>("GET", `/session/${sessionID}/message`, { directory }),
+  messages: (directory: string, sessionID: string, timeoutMs?: number) =>
+    request<Message[]>("GET", `/session/${sessionID}/message`, { directory }, undefined, timeoutMs),
+  /** 子代理只取最近的活动，避免一次拉回几百条历史消息。 */
+  taskMessages: (directory: string, sessionID: string, limit = 40) =>
+    request<Message[]>("GET", `/session/${sessionID}/message`, { directory, limit }),
+  children: (directory: string, sessionID: string) =>
+    request<Session[]>("GET", `/session/${sessionID}/children`, { directory }),
+  todos: (directory: string, sessionID: string) =>
+    request<TodoItem[]>("GET", `/session/${sessionID}/todo`, { directory }),
+  sessionStatus: (directory: string) =>
+    request<Record<string, SessionStatus>>("GET", "/session/status", { directory }),
   createSession: (directory: string, title?: string) =>
     request<Session>("POST", "/session", { directory }, title ? { title } : {}),
   prompt: (
@@ -61,16 +80,16 @@ export const api = {
     }),
   abort: (directory: string, sessionID: string) =>
     request<boolean>("POST", `/session/${sessionID}/abort`, { directory }, {}),
-  permissions: (directory: string) =>
-    request<PermissionRequest[]>("GET", "/permission", { directory }),
+  permissions: (directory: string, timeoutMs?: number) =>
+    request<PermissionRequest[]>("GET", "/permission", { directory }, undefined, timeoutMs),
   replyPermission: (directory: string, id: string, reply: "once" | "always" | "reject") =>
     request<boolean>("POST", `/permission/${id}/reply`, { directory }, { reply }),
-  diff: (directory: string, sessionID: string) =>
-    request<FileDiff[]>("GET", `/session/${sessionID}/diff`, { directory }),
+  diff: (directory: string, sessionID: string, timeoutMs?: number) =>
+    request<FileDiff[]>("GET", `/session/${sessionID}/diff`, { directory }, undefined, timeoutMs),
   vcsDiff: (directory: string) =>
     request<FileDiff[]>("GET", "/vcs/diff", { directory, mode: "git" }),
   files: (directory: string, query: string) =>
-    request<string[]>("GET", "/find/file", { directory, query, limit: 300 }),
+    request<string[]>("GET", "/find/file", { directory, query, limit: 200 }),
   searchFiles: (directory: string, query: string) =>
     request<string[]>("GET", "/find/file", { directory, query, limit: 20 }),
   listFiles: (directory: string, path: string) =>
@@ -100,9 +119,17 @@ export const api = {
   deleteSession: (directory: string, id: string) =>
     request<boolean>("DELETE", `/session/${id}`, { directory }),
   fileContent: (directory: string, path: string) =>
-    request<{ type?: string; content?: string }>("GET", "/file/content", { directory, path }),
+    request<{
+      type?: "text" | "binary";
+      content?: string;
+      encoding?: "base64";
+      mimeType?: string;
+    }>("GET", "/file/content", { directory, path }),
+  quickLookThumbnail: (path: string) =>
+    invoke<ArrayBuffer>("quick_look_thumbnail", { path }),
   startupDirectory: () => invoke<string | null>("startup_directory"),
-  pathExists: (path: string) => invoke<boolean>("path_exists", { path }),
+  pathExists: (path: string) => invoke<boolean | null>("path_exists", { path }),
+  pickWorkspaceFolder: () => invoke<string | null>("pick_workspace_folder"),
   backendState: () => invoke<BackendPhase>("backend_state"),
   retryBackend: () => invoke<void>("retry_backend"),
 };
