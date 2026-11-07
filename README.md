@@ -10,6 +10,7 @@ ui/                       React + TypeScript 前端（Vite）
   src/App.tsx             标题栏 + 三栏骨架
   src/components/         Sidebar / ChatView / Composer / StatusBar / RightPanel
   src/store.ts            zustand：会话、消息、权限、SSE 合并
+  src/theme.ts            主题：按系统外观写入 <html data-theme>
   src/api.ts              invoke 包装（全部走 Rust 代理）
 src-tauri/
   src/main.rs             Tauri 主进程：托盘、单实例、通知、信号处理
@@ -44,6 +45,7 @@ graph LR
 | 主区 | 会话标题 + 经典界面入口；消息流（markdown、思考折叠、工具卡片）；底部 composer（含模型选择） |
 | 状态栏 | 事件流状态 · 当前工作区 · 轮次 · 步数 · token 输入/输出 · 成本 |
 | 右栏 | 可折叠：变更（按文件 diff）/ 文件（目录浏览 + 搜索 + 内容预览） |
+| 主题 | 跟随系统，或在设置页显式选「亮色 / 暗色」（暗色为设计基准，亮色只覆盖 CSS 变量；选择存 localStorage） |
 | 设置页 | `⌘,` 打开：运行状态 / CLI 路径 / 服务端口与口令 / 通知开关 / CLI 配置只读 / 诊断（日志、配置文件、经典界面、重启） |
 | 原生菜单 | `⌘N` 新建会话、`⌘,` 设置、`⌘⇧B` 切换右栏、`⌘⇧C` 经典界面、`⌘R` 重载界面，含标准编辑菜单与窗口菜单 |
 | 窗口 | 大小/位置自动记忆；标题跟随「会话 · 项目」 |
@@ -56,7 +58,10 @@ graph LR
 npm install                 # 仓库根：拿 tauri CLI
 npm --prefix ui install     # 前端依赖
 npm run dev                 # 开发模式（自动拉起本机 deveco serve）
-npm run build               # 出 .app / .dmg
+npm run build:debug         # 出 .app（自用就直接拷进 /Applications）
+npm run build               # 出 release .app / .dmg
+npm run check               # 本地护栏：前端构建 + 全部单测
+npm run check:selftest      # 端到端自检（需要解锁的桌面会话，见「已知限制」）
 ```
 
 前置条件：本机已安装 CLI（`npm i -g @deveco/deveco-code`），并已通过 `deveco providers` 登录过。
@@ -69,6 +74,8 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin deveco-selftest   # 端到�
 ```
 
 自检不打开窗口、不消耗模型 token，退出码 0 表示全链路通过。
+日常改完代码先跑 `npm run check`（前端构建 + 40 项单测，几秒出结果），
+再按需跑 `npm run check:selftest`（会真实拉起 serve，约 10s）。
 
 | 检查 | 说明 |
 |---|---|
@@ -79,9 +86,11 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin deveco-selftest   # 端到�
 | 代理读写路径 | POST 建会话 → POST 写消息（noReply）→ GET 读消息 → DELETE 清理 |
 | 订阅 /event | 收到 `server.connected` |
 | 授权事件分类 / 文案 / 策略 / 去抖 | 用真实事件格式构造 |
+| 崩溃自愈 | `SIGKILL` 掉 serve 进程组 → 重建后端 → 健康检查恢复 |
+| 启动失败清理 | 用「serve 立即退出」的假 CLI，验证 15s 内失败、原因可读、进程组登记已清理 |
 | 退出回收 | serve 子进程组停止响应 |
 
-最近一次结果：**34 个单测 + 11 项自检全部通过**（2026-11-06，macOS 27.2 / CLI 0.2.5）。
+最近一次结果：**40 个单测 + 13 项自检全部通过**（2026-11-06，macOS 27.2 / CLI 0.2.5）。
 
 真实模型流式对话已实测（临时工作区，多次 prompt）：思考过程实时滚动、正文逐字到达、
 状态栏计数同步、任务结束后自动刷新右侧变更。
@@ -97,6 +106,25 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin deveco-selftest   # 端到�
 4. **路径要规范化**：macOS 上 `/tmp` → `/private/tmp`，CLI 返回的 worktree 是规范化后的路径。
 5. **`noReply` 可造消息**：`POST /session/{id}/message` 带 `noReply: true` 能写入真实格式的
    用户消息且不调用模型，自检和调试靠它。
+6. **退出流程会「复活」serve**：如果监管循环不知道应用正在退出，它会把关停当成崩溃，
+   在进程退出前重新拉起一个 serve。必须在 `RunEvent::Exit` 第一件事就置退出闸门。
+7. **启动失败也要按进程组清理**：`kill_on_drop` 只回收 launcher，161MB 原生二进制会留下
+   并占住 CLI 数据库，导致下一次启动探测直接卡死。`serve` 超时、`--version` 超时都要整组 kill。
+8. **vite 的 esbuild 配置加载可能挂死**：本机出现过 `vite build` 无任何输出地卡住
+   （空配置也一样），改用 `--configLoader native` 后恢复正常，已固化到 `ui/package.json`。
+
+## 后端自愈
+
+`deveco serve` 崩溃、被升级替换或被手动 kill 时，应用不再静默失效：
+
+- **状态机**：`启动中 → 就绪 → 重连中 → 重建中 →（成功）就绪 /（失败）后端不可用`，状态栏与标题栏实时反映。
+- **自动重建**：事件流断开后先做健康检查；确认进程不可用就回收旧进程组，按原配置重新拉起（固定端口优先复用，否则挑新的空闲端口），并把新的连接信息写回 IPC 代理——前端不需要知道端口变了。
+- **启动失败也可见**：CLI 缺失或后端起不来时不再卡在启动页，直接进主界面并显示提示条。
+- **失败可见**：重建失败时主区顶部出现红色提示条，带「立即重试」与「诊断」两个出口；退避 1s/2s/4s/8s/15s 期间也可以随时手动重试（会打断等待立刻再试）。
+- **恢复后刷新**：重新连上时自动重拉当前会话的消息、会话列表与授权列表，弥补断线期间丢失的事件。
+- **退出不漏进程**：退出流程带闸门，监管循环不会在退出过程中再把服务拉起来；启动失败（如 `serve` 超时）也会按进程组清理，不留 161MB 孤儿。
+
+验收方式（无头）：`deveco-selftest` 用 `SIGKILL` 杀掉 serve 进程组，1.8s 内自动恢复到新端口并通过健康检查。
 
 ## 会话与文件
 
@@ -147,7 +175,13 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin deveco-selftest   # 端到�
 
 ## 已知限制
 
-- **流式对话未经真实模型验证**：SSE → store 的合并逻辑已按契约实现并单测过，但还没有用真实 prompt 跑过（会消耗 token，需你确认后再做）。
+- **锁屏 / 屏幕休眠时 CLI 会挂住**：此时 `deveco --version` 与 `/session` 都不返回（实测 25s 无响应，解锁后立即恢复）。应用侧把代理请求限制在 30s、CLI 探测限制在 5s，因此界面会给出错误而不是无限转圈，但后端自愈无法在此状态下完成。
 - 通知点击只能聚焦窗口，不能跳到会话，也不能在通知里直接批准。
+- 托盘菜单（显示主窗口 / 隐藏到托盘 / 退出）尚未做自动化验证；通知在勿扰、锁屏下的表现需人工确认。
+  通知本身已验证：权限请求会真实投递系统通知（日志「已发送通知：DevEco Code 需要授权」）。
+- 后端重建后会换端口：已经开着的「经典界面」窗口仍指向旧端口，需要重新打开。
+- 主题选择存在 localStorage，不随应用配置导出；重装应用会回到「跟随系统」。
+- 权限审批卡片需要 CLI 侧 `permission: ask` 才会触发（本机默认 `allow`）；已用「临时改 ask + 一条小 prompt」验证过
+  卡片渲染与「允许一次」的完整链路（命令实际执行、助手继续作答），「总是允许 / 拒绝」共用同一回复通道，未单独验证。
 - 工作区列表直接来自 CLI 的 `/project` 注册表，历史探测残留的目录（如 `/tmp/dvt`）也会出现。
 - 仅 macOS 验证；Windows 需替换通知与 CLI 发现逻辑。
