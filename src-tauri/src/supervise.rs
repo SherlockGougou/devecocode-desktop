@@ -54,6 +54,9 @@ impl Phase {
     pub fn reason(&self) -> Option<&str> {
         match self {
             Phase::Failed { reason, .. } => Some(reason),
+            Phase::Reconnecting { .. } => Some(
+                "本地服务进程仍在运行，正在继续重连。若 macOS 正在请求文件夹访问权限，请先完成授权。",
+            ),
             _ => None,
         }
     }
@@ -128,6 +131,15 @@ impl Supervisor {
     /// serve 进程组 id，供退出兜底回收
     pub fn pgid(&self) -> Option<i32> {
         self.backend.as_ref().and_then(|item| item.server.pgid())
+    }
+
+    /// 当前 serve 进程是否仍然存活。用于区分「进程崩溃」和
+    /// 「进程还在、但被系统授权弹窗或锁屏阻塞」。
+    pub fn liveness(&mut self) -> server::Liveness {
+        match self.backend.as_mut() {
+            Some(backend) => backend.server.liveness(),
+            None => server::Liveness::Exited,
+        }
     }
 
     /// 保证有一个健康后端：已健康就直接返回，不健康则回收旧进程并重建。
@@ -260,5 +272,12 @@ mod tests {
         };
         assert_eq!(phase.reason(), Some("连接被拒绝"));
         assert_eq!(phase.attempt(), 4);
+    }
+
+    #[test]
+    fn 重连态提示可能在等待文件夹授权() {
+        let phase = Phase::Reconnecting { attempts: 2 };
+        assert!(phase.reason().unwrap().contains("文件夹访问权限"));
+        assert_eq!(phase.payload()["detail"], phase.reason().unwrap());
     }
 }

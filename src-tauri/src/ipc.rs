@@ -7,6 +7,7 @@
 use deveco_desktop::http;
 use serde_json::{Map, Value};
 use std::sync::Mutex;
+use tauri_plugin_dialog::DialogExt;
 
 /// 后端连接信息。启动完成后由主进程写入。
 #[derive(Default)]
@@ -37,6 +38,7 @@ pub async fn server_request(
     path: String,
     query: Option<Map<String, Value>>,
     body: Option<Value>,
+    timeout_ms: Option<u64>,
 ) -> Result<Value, String> {
     let base = conn.base().ok_or("后端尚未就绪")?;
     let auth = conn.auth();
@@ -56,13 +58,14 @@ pub async fn server_request(
         })
         .collect();
 
-    let result = http::send(
+    let result = http::send_with_timeout(
         &base,
         auth.as_deref(),
         &method,
         &path,
         &pairs,
         body.as_ref(),
+        http::request_timeout(timeout_ms),
     )
     .await
     .map_err(|err| format!("{err:#}"));
@@ -153,9 +156,57 @@ pub fn startup_directory() -> Option<String> {
 }
 
 /// 判断路径是否存在：工作区列表要过滤掉已被删除/已失效的目录。
+///
+/// 返回 `None` 表示「无法判断」而不是「不存在」：macOS 的文件夹授权还没
+/// 完成时，`metadata` 会失败或阻塞，直接把工作区当成已删除会让侧栏变空。
 #[tauri::command]
-pub fn path_exists(path: String) -> bool {
-    std::path::Path::new(&path).exists()
+pub async fn path_exists(path: String) -> Option<bool> {
+    match tauri::async_runtime::spawn_blocking(move || path_exists_blocking(&path)).await {
+        Ok(exists) => exists,
+        Err(err) => {
+            log::warn!("检查路径是否存在失败：{err}");
+            None
+        }
+    }
+}
+
+fn path_exists_blocking(path: &str) -> Option<bool> {
+    match std::fs::metadata(path) {
+        Ok(_) => Some(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(err) => {
+            log::debug!("无法判断工作区是否存在：{path}（{err}）");
+            None
+        }
+    }
+}
+
+/// 用系统目录选择器新建工作区，返回规范化后的绝对路径。
+///
+/// 目录选择器运行在系统 UI 线程；放进 blocking 任务，避免阻塞 Tauri 的异步命令线程。
+#[tauri::command]
+pub async fn pick_workspace_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let picked = app
+            .dialog()
+            .file()
+            .set_title("选择工作区文件夹")
+            .blocking_pick_folder();
+        let Some(folder) = picked else {
+            return Ok(None);
+        };
+        let path = folder
+            .into_path()
+            .map_err(|err| format!("无法读取所选文件夹路径：{err}"))?;
+        let canonical =
+            std::fs::canonicalize(&path).map_err(|err| format!("无法访问所选文件夹：{err}"))?;
+        if !canonical.is_dir() {
+            return Err("所选路径不是文件夹".into());
+        }
+        Ok(Some(canonical.to_string_lossy().to_string()))
+    })
+    .await
+    .map_err(|err| format!("目录选择器异常退出：{err}"))?
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +335,21 @@ pub fn reveal_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 调用 macOS Quick Look 生成预览图，原始 PNG 直接回传 WebView。
+///
+/// 放在阻塞线程里执行：qlmanage 需要启动系统服务，偶尔会明显慢于普通 IPC。
+#[tauri::command]
+pub async fn quick_look_thumbnail(path: String) -> Result<tauri::ipc::Response, String> {
+    let source = std::path::PathBuf::from(path);
+    let png = tauri::async_runtime::spawn_blocking(move || {
+        deveco_desktop::preview::quicklook_thumbnail(&source, 1400)
+    })
+    .await
+    .map_err(|err| format!("系统预览任务失败：{err}"))?
+    .map_err(|err| format!("{err:#}"))?;
+    Ok(tauri::ipc::Response::new(png))
+}
+
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
     app.restart();
@@ -295,6 +361,22 @@ pub fn set_window_title(app: tauri::AppHandle, title: String) {
     use tauri::Manager;
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_title(&title);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn 路径存在性区分存在与缺失() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            super::path_exists_blocking(&dir.path().to_string_lossy()),
+            Some(true)
+        );
+        assert_eq!(
+            super::path_exists_blocking(&dir.path().join("missing").to_string_lossy()),
+            Some(false)
+        );
     }
 }
 

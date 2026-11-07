@@ -42,6 +42,7 @@ fn main() {
         .manage(ipc::SettingsState::default())
         .manage(ipc::BackendCtl::default())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             focus_main(app);
         }))
@@ -52,11 +53,13 @@ fn main() {
             ipc::server_request,
             ipc::startup_directory,
             ipc::path_exists,
+            ipc::pick_workspace_folder,
             ipc::get_settings,
             ipc::save_settings,
             ipc::probe_cli,
             ipc::open_path,
             ipc::reveal_path,
+            ipc::quick_look_thumbnail,
             ipc::restart_app,
             ipc::export_session,
             ipc::set_window_title,
@@ -161,7 +164,16 @@ async fn run_backend(app: AppHandle) {
         let project = supervisor.project_label();
         let base = supervisor.base_url().unwrap_or_default().to_string();
 
-        stream_until_down(&app, &url, auth.as_deref(), &project, &base).await;
+        stream_until_down(
+            &app,
+            &url,
+            auth.as_deref(),
+            &project,
+            &base,
+            &mut supervisor,
+            &ctl,
+        )
+        .await;
 
         if shutting_down() {
             log::info!("应用正在退出，跳过重建");
@@ -256,6 +268,8 @@ async fn stream_until_down(
     auth: Option<&str>,
     project: &str,
     base: &str,
+    supervisor: &mut Supervisor,
+    ctl: &ipc::BackendCtl,
 ) {
     let mut debouncer = Debouncer::new(DEBOUNCE_WINDOW);
     let mut attempts: u32 = 0;
@@ -282,11 +296,38 @@ async fn stream_until_down(
         publish_phase(app, Phase::Reconnecting { attempts });
         let _ = app.emit("deveco://reconnecting", attempts);
 
-        if !server::health(base, auth).await {
-            log::warn!("健康检查未通过，交给监管者重建：{base}");
+        // 先判断进程是否还活着。macOS 文件夹授权弹窗未处理时，serve 会阻塞在
+        // 文件访问上，健康检查也会失败；此时杀进程会打断授权并导致弹窗反复出现。
+        // 只有确认进程已经退出时才交给监管者重建。
+        if supervisor.liveness() == server::Liveness::Exited {
+            log::warn!("serve 进程已退出，交给监管者重建：{base}");
             return;
         }
-        tokio::time::sleep(supervise::backoff(attempts)).await;
+        if !server::health(base, auth).await {
+            match supervisor.liveness() {
+                server::Liveness::Exited => {
+                    log::warn!("健康检查未通过且 serve 已退出，交给监管者重建：{base}");
+                    return;
+                }
+                server::Liveness::Running => {
+                    log::warn!(
+                        "健康检查未通过，但 serve 进程仍在运行；保持进程并继续重连（可能正在等待系统授权）：{base}"
+                    );
+                }
+                server::Liveness::Unowned => {
+                    log::warn!("复用实例健康检查未通过，交给监管者重新接管：{base}");
+                    return;
+                }
+            }
+        }
+        // 用户点「重启服务」时不再等下一轮退避：回到外层由 Supervisor 回收重建。
+        tokio::select! {
+            _ = tokio::time::sleep(supervise::backoff(attempts)) => {}
+            _ = ctl.retry.notified() => {
+                log::info!("用户要求立即重启后端，结束当前重连循环");
+                return;
+            }
+        }
     }
 }
 
@@ -324,6 +365,9 @@ fn handle_event(app: &AppHandle, project: &str, debouncer: &mut Debouncer, event
         Notice::Connected => {
             log::info!("事件流已连接");
             let _ = app.emit("deveco://connected", true);
+            // 断线重连成功后必须把状态从 reconnecting 拉回 ready：
+            // 否则界面会一直停在「正在重连」的提示条上。
+            publish_phase(app, Phase::Ready);
             return;
         }
         _ => {}

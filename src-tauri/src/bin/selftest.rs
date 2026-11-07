@@ -168,6 +168,12 @@ async fn self_check_recovery(report: &mut Report, supervisor: &mut Supervisor, b
         report.fail(NAME, "拿不到 serve 进程组 id");
         return;
     };
+    let running_before = matches!(supervisor.liveness(), server::Liveness::Running);
+    report.check(
+        "自愈前识别 serve 进程仍在运行",
+        running_before,
+        format!("进程组 {pgid}"),
+    );
 
     let old_base = base.to_string();
     let killed = Instant::now();
@@ -188,6 +194,19 @@ async fn self_check_recovery(report: &mut Report, supervisor: &mut Supervisor, b
         report.fail(NAME, "SIGKILL 后旧实例仍在响应，无法验证自愈");
         return;
     }
+    let mut exited = false;
+    for _ in 0..50 {
+        if matches!(supervisor.liveness(), server::Liveness::Exited) {
+            exited = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    report.check(
+        "SIGKILL 后识别 serve 进程已退出",
+        exited,
+        format!("进程组 {pgid} 已无响应"),
+    );
 
     let rebuilt = supervisor.ensure().await;
     let new_base = supervisor.base_url().unwrap_or_default().to_string();

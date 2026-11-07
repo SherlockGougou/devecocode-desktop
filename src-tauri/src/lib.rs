@@ -9,6 +9,7 @@ pub mod config;
 pub mod events;
 pub mod http;
 pub mod notify;
+pub mod preview;
 pub mod server;
 pub mod sse;
 pub mod supervise;

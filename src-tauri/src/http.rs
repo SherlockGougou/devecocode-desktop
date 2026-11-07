@@ -12,14 +12,34 @@ use std::time::Duration;
 /// 本机 CLI 正常时全部在毫秒级；卡住通常是 CLI 自身被阻塞（例如锁屏时访问
 /// 钥匙串）。300s 会让界面无限转圈，30s 能把「卡住」变成界面上看得见的错误。
 /// 会话 prompt 走 `/prompt_async`，长任务不再受这个上限影响。
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn client() -> Result<reqwest::Client> {
+/// 启动阶段读取工作区时可以等得更久：macOS 首次询问文件夹权限时，
+/// 用户可能过一阵才点「允许」，这不是后端故障，不应在 30 秒后直接报错。
+const MAX_REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+pub fn request_timeout(timeout_ms: Option<u64>) -> Duration {
+    match timeout_ms {
+        Some(ms) if ms > 0 => Duration::from_millis(ms).min(MAX_REQUEST_TIMEOUT),
+        _ => REQUEST_TIMEOUT,
+    }
+}
+
+fn client(timeout: Duration) -> Result<reqwest::Client> {
     reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
+        .timeout(timeout)
         .connect_timeout(Duration::from_secs(5))
         .build()
         .context("构建 HTTP client 失败")
+}
+
+fn timeout_label(timeout: Duration) -> String {
+    let secs = timeout.as_secs();
+    if secs >= 60 && secs % 60 == 0 {
+        format!("{} 分钟", secs / 60)
+    } else {
+        format!("{secs} 秒")
+    }
 }
 
 /// 极简 percent-encoding：只需处理会出现在路径/查询里的字符。
@@ -61,8 +81,21 @@ pub async fn send(
     query: &[(String, String)],
     body: Option<&Value>,
 ) -> Result<Value> {
+    send_with_timeout(base, auth, method, path, query, body, REQUEST_TIMEOUT).await
+}
+
+/// 与 [`send`] 相同，但允许调用方指定单次请求的超时。
+pub async fn send_with_timeout(
+    base: &str,
+    auth: Option<&str>,
+    method: &str,
+    path: &str,
+    query: &[(String, String)],
+    body: Option<&Value>,
+    timeout: Duration,
+) -> Result<Value> {
     let url = build_url(base, path, query);
-    let client = client()?;
+    let client = client(timeout)?;
     let mut request = match method.to_ascii_uppercase().as_str() {
         "GET" => client.get(&url),
         "POST" => client.post(&url),
@@ -83,7 +116,7 @@ pub async fn send(
     let response = request.send().await.map_err(|err| {
         if err.is_timeout() {
             // 不要把内部端口、session id 和 directory 原样丢给用户
-            anyhow!("本地服务 {} 秒未响应", REQUEST_TIMEOUT.as_secs())
+            anyhow!("本地服务 {} 未响应", timeout_label(timeout))
         } else if err.is_connect() {
             anyhow!("无法连接本地服务")
         } else {
@@ -129,5 +162,23 @@ mod tests {
             url,
             "http://127.0.0.1:1/session?directory=/tmp/a%20b&empty="
         );
+    }
+
+    #[test]
+    fn 请求超时可按调用方延长并封顶() {
+        assert_eq!(request_timeout(None), REQUEST_TIMEOUT);
+        assert_eq!(request_timeout(Some(0)), REQUEST_TIMEOUT);
+        assert_eq!(
+            request_timeout(Some(5 * 60 * 1000)),
+            Duration::from_secs(300)
+        );
+        assert_eq!(request_timeout(Some(60 * 60 * 1000)), MAX_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn 超时文案按分钟显示() {
+        assert_eq!(timeout_label(Duration::from_secs(30)), "30 秒");
+        assert_eq!(timeout_label(Duration::from_secs(300)), "5 分钟");
+        assert_eq!(timeout_label(Duration::from_secs(90)), "90 秒");
     }
 }

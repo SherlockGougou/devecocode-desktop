@@ -83,6 +83,21 @@ pub enum Origin {
     Reused,
 }
 
+/// 后端进程的存活状态。
+///
+/// 健康检查失败不等于进程已经退出：macOS 的文件夹授权弹窗未处理时，
+/// `deveco serve` 会一直阻塞在文件访问上。此时杀掉进程会打断系统授权，
+/// 并可能让授权弹窗反复出现，因此需要把「还在运行」与「已经退出」分开。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    /// 由本应用拉起且仍然存活
+    Running,
+    /// 由本应用拉起，但已经退出（或子进程句柄丢失）
+    Exited,
+    /// 复用的外部实例，拿不到子进程句柄，无法判断
+    Unowned,
+}
+
 pub struct DevEcoServer {
     pub base_url: String,
     pub origin: Origin,
@@ -100,6 +115,26 @@ impl DevEcoServer {
 
     pub fn is_spawned(&self) -> bool {
         self.origin == Origin::Spawned
+    }
+
+    /// 检查由本应用拉起的 serve 是否还活着。
+    ///
+    /// `try_wait()` 会顺手回收已经退出的子进程，因此这里不会留下僵尸进程。
+    pub fn liveness(&mut self) -> Liveness {
+        if !self.is_spawned() {
+            return Liveness::Unowned;
+        }
+        match self.child.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(Some(_)) => Liveness::Exited,
+                Ok(None) => Liveness::Running,
+                Err(err) => {
+                    log::warn!("读取 serve 进程状态失败：{err}");
+                    Liveness::Exited
+                }
+            },
+            None => Liveness::Exited,
+        }
     }
 
     pub fn event_url(&self) -> String {
