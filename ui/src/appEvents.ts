@@ -1,6 +1,9 @@
+import type { Attachment } from "./types";
+
 type AppEventMap = {
   "reference-file": { directory: string; path: string };
   "settings-save": undefined;
+  "attach-device-screenshot": Attachment;
 };
 
 type AppEventName = keyof AppEventMap;

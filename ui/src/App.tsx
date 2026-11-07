@@ -11,6 +11,7 @@ import StatusBar from "./components/StatusBar";
 import RightPanel from "./components/RightPanel";
 import Settings from "./components/Settings";
 import Shortcuts from "./components/Shortcuts";
+import TaskOverview from "./components/TaskOverview";
 import { Icon } from "./components/Icon";
 import { AppIcon } from "./components/AppIcon";
 
@@ -21,9 +22,11 @@ export default function App() {
   const error = useApp((s) => s.error);
   const notice = useApp((s) => s.notice);
   const rightOpen = useApp((s) => s.rightOpen);
+  const overviewOpen = useApp((s) => s.overviewOpen);
   const settingsOpen = useApp((s) => s.settingsOpen);
   const shortcutsOpen = useApp((s) => s.shortcutsOpen);
   const sidebarWidth = useApp((s) => s.sidebarWidth);
+  const sidebarOpen = useApp((s) => s.sidebarOpen);
   const setSidebarWidth = useApp((s) => s.setSidebarWidth);
   const dismissError = useApp((s) => s.dismissError);
   const boot = useApp((s) => s.boot);
@@ -123,6 +126,14 @@ export default function App() {
   const sessions = useApp((s) => s.sessions);
   const directory = useApp((s) => s.directory);
   const sessionID = useApp((s) => s.sessionID);
+  const streaming = useApp((s) => s.streaming);
+  const traySessionTitle = useApp((s) => {
+    if (!s.sessionID) return null;
+    const title = (s.sessions[s.directory ?? ""] ?? []).find(
+      (item) => item.id === s.sessionID,
+    )?.title;
+    return title ?? null;
+  });
   useEffect(() => {
     const project = directory ? directory.split("/").filter(Boolean).pop() : "";
     const session = sessionID
@@ -131,6 +142,21 @@ export default function App() {
     const title = [session || "DevEco Code", project].filter(Boolean).join(" · ");
     void invoke("set_window_title", { title });
   }, [sessions, directory, sessionID]);
+
+  // 菜单栏只接收轻量上下文；SSE 是否运行、授权数量仍由 Rust 侧维护
+  useEffect(() => {
+    if (booting) return;
+    const project = directory ? directory.split("/").filter(Boolean).pop() : "";
+    void api
+      .syncTrayContext({
+        project: project || null,
+        sessionTitle: traySessionTitle,
+        streaming,
+      })
+      .catch(() => {
+        // 菜单栏同步失败不影响聊天主流程
+      });
+  }, [booting, directory, traySessionTitle, streaming]);
 
   if (booting) {
     return (
@@ -147,32 +173,37 @@ export default function App() {
 
   return (
     <div
-      className={`shell ${rightOpen ? "right-open" : ""}`}
-      style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr) ${rightOpen ? "320px" : "0px"}` }}
+      className={`shell ${rightOpen ? "right-open" : ""} ${overviewOpen ? "overview-open" : ""} ${sidebarOpen ? "" : "left-collapsed"}`}
+      style={{
+        gridTemplateColumns: `${sidebarOpen ? sidebarWidth : 0}px minmax(0, 1fr) ${rightOpen ? "320px" : "0px"}`,
+      }}
     >
       <TitleBar />
+      <TaskOverview />
       <Sidebar />
-      <div
-        className="sidebar-resizer"
-        style={{ left: `${sidebarWidth}px` }}
-        title="拖动调整侧栏宽度，双击复位"
-        onDoubleClick={() => setSidebarWidth(296)}
-        onMouseDown={(event) => {
-          event.preventDefault();
-          const startX = event.clientX;
-          const startWidth = sidebarWidth;
-          const onMove = (moveEvent: MouseEvent) =>
-            setSidebarWidth(startWidth + (moveEvent.clientX - startX));
-          const onUp = () => {
-            window.removeEventListener("mousemove", onMove);
-            window.removeEventListener("mouseup", onUp);
-            document.body.style.cursor = "";
-          };
-          document.body.style.cursor = "col-resize";
-          window.addEventListener("mousemove", onMove);
-          window.addEventListener("mouseup", onUp);
-        }}
-      />
+      {sidebarOpen && (
+        <div
+          className="sidebar-resizer"
+          style={{ left: `${sidebarWidth}px` }}
+          title="拖动调整侧栏宽度，双击复位"
+          onDoubleClick={() => setSidebarWidth(296)}
+          onMouseDown={(event) => {
+            event.preventDefault();
+            const startX = event.clientX;
+            const startWidth = sidebarWidth;
+            const onMove = (moveEvent: MouseEvent) =>
+              setSidebarWidth(startWidth + (moveEvent.clientX - startX));
+            const onUp = () => {
+              window.removeEventListener("mousemove", onMove);
+              window.removeEventListener("mouseup", onUp);
+              document.body.style.cursor = "";
+            };
+            document.body.style.cursor = "col-resize";
+            window.addEventListener("mousemove", onMove);
+            window.addEventListener("mouseup", onUp);
+          }}
+        />
+      )}
       <main className="main">
         <BackendBanner />
         <ChatView />
@@ -275,8 +306,12 @@ function toggleMaximize() {
 }
 
 function TitleBar() {
+  const sidebarOpen = useApp((s) => s.sidebarOpen);
+  const toggleSidebar = useApp((s) => s.toggleSidebar);
   const rightOpen = useApp((s) => s.rightOpen);
   const toggleRight = useApp((s) => s.toggleRight);
+  const overviewOpen = useApp((s) => s.overviewOpen);
+  const toggleOverview = useApp((s) => s.toggleOverview);
   const backend = useApp((s) => s.backend);
   const connOk = backend.state === "ready";
   const connBad = backend.state === "failed";
@@ -299,6 +334,16 @@ function TitleBar() {
           DevEco Code
           <span className="brand-ver">v0.2</span>
         </div>
+        <button
+          className={`icon-btn titlebar-sidebar-toggle ${sidebarOpen ? "active" : ""}`}
+          onClick={toggleSidebar}
+          onDoubleClick={(event) => event.stopPropagation()}
+          title={sidebarOpen ? "收起左侧边栏" : "展开左侧边栏"}
+          aria-label={sidebarOpen ? "收起左侧边栏" : "展开左侧边栏"}
+          aria-pressed={sidebarOpen}
+        >
+          <Icon name="panel-left" size={18} />
+        </button>
         <div className="titlebar-drag" />
       </div>
       <div className="titlebar-actions">
@@ -314,6 +359,17 @@ function TitleBar() {
         >
           {connText}
         </span>
+        <button
+          className={`icon-btn ${overviewOpen ? "active" : ""}`}
+          data-overview-toggle
+          onClick={toggleOverview}
+          title="任务概览"
+          aria-label="任务概览"
+          aria-expanded={overviewOpen}
+          aria-controls="task-overview"
+        >
+          <Icon name="list" size={18} />
+        </button>
         <button
           className={`icon-btn ${rightOpen ? "active" : ""}`}
           onClick={toggleRight}
@@ -358,7 +414,7 @@ function BackendBanner() {
           <button className="ghost-btn" onClick={() => void retryBackend()}>
             {failed ? "立即重试" : "重启服务"}
           </button>
-          <button className="ghost-btn" onClick={openSettings}>
+          <button className="ghost-btn" onClick={() => openSettings("diagnostics")}>
             诊断
           </button>
         </>

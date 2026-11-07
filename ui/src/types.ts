@@ -86,11 +86,51 @@ export interface FileDiff {
   status?: string;
 }
 
+export type GitFileStatusKind =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "untracked"
+  | "unmerged";
+
+export interface GitFileStatus {
+  path: string;
+  status: GitFileStatusKind;
+  staged: boolean;
+  unstaged: boolean;
+}
+
+/** Rust `git_state` 的返回结构；非 Git 目录返回 isRepo=false。 */
+export interface GitRepoState {
+  isRepo: boolean;
+  root: string | null;
+  branch: string | null;
+  upstream: string | null;
+  remote: string | null;
+  detached: boolean;
+  files: GitFileStatus[];
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  additions: number;
+  deletions: number;
+  ahead: number;
+  behind: number;
+}
+
+export interface GitCommandResult {
+  stdout: string;
+  stderr: string;
+  commit: string | null;
+}
+
 export interface ModelInfo {
   id: string;
   providerID: string;
   name?: string;
   family?: string | null;
+  status?: "alpha" | "beta" | "deprecated" | "active";
+  enabled?: boolean;
   variants?: Array<{ id: string }>;
 }
 
@@ -111,9 +151,19 @@ export interface CommandInfo {
 
 export interface McpServerInfo {
   status?: string;
+  error?: string;
 }
 
 // ---------- 设置页 ----------
+
+export type SettingsPage =
+  | "appearance"
+  | "account"
+  | "agent"
+  | "extensions"
+  | "cli"
+  | "notifications"
+  | "diagnostics";
 
 export interface NotificationSettings {
   enabled: boolean;
@@ -132,10 +182,22 @@ export interface ServerSettings {
   [key: string]: unknown;
 }
 
+export interface MenuBarSettings {
+  icon_style: "monochrome" | "color";
+  always_visible: boolean;
+}
+
 export interface AppConfig {
   cli_path: string | null;
   notifications: NotificationSettings;
   server: ServerSettings;
+  menu_bar: MenuBarSettings;
+}
+
+export interface TrayContext {
+  project: string | null;
+  sessionTitle: string | null;
+  streaming: boolean;
 }
 
 export interface RuntimeInfo {
@@ -148,11 +210,122 @@ export interface RuntimeInfo {
   dataDir: string | null;
 }
 
+export interface PermissionSummary {
+  total: number;
+  allow: number;
+  ask: number;
+  deny: number;
+  defaultEffect: string | null;
+}
+
+export interface CliAgentSummary {
+  name: string;
+  description?: string;
+  model?: string;
+  variant?: string;
+  mode?: string;
+  hidden?: boolean;
+  disabled?: boolean;
+}
+
 export interface CliConfigSummary {
   model?: string;
   small_model?: string;
-  permission?: unknown;
-  plugin?: string[];
+  default_agent?: string;
+  shell?: string;
+  username?: string;
+  share?: string;
+  autoupdate?: boolean | "notify";
+  providerCount: number;
+  mcpCount: number;
+  pluginCount: number;
+  pluginNames: string[];
+  skillSources: string[];
+  permission: PermissionSummary;
+  agents: CliAgentSummary[];
+  uiVerificationModel?: string;
+}
+
+export interface AuthEntry {
+  providerID: string;
+  type: string;
+  removable: boolean;
+  isRealName?: boolean;
+}
+
+export interface ProviderSummary {
+  id: string;
+  name: string;
+  source?: string;
+  modelCount: number;
+}
+
+export interface ProviderOverview {
+  providers: ProviderSummary[];
+  default: Record<string, string>;
+}
+
+export interface QuotaWindow {
+  enabled: boolean;
+  periodHours?: number;
+  nextResetTime?: string;
+  total?: number;
+  used?: number;
+  remaining?: number;
+}
+
+export interface StatsQuota {
+  hourly?: QuotaWindow;
+  weekly?: QuotaWindow;
+  monthly?: QuotaWindow;
+}
+
+export interface UsageTokens {
+  input: number;
+  output: number;
+  reasoning: number;
+  cache: { read: number; write: number };
+}
+
+export interface StatsUsage {
+  directory?: string;
+  total: {
+    sessions: number;
+    messages: number;
+    cost: number;
+    longestDuration: number;
+    tokens: UsageTokens;
+  };
+  models: Array<{
+    providerID: string;
+    modelID: string;
+    messages: number;
+    cost: number;
+    tokens: UsageTokens;
+  }>;
+}
+
+export interface SkillStatus {
+  name: string;
+  description?: string;
+  location: string;
+  scope: "global" | "project" | "builtin";
+  enabled: boolean;
+}
+
+export interface CliPathInfo {
+  home: string;
+  state: string;
+  config: string;
+  projectConfig: string;
+  worktree: string;
+  directory: string;
+}
+
+export interface ShellInfo {
+  path: string;
+  name: string;
+  acceptable: boolean;
 }
 
 export interface FileNode {
@@ -200,6 +373,41 @@ export interface Attachment {
   mime: string;
   url: string;
   size: number;
+}
+
+/** HDC 发现的 HarmonyOS 设备。序列号只在本地用于选择设备。 */
+export interface DeviceInfo {
+  serial: string;
+  connection: string;
+  status: string;
+  model: string | null;
+  name: string | null;
+  manufacturer: string | null;
+  apiVersion: string | null;
+  osVersion: string | null;
+}
+
+export interface DeviceProbe {
+  hdcPath: string;
+  hdcVersion: string | null;
+  devices: DeviceInfo[];
+}
+
+/** `snapshot_display` 抓取并转存到应用数据目录的一帧截图。 */
+export interface DeviceShot {
+  serial: string;
+  path: string;
+  name: string;
+  width: number;
+  height: number;
+  bytes: number;
+  capturedAt: number;
+}
+
+export interface DeviceAwakeStatus {
+  enabled: boolean;
+  charging: boolean;
+  active: boolean;
 }
 
 /**

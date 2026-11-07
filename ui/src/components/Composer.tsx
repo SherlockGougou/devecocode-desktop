@@ -6,6 +6,7 @@ import { MAX_REFS, parseMentions } from "../mentions";
 import { onAppEvent } from "../appEvents";
 import { copyItem, revealItem, useContextMenu } from "../contextMenu";
 import { absoluteWorkspacePath, relativeWorkspacePath } from "../paths";
+import { highestModelVariant } from "../models";
 import {
   MAX_ATTACHMENTS,
   MAX_ATTACHMENT_BYTES,
@@ -97,6 +98,8 @@ export default function Composer() {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [workspacePicking, setWorkspacePicking] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const failedText = useApp((s) => s.failedText);
   const clearFailedText = useApp((s) => s.clearFailedText);
@@ -110,6 +113,24 @@ export default function Composer() {
   const workspacePickerRef = useRef<HTMLDivElement>(null);
   const menu = useContextMenu();
 
+  // 设备面板截图通过轻量事件总线附加到当前输入框；不把附件状态提升到全局，
+  // 避免影响 Composer 现有的草稿、失败恢复和工作区切换逻辑。
+  useEffect(
+    () =>
+      onAppEvent("attach-device-screenshot", (attachment) => {
+        const current = attachmentsRef.current;
+        if (current.length >= MAX_ATTACHMENTS) {
+          showNotice(`最多添加 ${MAX_ATTACHMENTS} 个附件，请先移除已有附件`);
+          return;
+        }
+        const next = [...current, attachment];
+        attachmentsRef.current = next;
+        setAttachments(next);
+        requestAnimationFrame(() => areaRef.current?.focus());
+      }),
+    [showNotice],
+  );
+
   useEffect(() => {
     void loadModels();
   }, [loadModels]);
@@ -117,8 +138,16 @@ export default function Composer() {
   useEffect(() => {
     const area = areaRef.current;
     if (!area) return;
+    const styles = getComputedStyle(area);
+    const lineHeight =
+      Number.parseFloat(styles.lineHeight) || Number.parseFloat(styles.fontSize) * 1.6;
+    const verticalPadding =
+      Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
+    // 默认两行、最多四行；字体或缩放变化后仍按实际行高换算
+    const minHeight = lineHeight * 2 + verticalPadding;
+    const maxHeight = lineHeight * 4 + verticalPadding;
     area.style.height = "auto";
-    area.style.height = `${Math.min(area.scrollHeight, 220)}px`;
+    area.style.height = `${Math.min(Math.max(area.scrollHeight, minHeight), maxHeight)}px`;
   }, [text]);
 
   /**
@@ -320,13 +349,32 @@ export default function Composer() {
     return match?.name ?? `${currentModel.providerID}/${currentModel.modelID}`;
   }, [currentModel, models]);
 
-  const variants = useMemo(() => {
-    if (!currentModel) return [] as string[];
-    const match = models.find(
+  const currentModelInfo = useMemo(() => {
+    if (!currentModel) return undefined;
+    return models.find(
       (item) => item.id === currentModel.modelID && item.providerID === currentModel.providerID,
     );
-    return (match?.variants ?? []).map((variant) => variant.id);
   }, [currentModel, models]);
+
+  const variants = useMemo(() => {
+    return (currentModelInfo?.variants ?? []).map((variant) => variant.id);
+  }, [currentModelInfo]);
+
+  // 模型数据或当前模型变化后，默认选中该模型的最高档；用户之后仍可手动改回默认。
+  const defaultVariantModel = useRef<string | null>(null);
+  useEffect(() => {
+    if (!currentModel) {
+      defaultVariantModel.current = null;
+      return;
+    }
+    if (!currentModelInfo) return;
+    const key = `${currentModel.providerID}/${currentModel.modelID}`;
+    if (defaultVariantModel.current === key) return;
+    defaultVariantModel.current = key;
+    const choices = (currentModelInfo.variants ?? []).map((variant) => variant.id);
+    if (selectedVariant && choices.includes(selectedVariant)) return;
+    selectVariant(highestModelVariant(currentModelInfo));
+  }, [currentModel, currentModelInfo, selectVariant, selectedVariant]);
 
   // 斜杠命令：输入以 / 开头且还没敲空格时弹出
   const slashQuery = useMemo(() => {
@@ -776,7 +824,7 @@ export default function Composer() {
               ? "发消息，@ 引用文件，可粘贴截图，Enter 发送"
               : "请先在左侧选择工作区"
           }
-          rows={1}
+          rows={2}
           disabled={!directory}
         />
         <div className="composer-actions">
@@ -902,7 +950,11 @@ export default function Composer() {
                         </button>
                       );
                     })}
-                    {filtered.length === 0 && <div className="empty-line">没有匹配的模型</div>}
+                    {filtered.length === 0 && (
+                      <div className="empty-line">
+                        {models.length === 0 ? "当前没有可用模型" : "没有匹配的模型"}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

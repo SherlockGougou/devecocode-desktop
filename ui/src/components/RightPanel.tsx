@@ -13,6 +13,7 @@ import {
   relativeWorkspacePath,
 } from "../paths";
 import FilePreviewView from "./FilePreview";
+import DevicePanel from "./DevicePanel";
 import { Icon } from "./Icon";
 import TasksPanel from "./TasksPanel";
 
@@ -89,6 +90,9 @@ export default function RightPanel() {
         </button>
         <button className={tab === "files" ? "active" : ""} onClick={() => setTab("files")}>
           文件
+        </button>
+        <button className={tab === "device" ? "active" : ""} onClick={() => setTab("device")}>
+          设备
         </button>
         <button className={tab === "tasks" ? "active" : ""} onClick={() => setTab("tasks")}>
           任务
@@ -308,6 +312,12 @@ export default function RightPanel() {
             })}
             {shown.length === 0 && <div className="empty-line">没有文件</div>}
           </div>
+        </div>
+      )}
+
+      {tab === "device" && (
+        <div className="right-body device-body">
+          <DevicePanel />
         </div>
       )}
 

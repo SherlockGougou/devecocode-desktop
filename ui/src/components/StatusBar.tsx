@@ -1,72 +1,133 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../store";
 
 export default function StatusBar() {
   const messages = useApp((s) => s.messages);
   const backend = useApp((s) => s.backend);
   const directory = useApp((s) => s.directory);
+  const sessionID = useApp((s) => s.sessionID);
   const streaming = useApp((s) => s.streaming);
-  const mcpCount = useApp((s) => s.mcpCount);
-  const selectedAgent = useApp((s) => s.selectedAgent);
   const sseCount = useApp((s) => s.sseCount);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!streaming) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [sessionID, streaming]);
 
   const stats = useMemo(() => {
-    let steps = 0;
     let input = 0;
     let output = 0;
+    let reasoning = 0;
+    let cacheRead = 0;
+    let cacheWrite = 0;
     let cost = 0;
     let turns = 0;
+    let generatedTokens = 0;
+    let generationMs = 0;
     for (const message of messages) {
-      if (message.info.role === "user") turns += 1;
+      if (message.info.role === "user") {
+        turns += 1;
+        continue;
+      }
       const tokens = message.info.tokens;
       if (tokens) {
         input += tokens.input ?? 0;
         output += tokens.output ?? 0;
+        reasoning += tokens.reasoning ?? 0;
+        cacheRead += tokens.cache?.read ?? 0;
+        cacheWrite += tokens.cache?.write ?? 0;
       }
       cost += message.info.cost ?? 0;
-      for (const part of message.parts) {
-        if (part.type === "step-finish") steps += 1;
+
+      const started = message.info.time?.created;
+      const completed = message.info.time?.completed;
+      const ended = completed ?? (streaming ? now : undefined);
+      const generated = (tokens?.output ?? 0) + (tokens?.reasoning ?? 0);
+      if (started && ended && ended > started && generated > 0) {
+        generatedTokens += generated;
+        generationMs += ended - started;
       }
     }
-    return { steps, input, output, cost, turns };
-  }, [messages]);
+    return {
+      input,
+      output,
+      reasoning,
+      cacheRead,
+      cacheWrite,
+      total: input + output + reasoning,
+      cost,
+      turns,
+      speed: generationMs > 0 ? (generatedTokens / generationMs) * 1000 : 0,
+    };
+  }, [messages, now, streaming]);
 
   const project = directory ? directory.split("/").filter(Boolean).pop() : "未选择工作区";
+  const connectionLabel =
+    backend.state === "ready"
+      ? "已连接"
+      : backend.state === "failed"
+        ? "本地服务不可用"
+        : "正在重连";
+  const connectionTitle =
+    backend.state === "ready"
+      ? `事件流已连接 · 已接收 ${sseCount} 条实时事件`
+      : (backend.detail ?? "正在重连本地服务");
+  const tokenTitle = [
+    `输入 ${formatNumber(stats.input)}`,
+    `输出 ${formatNumber(stats.output)}`,
+    `推理 ${formatNumber(stats.reasoning)}`,
+    `合计 ${formatNumber(stats.total)}`,
+    `缓存读 ${formatNumber(stats.cacheRead)}`,
+    stats.cacheWrite > 0 ? `缓存写 ${formatNumber(stats.cacheWrite)}` : null,
+    stats.cost > 0 ? `成本 $${stats.cost.toFixed(3)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <footer className="statusbar">
-      <span
-        className={`status-item ${backend.state === "ready" ? "ok" : backend.state === "failed" ? "bad" : "warn"}`}
-        title={`已接收 ${sseCount} 条实时事件`}
-      >
-        <span className="dot" />
-        {backend.state === "ready"
-          ? "事件流已连接"
-          : backend.state === "failed"
-            ? "本地服务不可用"
-            : "正在重连本地服务"}
-      </span>
-      <span className="status-sep">·</span>
-      <span className="status-item">{project}</span>
+      <div className="status-context">
+        <span
+          className={`status-item ${backend.state === "ready" ? "ok" : backend.state === "failed" ? "bad" : "warn"}`}
+          title={connectionTitle}
+        >
+          <span className="dot" />
+          {connectionLabel}
+        </span>
+        <span className="status-sep">·</span>
+        <span className="status-project" title={directory ?? project}>
+          {project}
+        </span>
+      </div>
       <span className="status-grow" />
-      {streaming && <span className="status-item accent">执行中</span>}
-      <span className="status-item">agent: {selectedAgent}</span>
-      <span className="status-sep">·</span>
-      <span className="status-item">{mcpCount} MCP</span>
-      <span className="status-sep">·</span>
-      <span className="status-item">{stats.turns} 轮</span>
-      <span className="status-sep">·</span>
-      <span className="status-item">{stats.steps} 步</span>
-      <span className="status-sep">·</span>
-      <span className="status-item">
-        {formatNumber(stats.input)} in / {formatNumber(stats.output)} out
-      </span>
-      {stats.cost > 0 && (
-        <>
-          <span className="status-sep">·</span>
-          <span className="status-item">${stats.cost.toFixed(3)}</span>
-        </>
-      )}
+      <div className="status-metrics">
+        {streaming && (
+          <span className="status-live">
+            <span className="status-live-dot" />
+            运行中
+          </span>
+        )}
+        <span className="status-metric" title={`当前会话共 ${stats.turns} 轮`}>
+          <span className="status-label">轮次</span>
+          <span className="status-value">{stats.turns}</span>
+        </span>
+        <span className="status-sep">·</span>
+        <span className="status-metric" title={tokenTitle}>
+          <span className="status-label">Token</span>
+          <span className="status-value">{formatNumber(stats.total)}</span>
+        </span>
+        <span className="status-sep">·</span>
+        <span
+          className={`status-metric status-speed ${streaming ? "live" : ""}`}
+          title="当前会话累计生成速度：输出 + 推理 token / 助手消息耗时（含等待与工具调用）"
+        >
+          <span className="status-label">速度</span>
+          <span className="status-value">{formatSpeed(stats.speed)}</span>
+        </span>
+      </div>
     </footer>
   );
 }
@@ -75,4 +136,9 @@ function formatNumber(value: number) {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
   return String(value);
+}
+
+function formatSpeed(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "--";
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} tok/s`;
 }

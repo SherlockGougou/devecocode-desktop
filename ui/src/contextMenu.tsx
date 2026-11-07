@@ -23,6 +23,9 @@ export type ContextMenuItem = {
   shortcut?: string;
   disabled?: boolean;
   danger?: boolean;
+  /** 勾选/单选状态；配合 checkType 渲染右侧勾与 ARIA 角色。 */
+  checked?: boolean;
+  checkType?: "checkbox" | "radio";
   onSelect: () => void | Promise<void>;
 };
 
@@ -602,13 +605,20 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
             <button
               type="button"
               id={`context-menu-item-${index}`}
-              role="menuitem"
+              role={
+                entry.checkType === "radio"
+                  ? "menuitemradio"
+                  : entry.checkType === "checkbox"
+                    ? "menuitemcheckbox"
+                    : "menuitem"
+              }
               className={`context-menu-item ${index === activeIndex ? "active" : ""} ${
                 entry.danger ? "danger" : ""
               }`}
               key={`${entry.label}-${index}`}
               disabled={entry.disabled}
               aria-disabled={entry.disabled}
+              aria-checked={entry.checkType ? Boolean(entry.checked) : undefined}
               onMouseEnter={() => !entry.disabled && setActiveIndex(index)}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => void activate(entry)}
@@ -617,6 +627,11 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
                 {entry.icon && <Icon name={entry.icon} size={15} />}
               </span>
               <span className="context-menu-label">{entry.label}</span>
+              {entry.checked && (
+                <span className="context-menu-check" aria-hidden>
+                  <Icon name="check" size={14} />
+                </span>
+              )}
               {entry.shortcut && <span className="context-menu-shortcut">{entry.shortcut}</span>}
             </button>
           ),

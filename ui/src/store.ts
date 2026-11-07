@@ -14,6 +14,7 @@ import type {
   CommandInfo,
   FileDiff,
   FileNode,
+  GitRepoState,
   MentionRef,
   Message,
   ModelInfo,
@@ -21,32 +22,151 @@ import type {
   PermissionRequest,
   Project,
   Session,
+  SettingsPage,
   SessionStatus,
   TodoItem,
 } from "./types";
 import { buildSubagentTasks, normalizeTodos } from "./tasks";
+import { highestModelVariant, isModelAvailable } from "./models";
 
-type RightTab = "changes" | "files" | "tasks";
+type RightTab = "changes" | "files" | "device" | "tasks";
 
 const LAST_DIR = "deveco.desktop.dir";
 const LAST_SESSION = "deveco.desktop.session";
 const LOCAL_WORKSPACES = "deveco.desktop.workspaces";
+// CLI 的 /project 没有删除接口，移除只能由桌面端持久化为“不展示”。
+const REMOVED_WORKSPACES = "deveco.desktop.removedWorkspaces";
+const WORKSPACE_ORDER = "deveco.desktop.workspaceOrder";
+const SESSION_SORT = "deveco.desktop.sessionSort";
+const SESSION_PREVIEW = "deveco.desktop.sessionPreview";
+const SIDEBAR_OPEN = "deveco.desktop.sidebarOpen";
+const OVERVIEW_PINNED = "deveco.desktop.overviewPinned";
 /** 启动阶段读取工作区可能被 macOS 文件夹授权弹窗阻塞，给用户留足处理时间。 */
 const BOOT_LOAD_TIMEOUT_MS = 5 * 60 * 1000;
+const BTW_TIMEOUT_MS = 90_000;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let previewRequest = 0;
 let permissionWatchTimer: ReturnType<typeof setTimeout> | null = null;
 let permissionWatchToken = 0;
 let tasksRequest = 0;
+let overviewRequest = 0;
+
+type BtwPending = {
+  sessionID: string;
+  directory: string;
+  text: string;
+  resolve: (text: string) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+const btwPending = new Map<string, BtwPending>();
+
+function newAsideID() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `btw-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function takeBtw(asideID: string): BtwPending | undefined {
+  const pending = btwPending.get(asideID);
+  if (!pending) return undefined;
+  btwPending.delete(asideID);
+  clearTimeout(pending.timer);
+  return pending;
+}
+
+function cancelBtwPending() {
+  for (const [asideID, pending] of btwPending) {
+    btwPending.delete(asideID);
+    clearTimeout(pending.timer);
+    pending.reject(new Error("提交信息生成已取消"));
+  }
+}
+
+/** Agent 偶尔会把提交信息包在代码块或标题里，提交前只做保守清理。 */
+function normalizeCommitMessage(value: string): string {
+  let text = value.trim();
+  if (text.startsWith("```")) {
+    text = text.replace(/^```[^\n]*\n?/, "").replace(/\n?```$/, "").trim();
+  }
+  text = text.replace(/^(?:提交信息|commit message)\s*[:：]\s*/i, "");
+  text = text.replace(/\n{3,}/g, "\n\n").trim();
+  return text.slice(0, 4000);
+}
+
+function buildCommitPrompt(
+  git: GitRepoState,
+  diff: FileDiff[],
+  todos: TodoItem[],
+  title: string,
+) {
+  const files = git.files
+    .slice(0, 80)
+    .map(
+      (file) =>
+        `- [${file.status}] ${file.path}${file.staged ? "（已暂存）" : ""}${file.unstaged ? "（工作区）" : ""}`,
+    )
+    .join("\n");
+  const todo = todos
+    .filter((item) => item.status === "completed" || item.status === "in_progress")
+    .slice(-12)
+    .map((item) => `- [${item.status}] ${item.content}`)
+    .join("\n");
+  let patch = "";
+  for (const entry of diff.slice(0, 32)) {
+    if (!entry.patch) continue;
+    const next = `### ${entry.file}\n${entry.patch}\n\n`;
+    if (patch.length + next.length > 60_000) break;
+    patch += next;
+  }
+  return [
+    "请为当前工作区即将提交的改动生成一条 Git 提交信息。",
+    "只输出提交信息本身，不要解释、不要使用代码块、不要执行工具。",
+    "语言跟随当前会话；无法判断时使用中文。标题尽量简洁，必要时可以附带一行正文。",
+    title ? `会话：${title}` : "",
+    todo ? `最近任务上下文：\n${todo}` : "",
+    `变更文件：\n${files || "（工作区状态未返回文件列表）"}`,
+    `变更统计：${git.files.length} 个文件，+${git.additions} −${git.deletions}`,
+    patch ? `变更内容（可能截断）：\n${patch}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function hasRunningAgent(state: Pick<AppState, "streaming" | "sessionStatuses">) {
+  return (
+    state.streaming ||
+    Object.values(state.sessionStatuses).some(
+      (status) => status.type === "busy" || status.type === "retry",
+    )
+  );
+}
 
 function normalizeWorkspace(path: string) {
   const trimmed = path.trim();
   return trimmed === "/" ? trimmed : trimmed.replace(/\/+$/, "");
 }
 
-function readLocalWorkspaces(): string[] {
+export type SessionSort = "updated" | "created" | "title";
+export type SessionPreview = 5 | 10 | 20 | "all";
+
+function readSessionSort(): SessionSort {
+  const value = localStorage.getItem(SESSION_SORT);
+  return value === "created" || value === "title" ? value : "updated";
+}
+
+function readSessionPreview(): SessionPreview {
+  const value = localStorage.getItem(SESSION_PREVIEW);
+  if (value === "all") return "all";
+  const count = Number(value);
+  return count === 10 || count === 20 ? count : 5;
+}
+
+function readPathList(key: string): string[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(LOCAL_WORKSPACES) ?? "[]");
+    const parsed = JSON.parse(localStorage.getItem(key) ?? "[]");
     if (!Array.isArray(parsed)) return [];
     const seen = new Set<string>();
     const paths: string[] = [];
@@ -63,6 +183,37 @@ function readLocalWorkspaces(): string[] {
   }
 }
 
+function readLocalWorkspaces(): string[] {
+  return readPathList(LOCAL_WORKSPACES);
+}
+
+function readRemovedWorkspaces(): string[] {
+  return readPathList(REMOVED_WORKSPACES);
+}
+
+function readWorkspaceOrder(): string[] {
+  return readPathList(WORKSPACE_ORDER);
+}
+
+function rememberWorkspaceOrder(projects: Project[]) {
+  const order = projects
+    .map((project) => normalizeWorkspace(project.worktree))
+    .filter(Boolean);
+  localStorage.setItem(WORKSPACE_ORDER, JSON.stringify(order));
+}
+
+function applyWorkspaceOrder(projects: Project[]) {
+  const order = readWorkspaceOrder();
+  if (order.length === 0) return projects;
+  const rank = new Map(order.map((path, index) => [path, index]));
+  projects.sort(
+    (a, b) =>
+      (rank.get(normalizeWorkspace(a.worktree)) ?? Number.MAX_SAFE_INTEGER) -
+      (rank.get(normalizeWorkspace(b.worktree)) ?? Number.MAX_SAFE_INTEGER),
+  );
+  return projects;
+}
+
 function rememberLocalWorkspace(path: string) {
   const normalized = normalizeWorkspace(path);
   if (!normalized) return;
@@ -71,6 +222,34 @@ function rememberLocalWorkspace(path: string) {
     ...readLocalWorkspaces().filter((item) => item !== normalized),
   ];
   localStorage.setItem(LOCAL_WORKSPACES, JSON.stringify(next));
+}
+
+function forgetLocalWorkspace(path: string) {
+  const normalized = normalizeWorkspace(path);
+  if (!normalized) return;
+  const next = readLocalWorkspaces().filter((item) => item !== normalized);
+  localStorage.setItem(LOCAL_WORKSPACES, JSON.stringify(next));
+}
+
+function rememberRemovedWorkspace(path: string) {
+  const normalized = normalizeWorkspace(path);
+  if (!normalized) return;
+  const next = [
+    normalized,
+    ...readRemovedWorkspaces().filter((item) => item !== normalized),
+  ];
+  localStorage.setItem(REMOVED_WORKSPACES, JSON.stringify(next));
+}
+
+function forgetRemovedWorkspace(path: string) {
+  const normalized = normalizeWorkspace(path);
+  if (!normalized) return;
+  const next = readRemovedWorkspaces().filter((item) => item !== normalized);
+  localStorage.setItem(REMOVED_WORKSPACES, JSON.stringify(next));
+}
+
+function workspaceLabel(path: string) {
+  return path.split("/").filter(Boolean).pop() ?? path;
 }
 
 function isPermissionError(error: unknown) {
@@ -215,6 +394,14 @@ function emptyConversationPatch() {
     tasksLoading: false,
     streaming: false,
     diff: [],
+    overviewGit: null,
+    overviewLoading: false,
+    overviewError: null,
+    commitMessage: "",
+    commitMessageGenerating: false,
+    commitMessageError: null,
+    committing: false,
+    pushing: false,
     failedText: null,
     findOpen: false,
     findQuery: "",
@@ -257,7 +444,18 @@ export interface AppState {
   /** 后端（本机 deveco serve）状态：自愈过程对用户可见 */
   backend: BackendPhase;
   rightOpen: boolean;
+  overviewOpen: boolean;
+  overviewPinned: boolean;
+  overviewGit: GitRepoState | null;
+  overviewLoading: boolean;
+  overviewError: string | null;
+  commitMessage: string;
+  commitMessageGenerating: boolean;
+  commitMessageError: string | null;
+  committing: boolean;
+  pushing: boolean;
   settingsOpen: boolean;
+  settingsPage: SettingsPage;
   shortcutsOpen: boolean;
   rightTab: RightTab;
   diff: FileDiff[];
@@ -266,12 +464,15 @@ export interface AppState {
   fileQuery: string;
   filter: string;
   showArchived: boolean;
+  sessionSort: SessionSort;
+  sessionPreview: SessionPreview;
   failedText: string | null;
   notice: string | null;
   findOpen: boolean;
   findQuery: string;
   findIndex: number;
   sidebarWidth: number;
+  sidebarOpen: boolean;
   clearFailedText(): void;
   showNotice(message: string, duration?: number): void;
   exportCurrentSession(): Promise<void>;
@@ -281,6 +482,7 @@ export interface AppState {
   setFindQuery(query: string): void;
   stepFind(delta: number): void;
   setSidebarWidth(width: number): void;
+  toggleSidebar(): void;
 
   boot(): Promise<void>;
   selectProject(
@@ -294,6 +496,10 @@ export interface AppState {
   changeDraftWorkspace(directory: string): Promise<void>;
   /** 把用户从本机选择的目录加入工作区并切过去，仍保持新会话草稿态。 */
   addWorkspace(directory: string): Promise<void>;
+  /** 从侧栏隐藏工作区；不删除目录、CLI 注册表或历史会话。 */
+  removeWorkspace(directory: string): Promise<void>;
+  /** 把工作区拖到 target 的前/后，并持久化自定义顺序。 */
+  moveWorkspace(source: string, target: string, after: boolean): void;
   pickWorkspaceFolder(): Promise<void>;
   /** refs 是 Composer 里 @ 引用的工作区文件；不传时行为与之前完全一致 */
   send(text: string, attachments?: Attachment[], refs?: MentionRef[]): Promise<void>;
@@ -304,7 +510,17 @@ export interface AppState {
   retryBackend(): Promise<void>;
   refreshAfterReconnect(): Promise<void>;
   toggleRight(): void;
-  openSettings(): void;
+  toggleOverview(): void;
+  closeOverview(): void;
+  setOverviewPinned(pinned: boolean): void;
+  refreshOverview(): Promise<void>;
+  setCommitMessage(value: string): void;
+  generateCommitMessage(): Promise<string | null>;
+  commitChanges(): Promise<void>;
+  pushChanges(): Promise<void>;
+  openRightTab(tab: RightTab): void;
+  openSettings(page?: SettingsPage): void;
+  setSettingsPage(page: SettingsPage): void;
   closeSettings(): void;
   openShortcuts(): void;
   closeShortcuts(): void;
@@ -325,6 +541,10 @@ export interface AppState {
   renameSession(directory: string, id: string, title: string): Promise<void>;
   archiveSession(directory: string, id: string, archived: boolean): Promise<void>;
   toggleArchivedView(): void;
+  setSessionSort(sort: SessionSort): void;
+  setSessionPreview(count: SessionPreview): void;
+  /** 全部收起；若有工作区未展开则全部展开并补齐会话列表。 */
+  toggleAllProjects(): Promise<void>;
   deleteSession(directory: string, id: string): Promise<void>;
   refreshDiff(): Promise<void>;
   openPreview(path: string): Promise<void>;
@@ -372,7 +592,18 @@ export const useApp = create<AppState>()((set, get) => ({
   sseCount: 0,
   backend: { state: "starting", attempt: 0, detail: null },
   rightOpen: false,
+  overviewOpen: false,
+  overviewPinned: localStorage.getItem(OVERVIEW_PINNED) === "1",
+  overviewGit: null,
+  overviewLoading: false,
+  overviewError: null,
+  commitMessage: "",
+  commitMessageGenerating: false,
+  commitMessageError: null,
+  committing: false,
+  pushing: false,
   settingsOpen: false,
+  settingsPage: "appearance",
   shortcutsOpen: false,
   rightTab: "changes",
   diff: [],
@@ -381,6 +612,8 @@ export const useApp = create<AppState>()((set, get) => ({
   fileQuery: "",
   filter: "",
   showArchived: localStorage.getItem("deveco.desktop.showArchived") === "1",
+  sessionSort: readSessionSort(),
+  sessionPreview: readSessionPreview(),
   failedText: null,
   notice: null,
   findOpen: false,
@@ -391,6 +624,7 @@ export const useApp = create<AppState>()((set, get) => ({
     460,
     Math.max(220, Number(localStorage.getItem("deveco.desktop.sidebarWidth")) || 296),
   ),
+  sidebarOpen: localStorage.getItem(SIDEBAR_OPEN) !== "0",
 
   async boot() {
     const earlyHint = setTimeout(() => {
@@ -435,12 +669,13 @@ export const useApp = create<AppState>()((set, get) => ({
         const existence = await Promise.all(
           all.map((project) => api.pathExists(project.worktree).catch(() => null)),
         );
+        const removed = new Set(readRemovedWorkspaces());
         // CLI 的 /project 可能对同一路径返回多条不同 id 的记录，按 worktree 去重
         const seen = new Set<string>();
         const projects = all.filter((project, index) => {
           if (existence[index] === false) return false;
-          const key = project.worktree.replace(/\/$/, "");
-          if (seen.has(key)) return false;
+          const key = normalizeWorkspace(project.worktree);
+          if (!key || removed.has(key) || seen.has(key)) return false;
           seen.add(key);
           return true;
         });
@@ -455,10 +690,12 @@ export const useApp = create<AppState>()((set, get) => ({
         const known = new Set(projects.map((project) => normalizeWorkspace(project.worktree)));
         for (let index = 0; index < local.length; index += 1) {
           const path = local[index];
-          if (localExistence[index] === false || known.has(path)) continue;
+          if (localExistence[index] === false || removed.has(path) || known.has(path)) continue;
           known.add(path);
           projects.push({ id: path, worktree: path });
         }
+        // 用户拖出的自定义顺序优先；新出现的工作区排在已知顺序之后。
+        applyWorkspaceOrder(projects);
         const saved = localStorage.getItem(LAST_DIR);
         const hint = await api.startupDirectory().catch((err) => {
           // 不要吞掉：命令缺失/权限问题要在界面上看得见
@@ -476,7 +713,12 @@ export const useApp = create<AppState>()((set, get) => ({
         if (directory) {
           await get().selectProject(directory, { patient: true });
         }
-        set({ booting: false, bootMessage: "" });
+        set({
+          booting: false,
+          bootMessage: "",
+          ...(get().overviewPinned && get().sessionID ? { overviewOpen: true } : {}),
+        });
+        if (get().overviewOpen) void get().refreshOverview();
       } finally {
         clearTimeout(hintTimer);
       }
@@ -491,15 +733,15 @@ export const useApp = create<AppState>()((set, get) => ({
     const openRecent = options?.openRecent ?? true;
     const timeout = patient ? BOOT_LOAD_TIMEOUT_MS : undefined;
     localStorage.setItem(LAST_DIR, directory);
-    // 侧栏是「一次只展开一个工作区」的手风琴：切过去时收起其它工作区
     if (!retry) stopPermissionWatch();
     if (retry && get().directory === directory) {
-      set({ expanded: { [directory]: true } });
+      set({ expanded: { ...get().expanded, [directory]: true } });
     } else {
       previewRequest += 1;
+      cancelBtwPending();
       set({
         directory,
-        expanded: { [directory]: true },
+        expanded: { ...get().expanded, [directory]: true },
         sessionID: null,
         messages: [],
         permissions: [],
@@ -511,6 +753,14 @@ export const useApp = create<AppState>()((set, get) => ({
         selectedTaskID: null,
         tasksLoading: false,
         diff: [],
+        overviewGit: null,
+        overviewLoading: false,
+        overviewError: null,
+        commitMessage: "",
+        commitMessageGenerating: false,
+        commitMessageError: null,
+        committing: false,
+        pushing: false,
         files: [],
         filePath: "",
         fileQuery: "",
@@ -565,6 +815,7 @@ export const useApp = create<AppState>()((set, get) => ({
     if (retry && get().sessionID === id) {
       set({ streaming: false });
     } else {
+      cancelBtwPending();
       set({
         sessionID: id,
         messages: [],
@@ -576,6 +827,15 @@ export const useApp = create<AppState>()((set, get) => ({
         selectedTaskID: null,
         tasksLoading: true,
         streaming: false,
+        overviewGit: null,
+        overviewLoading: false,
+        overviewError: null,
+        commitMessage: "",
+        commitMessageGenerating: false,
+        commitMessageError: null,
+        committing: false,
+        pushing: false,
+        ...(get().overviewPinned ? { overviewOpen: true } : {}),
         ...(retry ? {} : { error: null }),
       });
     }
@@ -591,6 +851,7 @@ export const useApp = create<AppState>()((set, get) => ({
       stopPermissionWatch();
       set({ messages: merged, diff, error: null });
       void get().refreshTasks();
+      if (get().overviewOpen) void get().refreshOverview();
     } catch (error) {
       set({ tasksLoading: false });
       set({ error: workspaceLoadError(error, patient) });
@@ -600,10 +861,13 @@ export const useApp = create<AppState>()((set, get) => ({
 
   async newSession() {
     const directory = get().directory;
+    cancelBtwPending();
     set({
       ...emptyConversationPatch(),
       error: null,
-      ...(directory ? { expanded: { [directory]: true } } : {}),
+      ...(directory
+        ? { expanded: { ...get().expanded, [directory]: true } }
+        : {}),
     });
   },
 
@@ -615,7 +879,7 @@ export const useApp = create<AppState>()((set, get) => ({
     }
     set({
       ...emptyConversationPatch(),
-      expanded: { [target]: true },
+      expanded: { ...get().expanded, [target]: true },
       error: null,
     });
   },
@@ -628,7 +892,7 @@ export const useApp = create<AppState>()((set, get) => ({
       return;
     }
     if (get().directory === target) {
-      set({ expanded: { [target]: true } });
+      set({ expanded: { ...get().expanded, [target]: true } });
       return;
     }
     await get().selectProject(target, { openRecent: false });
@@ -647,13 +911,14 @@ export const useApp = create<AppState>()((set, get) => ({
         set({ error: `目录不存在或无法访问：${target}` });
         return;
       }
+      // 之前从侧栏移除过的目录，重新选择时应当恢复显示。
+      forgetRemovedWorkspace(target);
       const projects = get().projects;
       if (!projects.some((project) => normalizeWorkspace(project.worktree) === target)) {
-        set({
-          projects: [{ id: target, worktree: target }, ...projects],
-          error: null,
-        });
+        const next = [{ id: target, worktree: target }, ...projects];
+        set({ projects: next, error: null });
         rememberLocalWorkspace(target);
+        rememberWorkspaceOrder(next);
       }
       await get().selectProject(target, { openRecent: false });
     } catch (error) {
@@ -670,6 +935,84 @@ export const useApp = create<AppState>()((set, get) => ({
     }
   },
 
+  async removeWorkspace(directory) {
+    const target = normalizeWorkspace(directory);
+    if (!target) return;
+    const state = get();
+    const remaining = state.projects.filter(
+      (project) => normalizeWorkspace(project.worktree) !== target,
+    );
+    const sessions = { ...state.sessions };
+    const loadedDirs = { ...state.loadedDirs };
+    const searchResults = { ...state.searchResults };
+    const expanded = { ...state.expanded };
+    delete sessions[target];
+    delete loadedDirs[target];
+    delete searchResults[target];
+    delete expanded[target];
+
+    rememberRemovedWorkspace(target);
+    forgetLocalWorkspace(target);
+    set({
+      projects: remaining,
+      sessions,
+      loadedDirs,
+      searchResults,
+      expanded,
+      error: null,
+    });
+    rememberWorkspaceOrder(remaining);
+
+    const label = workspaceLabel(target);
+    if (state.directory !== target) {
+      get().showNotice(`已从侧栏移除「${label}」；文件夹与历史会话未删除`, 6000);
+      return;
+    }
+
+    // 移除的是当前工作区：优先切到剩下的第一个；没有则回到“选择工作区”空态。
+    stopPermissionWatch();
+    localStorage.removeItem(LAST_DIR);
+    const next = remaining[0]?.worktree ?? null;
+    if (next) {
+      await get().selectProject(next);
+    } else {
+      previewRequest += 1;
+      set({
+        directory: null,
+        ...emptyConversationPatch(),
+        permissions: [],
+        preview: null,
+        diff: [],
+        files: [],
+        filePath: "",
+        fileQuery: "",
+        error: null,
+      });
+    }
+    get().showNotice(`已从侧栏移除「${label}」；文件夹与历史会话未删除`, 6000);
+  },
+
+  moveWorkspace(source, target, after) {
+    const from = normalizeWorkspace(source);
+    const to = normalizeWorkspace(target);
+    if (!from || !to || from === to) return;
+    const projects = get().projects;
+    const moved = projects.find(
+      (project) => normalizeWorkspace(project.worktree) === from,
+    );
+    if (!moved) return;
+    const next = projects.filter(
+      (project) => normalizeWorkspace(project.worktree) !== from,
+    );
+    const targetIndex = next.findIndex(
+      (project) => normalizeWorkspace(project.worktree) === to,
+    );
+    if (targetIndex === -1) return;
+    next.splice(targetIndex + (after ? 1 : 0), 0, moved);
+    set({ projects: next });
+    rememberWorkspaceOrder(next);
+  },
+
   async send(text, attachments, refs) {
     const directory = get().directory;
     const files = attachments ?? [];
@@ -684,7 +1027,7 @@ export const useApp = create<AppState>()((set, get) => ({
         set({
           sessions: { ...get().sessions, [directory]: upsertSession(list, session) },
           sessionID,
-          expanded: { [directory]: true },
+          expanded: { ...get().expanded, [directory]: true },
           todos: [],
           sessionChildren: [],
           childMessages: {},
@@ -838,6 +1181,7 @@ export const useApp = create<AppState>()((set, get) => ({
         set({ messages, permissions });
         void get().refreshDiff();
         void get().refreshTasks();
+        if (get().overviewOpen) void get().refreshOverview();
       }
     } catch (error) {
       // 断线场景下请求失败是预期内的：提示条已经说明状态，等下一次 ready 再刷新，
@@ -968,6 +1312,83 @@ export const useApp = create<AppState>()((set, get) => ({
         }
         break;
       }
+      case "btw.start": {
+        const asideID = typeof props.asideID === "string" ? props.asideID : "";
+        if (asideID && btwPending.has(asideID)) {
+          set({ commitMessageGenerating: true, commitMessageError: null });
+        }
+        break;
+      }
+      case "btw.delta": {
+        const asideID = typeof props.asideID === "string" ? props.asideID : "";
+        const pending = btwPending.get(asideID);
+        if (!pending) break;
+        if (
+          get().sessionID !== pending.sessionID ||
+          get().directory !== pending.directory
+        ) {
+          takeBtw(asideID)?.reject(new Error("会话已切换"));
+          set({ commitMessageGenerating: false });
+          break;
+        }
+        pending.text += typeof props.text === "string" ? props.text : "";
+        set({
+          commitMessage: pending.text,
+          commitMessageGenerating: true,
+          commitMessageError: null,
+        });
+        break;
+      }
+      case "btw.complete": {
+        const asideID = typeof props.asideID === "string" ? props.asideID : "";
+        const pending = takeBtw(asideID);
+        if (!pending) break;
+        if (
+          get().sessionID !== pending.sessionID ||
+          get().directory !== pending.directory
+        ) {
+          pending.reject(new Error("会话已切换"));
+          break;
+        }
+        const message = normalizeCommitMessage(pending.text);
+        if (!message) {
+          const error = new Error("Agent 没有返回提交信息");
+          set({
+            commitMessageGenerating: false,
+            commitMessageError: error.message,
+          });
+          pending.reject(error);
+          break;
+        }
+        set({
+          commitMessage: message,
+          commitMessageGenerating: false,
+          commitMessageError: null,
+        });
+        pending.resolve(message);
+        break;
+      }
+      case "btw.error": {
+        const asideID = typeof props.asideID === "string" ? props.asideID : "";
+        const pending = takeBtw(asideID);
+        if (!pending) break;
+        const message =
+          (typeof props.message === "string" && props.message) ||
+          "Agent 生成提交信息失败";
+        if (
+          get().sessionID === pending.sessionID &&
+          get().directory === pending.directory
+        ) {
+          set({
+            commitMessageGenerating: false,
+            commitMessageError: message,
+          });
+        } else {
+          set({ commitMessageGenerating: false });
+        }
+        pending.reject(new Error(message));
+        break;
+      }
       case "session.idle":
         if (eventSession === currentSession) {
           set({ streaming: false });
@@ -977,6 +1398,7 @@ export const useApp = create<AppState>()((set, get) => ({
             void loadDiff(directory, eventSession).then((diff) => set({ diff }));
           }
           void get().refreshTasks();
+          if (get().overviewOpen) void get().refreshOverview();
         } else if (isChildSession(eventSession)) {
           set({
             sessionStatuses: {
@@ -1034,8 +1456,12 @@ export const useApp = create<AppState>()((set, get) => ({
     }
   },
 
-  openSettings() {
-    set({ settingsOpen: true });
+  openSettings(page) {
+    set(page ? { settingsOpen: true, settingsPage: page } : { settingsOpen: true });
+  },
+
+  setSettingsPage(settingsPage) {
+    set({ settingsPage });
   },
 
   closeSettings() {
@@ -1107,10 +1533,283 @@ export const useApp = create<AppState>()((set, get) => ({
     set({ sidebarWidth: clamped });
   },
 
+  toggleSidebar() {
+    const open = !get().sidebarOpen;
+    localStorage.setItem(SIDEBAR_OPEN, open ? "1" : "0");
+    set({ sidebarOpen: open });
+  },
+
   toggleRight() {
     const open = !get().rightOpen;
     set({ rightOpen: open });
     if (open) void refreshPanel(get, set);
+  },
+
+  toggleOverview() {
+    const open = !get().overviewOpen;
+    set({ overviewOpen: open });
+    if (open) void get().refreshOverview();
+  },
+
+  closeOverview() {
+    set({ overviewOpen: false });
+  },
+
+  setOverviewPinned(pinned) {
+    localStorage.setItem(OVERVIEW_PINNED, pinned ? "1" : "0");
+    set({ overviewPinned: pinned });
+  },
+
+  async refreshOverview() {
+    const directory = get().directory;
+    if (!directory) {
+      overviewRequest += 1;
+      set({
+        overviewGit: null,
+        overviewLoading: false,
+        overviewError: null,
+      });
+      return;
+    }
+    const request = ++overviewRequest;
+    set({ overviewLoading: true, overviewError: null });
+    try {
+      const git = await api.gitState(directory);
+      if (request !== overviewRequest || get().directory !== directory) return;
+      set({ overviewGit: git, overviewLoading: false });
+    } catch (error) {
+      if (request !== overviewRequest || get().directory !== directory) return;
+      set({
+        overviewLoading: false,
+        overviewError: `读取工作区状态失败：${String(error)}`,
+      });
+    }
+  },
+
+  setCommitMessage(value) {
+    set({ commitMessage: value, commitMessageError: null });
+  },
+
+  async generateCommitMessage() {
+    const state = get();
+    const { directory, sessionID } = state;
+    if (!directory || !sessionID) {
+      set({ commitMessageError: "请先打开一个会话再生成提交信息" });
+      return null;
+    }
+    if (state.commitMessageGenerating || state.committing || state.pushing) {
+      return null;
+    }
+    if (hasRunningAgent(state)) {
+      set({ commitMessageError: "Agent 正在执行，结束后再生成提交信息" });
+      return null;
+    }
+
+    set({
+      commitMessageGenerating: true,
+      commitMessageError: null,
+      commitMessage: "",
+    });
+    try {
+      const git =
+        state.overviewGit ?? (await api.gitState(directory));
+      if (get().sessionID !== sessionID || get().directory !== directory) return null;
+      if (!git.isRepo) throw new Error("当前工作区不是 Git 仓库");
+      if (git.files.length === 0) throw new Error("当前没有可提交的改动");
+      const diff = await api.vcsDiff(directory).catch(() => [] as FileDiff[]);
+      if (get().sessionID !== sessionID || get().directory !== directory) return null;
+      const title =
+        (get().sessions[directory] ?? []).find((item) => item.id === sessionID)?.title ?? "";
+      const prompt = buildCommitPrompt(git, diff, get().todos, title);
+      const model = get().selectedModel
+        ? `${get().selectedModel!.providerID}/${get().selectedModel!.modelID}`
+        : undefined;
+      const asideID = newAsideID();
+      const text = await new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const pending = btwPending.get(asideID);
+          if (!pending) return;
+          btwPending.delete(asideID);
+          pending.reject(new Error("生成提交信息超时"));
+        }, BTW_TIMEOUT_MS);
+        btwPending.set(asideID, {
+          sessionID,
+          directory,
+          text: "",
+          resolve,
+          reject,
+          timer,
+        });
+        void api
+          .btw(directory, sessionID, asideID, prompt, model)
+          .catch((error) => {
+            takeBtw(asideID)?.reject(
+              error instanceof Error ? error : new Error(String(error)),
+            );
+          });
+      });
+      if (get().sessionID !== sessionID || get().directory !== directory) return null;
+      const message = normalizeCommitMessage(text);
+      if (!message) throw new Error("Agent 没有返回提交信息");
+      set({
+        commitMessage: message,
+        commitMessageGenerating: false,
+        commitMessageError: null,
+      });
+      return message;
+    } catch (error) {
+      if (get().sessionID === sessionID && get().directory === directory) {
+        set({
+          commitMessageGenerating: false,
+          commitMessageError: `生成提交信息失败：${String(error)}`,
+        });
+      } else {
+        set({ commitMessageGenerating: false });
+      }
+      return null;
+    }
+  },
+
+  async commitChanges() {
+    const state = get();
+    const { directory, sessionID } = state;
+    if (!directory || !sessionID) {
+      set({ commitMessageError: "请先打开一个会话再提交" });
+      return;
+    }
+    if (state.committing || state.pushing || state.commitMessageGenerating) return;
+    if (hasRunningAgent(state)) {
+      set({ commitMessageError: "Agent 正在执行，结束后再提交" });
+      return;
+    }
+
+    let git = state.overviewGit;
+    if (!git) {
+      try {
+        git = await api.gitState(directory);
+        if (get().sessionID !== sessionID || get().directory !== directory) return;
+        set({ overviewGit: git });
+      } catch (error) {
+        set({ commitMessageError: `读取 Git 状态失败：${String(error)}` });
+        return;
+      }
+    }
+    if (!git.isRepo) {
+      set({ commitMessageError: "当前工作区不是 Git 仓库" });
+      return;
+    }
+    if (git.detached) {
+      set({ commitMessageError: "当前处于 detached HEAD，无法提交" });
+      return;
+    }
+    if (git.files.length === 0) {
+      set({ commitMessageError: "当前没有可提交的改动" });
+      return;
+    }
+
+    let message = normalizeCommitMessage(state.commitMessage);
+    if (!message) {
+      const generated = await get().generateCommitMessage();
+      if (!generated) return;
+      message = generated;
+    }
+    if (get().sessionID !== sessionID || get().directory !== directory) return;
+    if (hasRunningAgent(get())) {
+      set({ commitMessageError: "Agent 正在执行，结束后再提交" });
+      return;
+    }
+
+    set({ committing: true, commitMessageError: null });
+    try {
+      const result = await api.gitCommit(directory, message);
+      const next = await api.gitState(directory).catch(() => null);
+      set({
+        committing: false,
+        commitMessage: "",
+        commitMessageError: null,
+        ...(next ? { overviewGit: next } : {}),
+      });
+      get().showNotice(
+        result.commit ? `已提交 ${result.commit}` : "已提交",
+        6000,
+      );
+      void get().refreshDiff();
+      void get().refreshTasks();
+      if (!next) void get().refreshOverview();
+    } catch (error) {
+      set({
+        committing: false,
+        commitMessageError: `提交失败：${String(error)}`,
+      });
+    }
+  },
+
+  async pushChanges() {
+    const state = get();
+    const { directory, sessionID } = state;
+    if (!directory || !sessionID) {
+      set({ commitMessageError: "请先打开一个会话再推送" });
+      return;
+    }
+    if (state.committing || state.pushing || state.commitMessageGenerating) return;
+    if (hasRunningAgent(state)) {
+      set({ commitMessageError: "Agent 正在执行，结束后再推送" });
+      return;
+    }
+
+    let git = state.overviewGit;
+    if (!git) {
+      try {
+        git = await api.gitState(directory);
+        set({ overviewGit: git });
+      } catch (error) {
+        set({ commitMessageError: `读取 Git 状态失败：${String(error)}` });
+        return;
+      }
+    }
+    if (!git.isRepo) {
+      set({ commitMessageError: "当前工作区不是 Git 仓库" });
+      return;
+    }
+    if (git.detached || !git.branch) {
+      set({ commitMessageError: "当前处于 detached HEAD，无法推送" });
+      return;
+    }
+    if (git.upstream ? git.ahead === 0 : !git.remote) {
+      set({
+        commitMessageError: git.upstream
+          ? "没有待推送的提交"
+          : "当前分支没有 upstream，且找不到可用的 origin 远端",
+      });
+      return;
+    }
+
+    set({ pushing: true, commitMessageError: null });
+    try {
+      await api.gitPush(directory);
+      const next = await api.gitState(directory).catch(() => null);
+      set({
+        pushing: false,
+        commitMessageError: null,
+        ...(next ? { overviewGit: next } : {}),
+      });
+      get().showNotice("已推送当前分支", 6000);
+      if (!next) void get().refreshOverview();
+    } catch (error) {
+      set({
+        pushing: false,
+        commitMessageError: `推送失败：${String(error)}`,
+      });
+    }
+  },
+
+  openRightTab(tab) {
+    set({
+      rightOpen: true,
+      rightTab: tab,
+      ...(tab === "tasks" ? {} : { selectedTaskID: null }),
+    });
+    void refreshPanel(get, set);
   },
 
   setRightTab(tab) {
@@ -1166,8 +1865,10 @@ export const useApp = create<AppState>()((set, get) => ({
   async toggleProject(directory) {
     const expanded = get().expanded;
     const open = !(expanded[directory] ?? false);
-    // 打开时收起其它工作区，保持「一次只展开一个」
-    set({ expanded: open ? { [directory]: true } : {} });
+    const next = { ...expanded };
+    if (open) next[directory] = true;
+    else delete next[directory];
+    set({ expanded: next });
     if (open && !get().loadedDirs[directory]) {
       try {
         const sessions = await api.sessions(directory);
@@ -1182,19 +1883,50 @@ export const useApp = create<AppState>()((set, get) => ({
     }
   },
 
+  async toggleAllProjects() {
+    const { projects, expanded, loadedDirs } = get();
+    const allOpen =
+      projects.length > 0 && projects.every((project) => expanded[project.worktree]);
+    if (allOpen) {
+      set({ expanded: {} });
+      return;
+    }
+    const next = { ...expanded };
+    for (const project of projects) next[project.worktree] = true;
+    set({ expanded: next });
+    const pending = projects.filter((project) => !loadedDirs[project.worktree]);
+    await Promise.all(
+      pending.map(async (project) => {
+        try {
+          const list = await api.sessions(project.worktree);
+          list.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
+          set({
+            sessions: { ...get().sessions, [project.worktree]: list },
+            loadedDirs: { ...get().loadedDirs, [project.worktree]: true },
+          });
+        } catch (error) {
+          set({ error: `读取会话失败：${String(error)}` });
+        }
+      }),
+    );
+  },
+
   async loadModels() {
     if (get().models.length > 0) return;
     try {
       const result = await api.models();
-      set({ models: result.data ?? [] });
+      set({ models: (result.data ?? []).filter(isModelAvailable) });
     } catch {
       // 模型列表拿不到不影响聊天，静默失败
     }
   },
 
   selectModel(model) {
-    // 换模型时清掉上一模型的 variant，避免把 max 带到不支持的模型上
-    set({ selectedModel: model, selectedVariant: null });
+    // 换模型时直接采用该模型的最高推理档，避免把上一模型档位带过去。
+    const match = get().models.find(
+      (item) => item.id === model.modelID && item.providerID === model.providerID,
+    );
+    set({ selectedModel: model, selectedVariant: highestModelVariant(match) });
   },
 
   selectAgent(name) {
@@ -1278,6 +2010,16 @@ export const useApp = create<AppState>()((set, get) => ({
     set({ showArchived: next });
   },
 
+  setSessionSort(sessionSort) {
+    localStorage.setItem(SESSION_SORT, sessionSort);
+    set({ sessionSort });
+  },
+
+  setSessionPreview(sessionPreview) {
+    localStorage.setItem(SESSION_PREVIEW, String(sessionPreview));
+    set({ sessionPreview });
+  },
+
   async deleteSession(directory, id) {
     if (!directory) return;
     try {
@@ -1287,6 +2029,7 @@ export const useApp = create<AppState>()((set, get) => ({
         sessions: { ...get().sessions, [directory]: list.filter((item) => item.id !== id) },
       });
       if (get().directory === directory && get().sessionID === id) {
+        cancelBtwPending();
         set({
           sessionID: null,
           messages: [],
@@ -1299,6 +2042,14 @@ export const useApp = create<AppState>()((set, get) => ({
           selectedTaskID: null,
           tasksLoading: false,
           streaming: false,
+          overviewGit: null,
+          overviewLoading: false,
+          overviewError: null,
+          commitMessage: "",
+          commitMessageGenerating: false,
+          commitMessageError: null,
+          committing: false,
+          pushing: false,
         });
         localStorage.removeItem(`${LAST_SESSION}.${directory}`);
       }

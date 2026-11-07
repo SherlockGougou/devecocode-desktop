@@ -22,9 +22,11 @@ export type IconName =
   | "unarchive"
   | "trash"
   | "sliders"
+  | "panel-left"
   | "panel-right"
   | "download"
   | "external"
+  | "pin"
   | "copy"
   | "check"
   | "stop"
@@ -45,7 +47,15 @@ export type IconName =
   | "scissors"
   | "clipboard"
   | "select-all"
-  | "keyboard";
+  | "keyboard"
+  | "appearance"
+  | "terminal"
+  | "device"
+  | "server"
+  | "bell"
+  | "activity"
+  | "account"
+  | "puzzle";
 
 const ICONS: Record<IconName, ReactNode> = {
   plus: <path d="M12 5.5v13M5.5 12h13" />,
@@ -100,6 +110,12 @@ const ICONS: Record<IconName, ReactNode> = {
       <path d="M15 4.5v15" />
     </>
   ),
+  "panel-left": (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.4" />
+      <path d="M9 4.5v15" />
+    </>
+  ),
   download: (
     <>
       <path d="M12 4.5V15M7.8 10.8 12 15l4.2-4.2" />
@@ -111,6 +127,12 @@ const ICONS: Record<IconName, ReactNode> = {
       <path d="M14 4.5h5.5V10" />
       <path d="M19.5 4.5 11.5 12.5" />
       <path d="M18 14.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.5" />
+    </>
+  ),
+  pin: (
+    <>
+      <path d="M9 4.5h6M12 4.5v6.1l3 2.4v1.4H9V13l3-2.4V4.5" />
+      <path d="M12 14.4v5.1" />
     </>
   ),
   copy: (
@@ -230,6 +252,47 @@ const ICONS: Record<IconName, ReactNode> = {
       <rect x="3" y="6" width="18" height="12" rx="2" />
       <path d="M7 10h.01M11 10h.01M15 10h.01M19 10h.01M7 14h.01M19 14h.01M10.5 14h3" />
     </>
+  ),
+  appearance: (
+    <>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2.8v2.1M12 19.1v2.1M2.8 12h2.1M19.1 12h2.1M5.5 5.5l1.5 1.5M17 17l1.5 1.5M18.5 5.5 17 7M7 17l-1.5 1.5" />
+    </>
+  ),
+  terminal: (
+    <>
+      <rect x="3" y="4.5" width="18" height="15" rx="2.2" />
+      <path d="m7.2 9 3 3-3 3M13 15h3.8" />
+    </>
+  ),
+  device: (
+    <>
+      <rect x="6.4" y="2.8" width="11.2" height="18.4" rx="2.6" />
+      <path d="M10.3 18.2h3.4" />
+    </>
+  ),
+  server: (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="6" rx="1.7" />
+      <rect x="3.5" y="13.5" width="17" height="6" rx="1.7" />
+      <path d="M7 7.5h.01M7 16.5h.01M11 7.5h5.8M11 16.5h5.8" />
+    </>
+  ),
+  bell: (
+    <>
+      <path d="M18 9.5a6 6 0 0 0-12 0c0 4.8-2 6-2 6h16s-2-1.2-2-6Z" />
+      <path d="M9.8 19a2.4 2.4 0 0 0 4.4 0" />
+    </>
+  ),
+  activity: <path d="M3 12h4l2.2-5 4.1 10 2.2-5H21" />,
+  account: (
+    <>
+      <circle cx="12" cy="8.2" r="3.4" />
+      <path d="M5.4 20a6.6 6.6 0 0 1 13.2 0" />
+    </>
+  ),
+  puzzle: (
+    <path d="M9.2 4.4a2 2 0 0 1 3.9 0c0 .7-.3 1.2-.8 1.7h3.2a1.5 1.5 0 0 1 1.5 1.5v3.2c.5-.5 1-.8 1.7-.8a2 2 0 0 1 0 3.9c-.7 0-1.2-.3-1.7-.8v3.2a1.5 1.5 0 0 1-1.5 1.5h-3.2c.5.5.8 1 .8 1.7a2 2 0 0 1-3.9 0c0-.7.3-1.2.8-1.7H7.7a1.5 1.5 0 0 1-1.5-1.5v-3.2c-.5.5-1 .8-1.7.8a2 2 0 0 1 0-3.9c.7 0 1.2.3 1.7.8V7.6a1.5 1.5 0 0 1 1.5-1.5H11c-.5-.5-.8-1-.8-1.7Z" />
   ),
 };
 
