@@ -1,6 +1,12 @@
-# DevEco Code Desktop 实现方案（macOS 优先）
+# DevEco Code Desktop 实现记录（归档）
 
-> 日期：2026-11-06 ｜ 状态：决策稿 ｜ 本机实测环境：`@deveco/deveco-code@0.2.5`（npm），macOS arm64
+> 归档说明：本文保留 2026-11-06 至 2026-11-07 的设计演进、实测证据和踩坑过程，
+> 不是当前产品说明书。第 1–11 节描述的是早期“复用官方 Web UI”方案，已被当前自研
+> 三栏界面取代；当前架构以 [架构说明](../architecture.md) 为准。文中的版本号、测试数量、
+> 设备型号和本机路径均为当时快照，其中个人路径已做脱敏。
+>
+> 原始日期：2026-11-06 ｜ 早期状态：决策稿 ｜ 实测环境：`@deveco/deveco-code@0.2.5`
+> （npm），macOS arm64
 
 ## 1. 结论
 
@@ -303,7 +309,7 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 
 验证：`agent-desktop` 驱动菜单（文件→新建会话，窗口标题随即变成
 「New session - … · DevEcoCodeDesktop」）、复制按钮（`pbpaste` 内容与消息一致）、
-搜索框输入 `omega` 后在未展开的 `sampleworkspace-harmony` 下搜到目标会话；
+搜索框输入 `omega` 后在未展开的 `demo-harmony` 下搜到目标会话；
 `cargo test` 34 项 + `deveco-selftest` 11 项全绿。测试会话已清理。
 
 ---
@@ -735,7 +741,7 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 
 | 操作 | 证据 |
 |---|---|
-| 点击其他工作区（SampleWorkspace） | 切到 SampleWorkspace 并展开，DevEcoCodeDesktop 自动收起 |
+| 点击其他工作区（DemoApp） | 切到 DemoApp 并展开，DevEcoCodeDesktop 自动收起 |
 | 再点当前工作区 | 会话列表收起，文件夹保留蓝色描边 |
 | 临时在 `/tmp` 建 6 个会话后展开 | 显示 5 条 + 「展开其余 1 个会话」；点击后第 6 条与「收起」出现（测试会话已 `DELETE /session` 清理） |
 | 悬停会话行 | 时间隐藏，重命名 / 归档 / 删除三个图标出现 |
@@ -1192,9 +1198,9 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 - 真实 `.app` 中点击侧栏「新会话」，输入框上方出现工作区行；展开菜单可见已有工作区与「新建工作区…」：
   `.agent-temp/workspace-picker/01-new-session.png`、
   `.agent-temp/workspace-picker/02-menu.png`。
-- 菜单切换到 SampleWorkspace 后当前按钮同步更新；通过原生目录面板选择 `/private/tmp` 成功切到 tmp，
+- 菜单切换到 DemoApp 后当前按钮同步更新；通过原生目录面板选择 `/private/tmp` 成功切到 tmp，
   重复目录没有被重复添加。
-- 打开有历史消息的 `sampleworkspace-harmony` 会话后，工作区行消失，只保留消息与 composer：
+- 打开有历史消息的 `demo-harmony` 会话后，工作区行消失，只保留消息与 composer：
   `.agent-temp/workspace-picker/03-session-locked.png`。
 
 未验证：
@@ -1256,7 +1262,7 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 - 把 `tmp` 切成当前工作区后点悬停移除：行消失，自动切到 `/`；重启应用后 `tmp` 仍隐藏。
   证据：`.agent-temp/workspace-remove-hover3.png`、`.agent-temp/workspace-remove-restart.png`。
 - 通过 Composer 的「新建工作区…」重新选择 `/private/tmp`：`tmp` 回到侧栏顶部并成为当前工作区，确认恢复路径。
-- 右键 `tmp` → 「从侧栏移除」：`tmp` 消失，当前 `sampleworkspace-harmony` 与其会话保持不变，提示条正确出现。
+- 右键 `tmp` → 「从侧栏移除」：`tmp` 消失，当前 `demo-harmony` 与其会话保持不变，提示条正确出现。
   证据：`.agent-temp/workspace-remove-final.png`。
 
 未验证：
@@ -1286,10 +1292,10 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 验证：
 
 - `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
-- 临时在 `/private/tmp/deveco-multi-test` 创建 12 条空会话：`deveco-multi-test` 与 `sampleworkspace-harmony`
+- 临时在 `/private/tmp/deveco-multi-test` 创建 12 条空会话：`deveco-multi-test` 与 `demo-harmony`
   可以同时展开；前者初始显示 5 条，点一次「展开更多」变 10 条，再点一次变 12 条且按钮消失。
   证据：`.agent-temp/multi-workspace-five.png`。
-- 点击当前工作区收起后，`sampleworkspace-harmony` 仍保持展开，当前会话与标题不变；再次点击 `deveco-multi-test`
+- 点击当前工作区收起后，`demo-harmony` 仍保持展开，当前会话与标题不变；再次点击 `deveco-multi-test`
   恢复 5 条会话，limit 重置生效。
 - 截图核对当前会话左侧为蓝色竖条，不再出现圆环/复选框观感。
 - 验证结束后已删除两个临时目录下的 24 条空会话并移除目录；重启后 `deveco-multi-test` 从侧栏消失。
@@ -1322,7 +1328,7 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 - `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过；真实 `.app` 中点击第二个图标
   可打开 14 项菜单，勾选状态正确。证据：`.agent-temp/view-settings-menu.png`。
 - 「全部展开工作区」后三个工作区同时展开；再次打开菜单变为「全部收起工作区」，点击后全部收起。
-- 切换到「按标题排序」后 `sampleworkspace-harmony` 的「底部 TabView 实现」排在「关闭 deveco 本地通知脚本功能」之前，
+- 切换到「按标题排序」后 `demo-harmony` 的「底部 TabView 实现」排在「通知脚本配置」之前，
   确认排序即时生效。
 - 临时创建 12 条按编号命名的会话：默认 5 条；改为 10 条后显示 10 条；改为「显示全部会话」后显示 12 条且
   「展开更多」消失。测试会话与临时目录已清理。
@@ -1353,11 +1359,11 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 验证：
 
 - `npm --prefix ui run build`（含 `tsc --noEmit`）、`npm run build:debug`、`cargo test`（47 项）通过。
-- 右键 SampleWorkspace → 移除：出现「移除？确认/取消」，取消后 SampleWorkspace 保留；再次确认后 SampleWorkspace 消失。
+- 右键 DemoApp → 移除：出现「移除？确认/取消」，取消后 DemoApp 保留；再次确认后 DemoApp 消失。
   证据：`.agent-temp/workspace-remove-confirm.png`。
-- 通过「新会话 → 新建工作区…」重新选择 `/Users/example/Documents/GitHub/SampleWorkspace`，SampleWorkspace 回到侧栏顶部；
+- 通过「新会话 → 新建工作区…」重新选择 `~/Documents/GitHub/DemoApp`，DemoApp 回到侧栏顶部；
   再拖回原顺序。
-- 将 SampleWorkspace 拖到 DevEcoCodeDesktop 下方，顺序变为 DevEcoCodeDesktop / SampleWorkspace / sampleworkspace-harmony；
+- 将 DemoApp 拖到 DevEcoCodeDesktop 下方，顺序变为 DevEcoCodeDesktop / DemoApp / demo-harmony；
   关闭重开后顺序保持不变，确认 `workspaceOrder` 生效。
 
 未验证：
@@ -1430,8 +1436,8 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 验证：
 
 - `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
-- 重启真实 `.app`，在 `sampleworkspace-harmony / 关闭 deveco 本地通知脚本功能` 会话确认：
-  左右底栏高度一致；状态栏显示 `已连接 · sampleworkspace-harmony`、`轮次 1`、`Token 30.5k`、`速度 59.5 tok/s`。
+- 重启真实 `.app`，在 `demo-harmony / 通知脚本配置` 会话确认：
+  左右底栏高度一致；状态栏显示 `已连接 · demo-harmony`、`轮次 1`、`Token 30.5k`、`速度 59.5 tok/s`。
 - 用同一会话的 9 条真实消息复核统计：输入 28,788、输出 1,067、推理 640，
   合计 30,495；8 个助手消息的生成窗口合计 28.7s，速度 59.47 tok/s，与 UI 一致。
 
@@ -1882,3 +1888,115 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
 未验证：
 
 - 未连接两台及以上设备逐项检查选择行；该分支沿用原有选择与切换逻辑。
+
+### 22.48 工作区点击改为独立翻转展开状态（2026-11-07）
+
+需求：点击工作区时应翻转该工作区自己的展开状态，而不是点击任何未展开的工作区都默认展开，
+导致多个工作区只能越开越多，无法直接收起非当前工作区。
+
+实现：
+
+- `Sidebar.onWorkspace` 先判断目标目录是否已展开：已展开时只调用 `toggleProject(dir)` 收起，
+  不再走 `selectProject`，因此不会切换当前工作区、重拉会话或跳到最近会话。
+- 目标未展开且不是当前工作区时仍走 `selectProject(dir)`，保持“展开某个工作区并切换过去”的
+  既有路径；当前工作区收起后再展开仍由 `toggleProject` 处理。
+- `docs/features.md` 补充展开/收起语义，`README.md` 的能力列表标注工作区可独立展开/收起。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 debug `.app` 中当前工作区为 `SampleWorkspace` 时，点击已展开的 `DevEcoCodeDesktop` 只收起其会话行，
+  窗口标题与主区仍为 `Greeting · SampleWorkspace`，底部状态仍显示 `SampleWorkspace`；
+  证据：`.agent-temp/workspace-toggle/step2-after-collapse-dev.png`。
+- 点击已展开的非当前工作区 `SampleWorkspace` 只收起其会话行，当前会话仍为
+  `按项目现状更新 README.md · DevEcoCodeDesktop`；
+  证据：`.agent-temp/workspace-toggle/step3-collapse-sampleworkspace.png`。
+- 点击已收起的 `DevEcoCodeDesktop` 会重新展开并切换过去，打开其最近会话。
+
+未验证：
+
+- 未逐项截图验证暗色以外的主题；本次只复用现有行样式，没有改动视觉规则。
+
+### 22.49 去掉工作区行的常驻选中态（2026-11-07）
+
+需求：工作区本身不应该有选中状态，最多在鼠标悬停时显示背景。
+
+实现：
+
+- `Sidebar` 不再给工作区行追加 `active` 类，搜索结果里的工作区行也一并去掉当前目录判断。
+- 删除 `.ws-row.active` 的文件夹蓝色图标、内层淡填充和名称加粗规则；背景只保留
+  `.ws-row:hover`，不再由 `:focus-within` 在点击后持续显示，会话行自己的选中竖条保持不变。
+- 右侧新建 / 移除按钮改为悬停、键盘 `:focus-visible` 或按钮自身聚焦时出现，鼠标点击工作区后
+  不会继续显示操作图标。
+- `docs/features.md` 更新侧栏说明：当前工作区改由底部状态栏标识。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 debug `.app` 中工作区行不再有常驻背景或蓝色文件夹；悬停时仍显示背景，
+  当前会话的左侧竖条与底部状态栏保持不变。
+- 默认态：`.agent-temp/workspace-no-selection/default.png`；悬停态：
+  `.agent-temp/workspace-no-selection/hover-active.png`；点击后移开指针：
+  `.agent-temp/workspace-no-selection/clicked-row-no-focus-bg.png`。
+
+### 22.50 会话选中态改为纯背景（2026-11-07）
+
+需求：会话的选中状态只使用背景，不再显示前面的蓝色竖条。
+
+实现：
+
+- `ChatRow` 删除 `chat-select` 竖条及其 `streaming` 参数，两处渲染不再传入生成态；
+  `.chat-mark` 保留为缩进占位，会话标题对齐不变。
+- 删除 `.chat-select`、呼吸动画和减少动态效果分支；当前会话继续使用
+  `.chat-row.active` 的 `--row-active` 圆角背景和 500 字重标题。
+- 生成状态仍由顶栏的「执行中」标识；`docs/features.md` 与左栏样式注释同步更新。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 debug `.app` 中当前会话仅显示圆角背景，左侧不再出现蓝色竖条；
+  非当前会话保持无背景，悬停背景与工作区行为不变。
+  证据：`.agent-temp/session-selection-bg/current-session-bg.png`。
+
+### 22.51 会话标题与工作区名称左对齐（2026-11-07）
+
+需求：会话的第一个字与工作区的第一个字靠左对齐；原先会话前面留白过多。
+
+实现：
+
+- 工作区名称起点为 `9px` 内边距 + `19px` 图标 + `7px` 间距 = `35px`。
+  会话行原为 `26px` 外边距 + `19px` 占位 + `8px` 内边距 = `53px`，统一改为
+  `8 + 19 + 8 = 35px`。
+- `.chat-more` 与 `.ws-sessions .empty-line` 的左侧缩进同步从 `53px` 改为 `35px`，
+  会话标题、空态和「展开更多」保持同一条对齐线。
+- 重命名输入框复用 `chat-mark` 后的布局，仍与标题起点一致。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 debug `.app` 中会话标题首字与工作区名称首字在同一垂直线上，
+  「展开更多」与空态提示同步左移。
+  证据：`.agent-temp/session-title-align/aligned.png`；2× 截图测量文字起点分别为 199 与
+  201px，剩余 1pt 差异来自字形左侧抗锯齿留白。
+
+### 22.52 点击工作区不再切换会话（2026-11-07）
+
+需求：点击工作区只展开或收起会话列表，不应切到该工作区的第一个会话；只要没有点击会话，
+当前对话就不能变化。
+
+实现：
+
+- `Sidebar.onWorkspace` 统一调用 `toggleProject(dir)`，不再在展开未选中工作区时调用
+  `selectProject`；`selectProject` 的 selector 从 Sidebar 移除。
+- `toggleProject` 只翻转 `expanded` 并懒加载会话列表，不修改 `directory`、`sessionID`、
+  `messages`，因此点击工作区不会自动打开最近会话，也不会清空当前对话。
+- 切换工作区仍由点击会话（`openSessionIn`）或在工作区中新建会话（`newSessionIn`）触发；
+  `docs/features.md` 同步说明。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）与 `npm run build:debug` 通过。
+- 真实 debug `.app` 中当前会话保持在 `DevEcoCodeDesktop` 时点击已收起的 `SampleWorkspace`，
+  只展开 `Greeting` 会话列表，窗口标题、主区内容和底部状态栏均不变；
+  随后点击 `Greeting` 才切换到 `SampleWorkspace`。
+  证据：`.agent-temp/workspace-click-no-session/expand-sampleworkspace-no-switch.png`。

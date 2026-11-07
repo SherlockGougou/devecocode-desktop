@@ -17,7 +17,7 @@ npm run build:debug              # 出 .app（最快验证打包）
 
 npm --prefix ui run build        # 前端构建（含 tsc --noEmit）
 cargo test --manifest-path src-tauri/Cargo.toml          # 单元测试
-cargo run --manifest-path src-tauri/Cargo.toml --bin deveco-selftest   # 端到端自检
+cargo run --manifest-path src-tauri/Cargo.toml --features selftest --bin deveco-selftest   # 端到端自检
 ```
 
 `deveco-selftest` 会真实拉起 `deveco serve`（不花模型 token），覆盖 CLI 定位、端口发现、
@@ -70,10 +70,13 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin deveco-selftest   # 端到�
 
 一次改动算完成，需要：
 
-1. `npm --prefix ui run build` 通过（含类型检查）；改了 Rust 跑 `cargo test`；
+1. `npm --prefix ui run build` 通过（含类型检查）；改了 Rust 跑 `cargo fmt --check`、
+   `cargo clippy` 和 `cargo test`；
 2. 动了 CLI 交互逻辑，跑一次 `deveco-selftest`；
 3. 动了 UI，启动应用并**真机截图**确认（不能只看构建通过）；
-4. 行为变化同步到 `README.md`，决策与踩坑同步到 `docs/deveco-desktop-plan.md`。
+4. 行为变化同步到 `README.md` 与 `docs/`；当前架构写在 `docs/architecture.md`，
+   开发流程写在 `docs/development.md`，历史决策与踩坑归档在
+   `docs/archive/implementation-log.md`。
 
 ## 已知坑（会重复踩）
 
