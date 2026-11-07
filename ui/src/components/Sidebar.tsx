@@ -44,13 +44,11 @@ function ChatRow({
   session,
   directory,
   active,
-  streaming,
   onOpen,
 }: {
   session: Session;
   directory: string;
   active: boolean;
-  streaming: boolean;
   onOpen: () => void;
 }) {
   const renameSession = useApp((s) => s.renameSession);
@@ -116,9 +114,7 @@ function ChatRow({
         )
       }
     >
-      <span className="chat-mark" aria-hidden>
-        {active && <span className={`chat-select ${streaming ? "run" : ""}`} />}
-      </span>
+      <span className="chat-mark" aria-hidden />
       {editing !== null ? (
         <input
           className="chat-rename"
@@ -203,9 +199,7 @@ export default function Sidebar() {
   const runSearch = useApp((s) => s.runSearch);
   const directory = useApp((s) => s.directory);
   const sessionID = useApp((s) => s.sessionID);
-  const streaming = useApp((s) => s.streaming);
   const filter = useApp((s) => s.filter);
-  const selectProject = useApp((s) => s.selectProject);
   const toggleProject = useApp((s) => s.toggleProject);
   const openSessionIn = useApp((s) => s.openSessionIn);
   const showArchived = useApp((s) => s.showArchived);
@@ -315,14 +309,12 @@ export default function Sidebar() {
     setSearchOpen(true);
   };
 
-  // 点击其它工作区＝切过去并展开；点击当前工作区＝只切换它自己的展开状态。
-  // 这样重新展开不会重新拉取并跳到最近会话，多个工作区也可以同时保持展开。
+  // 点击工作区只翻转它自己的展开状态，不切换当前会话；只有点击会话才切换对话。
   const onWorkspace = (dir: string) => {
     // 拖动结束后的 click 不应被当成一次工作区切换。
     if (Date.now() - draggedAt.current < 250) return;
     setRemoving(null);
-    if (dir === directory) void toggleProject(dir);
-    else void selectProject(dir);
+    void toggleProject(dir);
   };
 
   const workspaceMenu = (
@@ -554,7 +546,7 @@ export default function Sidebar() {
     return (
       <div className="ws" key={dir}>
         <div
-          className={`ws-row ${isCurrent ? "active" : ""} ${dragClass}`}
+          className={`ws-row ${dragClass}`}
           data-workspace={dir}
           onMouseDown={(event) => beginDrag(event, dir)}
           onContextMenu={(event) => workspaceMenu(event, dir, true)}
@@ -625,7 +617,6 @@ export default function Sidebar() {
                 session={session}
                 directory={dir}
                 active={isCurrent && session.id === sessionID}
-                streaming={isCurrent && session.id === sessionID && streaming}
                 onOpen={() => void openSessionIn(dir, session.id)}
               />
             ))}
@@ -778,7 +769,7 @@ export default function Sidebar() {
           ? Object.entries(orderedSearchResults).map(([dir, list]) => (
               <div className="ws" key={`search-${dir}`}>
                 <div
-                  className={`ws-row static ${dir === directory ? "active" : ""}`}
+                  className="ws-row static"
                   onContextMenu={(event) => workspaceMenu(event, dir, false)}
                 >
                   <div className="ws-main" title={dir}>
@@ -835,7 +826,6 @@ export default function Sidebar() {
                       session={session}
                       directory={dir}
                       active={session.id === sessionID && dir === directory}
-                      streaming={session.id === sessionID && dir === directory && streaming}
                       onOpen={() => void openSessionIn(dir, session.id)}
                     />
                   ))}

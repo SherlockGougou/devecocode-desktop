@@ -677,7 +677,7 @@ details[open] > summary .caret {
 
 /* ---------- 左栏：工作区列表 ---------- */
 /* 对齐参考截图：顶部「工作区」标题 + 三个图标动作；工作区行是文件夹图标 + 名称，
-   展开后接会话行（标题 + 相对时间）；当前会话用圆角底块 + 左侧竖条标出。 */
+   展开后接会话行（标题 + 相对时间）；当前会话只用圆角底块标出。 */
 .sidebar {
   grid-column: 1;
   grid-row: 2;
@@ -793,16 +793,8 @@ details[open] > summary .caret {
   text-align: left;
   transition: background 0.12s ease;
 }
-.ws-row:hover,
-.ws-row:focus-within {
+.ws-row:hover {
   background: var(--row-hover);
-}
-.ws-row.active .ws-icon {
-  color: var(--folder-accent);
-}
-/* 当前工作区的文件夹里层淡填充，缩到 18px 也能一眼看出是选中的那个 */
-.ws-row.active .ws-icon path:first-of-type {
-  fill: var(--folder-accent-soft);
 }
 .ws-icon {
   flex: none;
@@ -840,9 +832,6 @@ details[open] > summary .caret {
   font-size: 15px;
   font-weight: 460;
 }
-.ws-row.active .ws-name {
-  font-weight: 500;
-}
 /* 工作区行右侧的新建 / 移除动作只在悬停或键盘聚焦时出现，避免日常列表过密 */
 .ws-buttons {
   position: absolute;
@@ -866,7 +855,8 @@ details[open] > summary .caret {
   transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
 }
 .ws-row:hover .ws-buttons,
-.ws-row:focus-within .ws-buttons {
+.ws-row .ws-main:focus-visible ~ .ws-buttons,
+.ws-buttons:focus-within {
   opacity: 1;
   pointer-events: auto;
 }
@@ -950,43 +940,14 @@ details[open] > summary .caret {
 .chat-row.archived .chat-title {
   opacity: 0.55;
 }
+/* 缩进占位：8 + 19 + chat-main 左内边距 8 = 35px，与工作区名称起点对齐 */
 .chat-mark {
   flex: none;
   width: 19px;
   height: 19px;
-  margin: 0 0 0 26px;
+  margin: 0 0 0 8px;
   display: grid;
   place-items: center;
-}
-/* 当前会话用左侧竖条表示，避免圆环看起来像复选框 */
-.chat-select {
-  width: 3px;
-  height: 16px;
-  border-radius: 999px;
-  background: var(--folder-accent);
-  opacity: 0.9;
-}
-/* 正在生成时用呼吸式竖条代替旋转圆环 */
-.chat-select.run {
-  animation: chat-select-pulse 1.1s ease-in-out infinite;
-}
-@keyframes chat-select-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
-    transform: scaleY(0.65);
-  }
-  50% {
-    opacity: 1;
-    transform: scaleY(1);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-select.run {
-    animation: none;
-    opacity: 1;
-    transform: none;
-  }
 }
 .chat-main {
   flex: 1;
@@ -1050,7 +1011,7 @@ details[open] > summary .caret {
 }
 .chat-more {
   height: 30px;
-  padding: 0 10px 0 53px;
+  padding: 0 10px 0 35px;
   border-radius: 9px;
   text-align: left;
   font-size: 12.5px;
@@ -1076,7 +1037,7 @@ details[open] > summary .caret {
   padding: 0;
 }
 .ws-sessions .empty-line {
-  padding-left: 53px;
+  padding-left: 35px;
 }
 
 .sidebar-footer {
