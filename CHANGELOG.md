@@ -26,6 +26,8 @@
 - 打开会话与重连时用 `/session/status` 校准执行态；残留工具/思考显示“已中断”，
   侧栏显示执行中加载指示与结束未查看的未读圆点。
 - 对齐 macOS 红绿灯与自绘顶栏基线，修正重叠与窄窗口下的布局问题。
+- 发布资产附带 `SHA256SUMS.txt` 和 GitHub artifact attestation；发布流程改为 draft-first，
+  兼容 immutable release。
 
 完整说明：[v0.2.1](docs/releases/v0.2.1.md)
 

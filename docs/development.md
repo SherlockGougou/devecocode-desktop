@@ -174,7 +174,15 @@ CI 还会并行运行 `offline-resources` job，分别下载 arm64/x64 的固定
 1. 校验 tag 与 `package.json`、`ui/package.json`、`src-tauri/Cargo.toml`、
    `src-tauri/tauri.conf.json` 中的版本一致；
 2. 分别构建 `aarch64-apple-darwin` 和 `x86_64-apple-darwin`；
-3. 通过 `tauri-action` 上传 `.app` / `.dmg` 到 GitHub Release 和 Actions artifacts。
+3. 通过 `tauri-action` 把普通版 `.app` / `.dmg` 写入 **draft** Release 和 Actions artifacts；
+4. `offline` job 构建离线包并继续写入同一 draft；
+5. `build` 和 `offline` job 分别用 `actions/attest` 为 DMG/zip 生成 build provenance；
+6. `checksums` job 下载 draft 资产，生成 `SHA256SUMS.txt` 并上传；
+7. `release-notes` job 更新双语正文；
+8. `publish` job 校验资产数量、`SHA256SUMS.txt` 和双语正文后执行 `gh release edit --draft=false`。
+
+发布流程刻意保持 draft-first。不要把 `releaseDraft` 或 `softprops` 的 `draft` 改回
+`false`：启用 release immutability 后，已发布 Release 不能再追加资产，Offline 包会上传失败。
 
 当前发布策略明确**不使用 Developer ID 证书，不做公证**。工作流不配置 `APPLE_*` secrets，
 构建使用 ad-hoc 签名；用户需要按[macOS 安装与使用](installation.md)首次放行。若未来改变
@@ -185,7 +193,7 @@ CI 还会并行运行 `offline-resources` job，分别下载 arm64/x64 的固定
 [离线版打包](offline-packaging.md)。
 
 Release 正文读取 `docs/releases/vX.Y.Z.md`，必须同时包含中英文段落。新增版本时先创建对应
-文件，再推送 `vX.Y.Z` 标签；发布流程最后会更新 GitHub Release 的正文。
+文件，再推送 `vX.Y.Z` 标签；发布流程先在 draft 中更新正文，最后由 `publish` job 发布。
 
 官网由 `.github/workflows/pages.yml` 部署到 GitHub Pages；本地预览方式见
 [website/README.md](../website/README.md)。

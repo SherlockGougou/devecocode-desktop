@@ -25,6 +25,11 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: macos-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
@@ -75,7 +80,8 @@ jobs:
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: "DevEco Code Desktop ${{ env.RELEASE_TAG }}"
           releaseBody: "Release notes will be added after all macOS assets are built."
-          releaseDraft: false
+          # 先写入 draft；offline、双语 notes 和 checksums 完成后再统一发布。
+          releaseDraft: true
           prerelease: false
           generateReleaseNotes: false
           retryAttempts: 2
@@ -84,11 +90,22 @@ jobs:
           uploadWorkflowArtifacts: true
           workflowArtifactNamePattern: "DevEco-Code-Desktop-[arch]-[bundle]"
 
+      - name: Attest standard DMG build provenance
+        uses: actions/attest@v4
+        with:
+          # DMG 是用户实际下载的普通版资产；release immutability 还会生成 release attestation。
+          subject-path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+
   offline:
     name: Offline ${{ matrix.target }}
     needs: build
     runs-on: macos-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
@@ -183,6 +200,11 @@ jobs:
           cp "$DMG" .artifacts/
           ls -lh .artifacts
 
+      - name: Attest offline build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: .artifacts/*
+
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -197,9 +219,68 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: .artifacts/*
+          # softprops 默认 draft=false，会顺手发布现有草稿；这里必须显式保持 draft。
+          draft: true
+          fail_on_unmatched_files: true
+
+  checksums:
+    name: Generate release checksums
+    needs: [build, offline]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - name: Verify draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test "$(gh release view "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --json isDraft \
+            --jq '.isDraft')" = "true"
+
+      - name: Download draft release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rm -rf release-assets
+          mkdir -p release-assets
+          gh release download "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --dir release-assets \
+            --clobber
+          # 重跑时不要把上一次的校验和文件算进去。
+          rm -f release-assets/SHA256SUMS.txt
+          test -n "$(find release-assets -maxdepth 1 -type f -print | head -n 1)"
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd release-assets
+          find . -maxdepth 1 -type f -print | sed 's#^\./##' | sort | while IFS= read -r file; do
+            sha256sum "$file"
+          done > ../SHA256SUMS.txt
+          cat ../SHA256SUMS.txt
+          sha256sum -c ../SHA256SUMS.txt
+
+      - name: Upload SHA256SUMS to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$RELEASE_TAG" SHA256SUMS.txt \
+            --repo "${{ github.repository }}" \
+            --clobber
+
+      - name: Upload checksums artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-checksums
+          path: SHA256SUMS.txt
+          if-no-files-found: error
 
   release-notes:
-    name: Publish bilingual release notes
+    name: Prepare bilingual release notes
     needs: [build, offline]
     runs-on: ubuntu-latest
     permissions:
@@ -217,7 +298,83 @@ jobs:
       - name: Render bilingual release notes
         run: node scripts/render-release-notes.mjs "$RELEASE_TAG" .release-notes.md
 
+      - name: Verify draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test "$(gh release view "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --json isDraft \
+            --jq '.isDraft')" = "true"
+
       - name: Update GitHub Release body
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$RELEASE_TAG" --notes-file .release-notes.md
+        run: |
+          gh release edit "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --notes-file .release-notes.md
+
+  publish:
+    name: Publish draft release
+    needs: [build, offline, checksums, release-notes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Verify draft release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          is_draft="$(gh release view "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --json isDraft \
+            --jq '.isDraft')"
+          test "$is_draft" = "true"
+
+          assets="$(gh release view "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --json assets \
+            --jq '.assets[].name')"
+          printf '%s\n' "$assets"
+
+          grep -qx 'SHA256SUMS.txt' <<< "$assets"
+          dmg_count="$(grep -c '\.dmg$' <<< "$assets" || true)"
+          zip_count="$(grep -c '\.app\.zip$' <<< "$assets" || true)"
+          # 普通版 2 个 DMG + Offline 版 2 个 DMG；Offline 版另有 2 个 .app.zip。
+          test "$dmg_count" -ge 4
+          test "$zip_count" -ge 2
+
+          body="$(gh release view "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --json body \
+            --jq '.body')"
+          grep -q '## 中文' <<< "$body"
+          grep -q '## English' <<< "$body"
+
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --draft=false
+
+      - name: Verify release immutability
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          immutable="$(gh release view "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --json isImmutable \
+            --jq '.isImmutable' 2>/dev/null || echo unknown)"
+          if [ "$immutable" != "true" ]; then
+            echo "::warning title=Release immutability not enabled::Enable Settings → Releases → Enable release immutability. This release was published mutable."
+          else
+            echo "Release is immutable."
+          fi

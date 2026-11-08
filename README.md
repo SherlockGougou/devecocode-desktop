@@ -106,9 +106,12 @@ npm run check:selftest
 - `.github/workflows/ci.yml` 在 push 和 pull request 上运行前端构建、版本一致性、Rust
   格式、Clippy 和单测。
 - `.github/workflows/release.yml` 在推送 `v*` 标签或手动触发时构建 Apple Silicon 与 Intel
-  两种 DMG，并额外构建包含固定 CLI 的 Offline 版本，自动创建 GitHub Release。
+  两种 DMG，并额外构建包含固定 CLI 的 Offline 版本。发布使用 draft-first：普通版、
+  Offline 版、双语 notes 和 `SHA256SUMS.txt` 全部完成后才公开。
+- 发布资产生成 `SHA256SUMS.txt` 和 GitHub artifact attestation；仓库设置应启用
+  Release immutability，使已发布的 tag 和资产不可再修改。
 - `.github/workflows/pages.yml` 在官网源码更新时部署到 GitHub Pages。
-- 发布包不做 Developer ID 签名，不做公证；安装和首次放行步骤见
+- 发布包不做 Developer ID 签名，不做公证；下载校验和首次放行步骤见
   [macOS 安装与使用](docs/installation.md)。
 
 ## 架构概览

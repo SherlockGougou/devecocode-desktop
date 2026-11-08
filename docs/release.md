@@ -12,6 +12,8 @@
 - [x] CI 额外校验 arm64/x64 离线 CLI 资源生成；
 - [x] tag 触发的 CD：arm64/x86_64 构建、GitHub Release 与 workflow artifacts；
 - [x] 含内置 CLI 的 Offline 构建任务，固定 CLI 版本并随 Release 发布；
+- [x] Release 使用 draft-first：普通版、Offline 版、双语 notes 和 SHA256SUMS 全部完成后才发布；
+- [x] 发布资产生成 `SHA256SUMS.txt`，并通过 `actions/attest` 生成 build provenance；
 - [x] 静态官网与 GitHub Pages 部署 workflow；
 - [x] 面向普通用户的 [macOS 安装与使用](installation.md)；
 - [x] 历史提交已清理本机用户目录与私有工作区名；实现记录中的 `.agent-temp/`
@@ -45,6 +47,17 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
 - 设置仓库 description、topics、默认分支、README 和 social preview。
 - 在 **Settings → Pages → Source** 选择 **GitHub Actions**，并运行 `Pages` workflow；
   官网维护细节见 [website/README.md](../website/README.md)。
+- 在 **Settings → Releases** 启用 **Enable release immutability**。该设置只对启用后的新
+  Release 生效；发布流程必须保持 draft-first，先附上全部资产，再 publish。
+  也可以用有 admin 权限的 GitHub CLI 执行
+  `gh api --method PUT repos/<owner>/<repo>/immutable-releases`。
+  启用后 GitHub 会为新 Release 自动生成 release attestation，`gh release verify` 依赖它。
+  工作流不会自动修改这项仓库设置，需要发布者启用一次。
+- `publish` job 会在发布后检查 Release 的 `isImmutable`；如果仍为 `false`，Actions 会输出
+  警告，说明仓库设置尚未启用。
+- artifact attestations 在公开仓库可用；私有仓库需要 GitHub Enterprise Cloud，因此发布
+  仓库应保持公开。
+- 为 `v*` 标签配置 ruleset：限制更新/删除，并要求 CI 状态检查。
 - 启用 Security Advisories、secret scanning（如账户支持）和 Dependabot。
 - 为 `main` 配置分支保护：要求 CI 通过、禁止 force push、合并后删除分支。
 - 选择是否启用 Discussions；不要在还没有维护承诺时开启过多支持渠道。
@@ -59,16 +72,36 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
   若未来改为 Universal，需要单独验证合并后的包。
 - Offline 版额外包含固定 CLI；发布前需要确认 CLI 版本、许可证、内置数据隔离和两个架构的
   DMG 都在 Release 中。详细验收见[离线版打包](offline-packaging.md)。
+- `publish` job 会校验 4 个 DMG、2 个 Offline `.app.zip`、`SHA256SUMS.txt` 和双语正文，
+  全部存在后才把 draft 发布。
 - 确认版本号在 `package.json`、`ui/package.json`、`src-tauri/Cargo.toml` 和
   `src-tauri/tauri.conf.json` 中一致，可运行 `npm run check:version`。
 - 每个版本维护 `docs/releases/vX.Y.Z.md`，必须同时包含 `## 中文` 和 `## English`；
-  Release workflow 会在两类产物上传后更新正文。不要只写自动生成的历史提交摘要。
-- Release notes 附已知限制和安装说明；不要附带未脱敏截图。若增加校验和，应在 release job
-  中生成并上传，不能在文档里声称已提供。
+  Release workflow 会在 draft 中更新正文，最后统一 publish。不要只写自动生成的历史提交摘要。
+- Release notes 附已知限制和安装说明；不要附带未脱敏截图。发布 workflow 会生成
+  `SHA256SUMS.txt` 并上传到 Release，同时为资产生成 build provenance attestation；
+  不要再描述成“未提供校验和”。
+
+## 下载校验
+
+`SHA256SUMS.txt` 覆盖全部 Release 资产。下载全部资产后，用户可以用以下方式验证：
+
+```bash
+shasum -a 256 -c SHA256SUMS.txt
+grep 'DevEco Code_.*aarch64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
+gh release verify v0.2.1 -R <owner>/<repo>
+gh attestation verify "DevEco Code_0.2.1_aarch64.dmg" -R <owner>/<repo>
+```
+
+只下载单个 DMG 时，用 `grep` 过滤对应文件名。`gh` 命令需要 GitHub CLI 已登录。
+attestation 证明构建来源和资产未被替换，不替代 Apple Developer ID 签名或公证；
+Gatekeeper 提示仍可能发生。
 
 ## 发布后
 
 - 为安全问题保留私密报告入口，不在公开 issue 中讨论细节。
+- 启用 immutable release 后，已发布资产的哈希和 tag 不能再修改；发现问题应发布新版本，
+  不要尝试覆盖旧 Release。
 - 对 CLI 上游契约变化建立回归检查；当前 CI 不安装真实 CLI，因此不替代本地
   `npm run check:selftest`。
 - 记录最低 macOS 版本、CLI 建议版本和已知未验证场景；不要承诺自动更新、Windows 支持或

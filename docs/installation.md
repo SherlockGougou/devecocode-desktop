@@ -33,6 +33,32 @@ deveco --version
 
 不要从第三方镜像下载安装包。发布页不提供自动更新，应用也不会自动替换自身。
 
+## 校验下载
+
+每个 Release 附带 `SHA256SUMS.txt` 和 GitHub artifact attestation。如果下载了全部资产，
+在终端执行：
+
+```bash
+shasum -a 256 -c SHA256SUMS.txt
+```
+
+如果只下载了一个 DMG，可以按文件名过滤：
+
+```bash
+grep 'DevEco Code_.*aarch64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
+```
+
+Offline 版把模式换成 `DevEco Code Offline_.*aarch64.dmg$`。使用 GitHub CLI 可以验证构建来源；
+仓库启用 immutable release 后，还可以验证整个发布：
+
+```bash
+gh attestation verify "DevEco Code_0.2.1_aarch64.dmg" -R <owner>/<repo>
+gh release verify v0.2.1 -R <owner>/<repo>
+```
+
+把 `<owner>/<repo>` 换成项目仓库地址。attestation 只证明资产来自该仓库的构建工作流，
+不能替代 Apple Developer ID 签名或公证；首次打开仍可能需要按下一节放行。
+
 ## 安装
 
 1. 双击 DMG 打开磁盘映像。

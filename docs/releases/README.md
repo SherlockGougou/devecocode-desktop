@@ -20,6 +20,7 @@ GitHub Release 正文。文件必须同时包含以下二级标题：
 - Apple Silicon / Intel 的 DMG 文件名；
 - CLI 是否内置、是否需要单独安装；
 - 未签名、未公证的首次打开流程；
+- `SHA256SUMS.txt` 与 artifact attestation 的校验入口；
 - 已知限制和完整安装文档链接。
 
 新增版本时复制上一版本文件，更新版本号、日期、变更内容和资产文件名，不要把凭据或未脱敏

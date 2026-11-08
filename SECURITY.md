@@ -4,6 +4,9 @@
 
 项目仍处于 `0.x` 阶段，只维护最新发布版本和 `main` 分支。旧版本不保证获得安全修复。
 
+新的 Release 会提供 `SHA256SUMS.txt` 和 GitHub artifact attestation；如果校验失败或哈希
+不匹配，请按本页私密报告，不要继续安装。
+
 ## 私下报告漏洞
 
 请不要在公开 issue 中披露可利用细节。优先使用 GitHub 仓库的
