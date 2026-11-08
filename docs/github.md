@@ -13,6 +13,8 @@
 | `security.yml` | Cargo 依赖变更、每周、手动 | RustSec `cargo audit`；`glib` 的 Linux-only 例外在 workflow 中注明 | PR #14 通过 |
 | `release-check.yml` | 手动 | 校验版本一致性、双语 Release notes 和占位符，上传 notes 预览 | v0.2.2 运行通过 |
 | `labeler.yml` | pull request | 按改动路径添加 `frontend`、`rust`、`docs`、`ci` 标签 | PR #15 自动添加 `ci` |
+| `dependabot-automerge.yml` | Dependabot pull request | patch/minor 在 7 项必需检查通过后启用 squash auto-merge；major 和未知类型跳过 | 待下一次 Dependabot PR 验证 |
+| `update-homebrew.yml` | Release 成功、手动 | 从已发布 Release 读取 `SHA256SUMS.txt`，更新独立 tap 的两个 cask | tap 已初始化 v0.2.2；自动更新待 PAT 配置后验证 |
 | `release.yml` | push `v*` 标签、手动 | 构建 arm64/x64 普通版与 Offline 版，生成校验和、attestation、双语正文，draft-first 发布 | v0.2.1、v0.2.2 通过；v0.2.2 run `42483989177` |
 | `pages.yml` | `website/**` 变更、手动 | 校验静态官网并部署到 GitHub Pages | 提交 `31f9675` 通过 |
 
@@ -30,10 +32,43 @@
 - **Secret scanning**：secret scanning、push protection 已启用；non-provider patterns
   和 validity checks 未启用。
 - **Dependency graph**：已启用；Dependency Review 依赖它。
-- **合并设置**：合并后自动删除分支，允许 GitHub 建议更新 PR 分支。
+- **合并设置**：已启用 auto-merge；合并后自动删除分支，允许 GitHub 建议更新 PR 分支。
 - **Topics**：`ai-agent`、`arkts`、`desktop-app`、`deveco`、`harmonyos`、`macos`、
-  `react`、`rust`、`tauri`。
+  `react`、`rust`、`tauri`、`homebrew`、`homebrew-cask`。
 - **标签**：`dependencies`、`frontend`、`rust`、`docs`、`ci` 以及 GitHub 默认标签。
+
+## Homebrew Tap
+
+- 独立仓库：<https://github.com/SherlockGougou/homebrew-tap>
+- cask：`devecocode-desktop`（普通版）和 `devecocode-desktop-offline`（内置 CLI）。
+- 安装：先执行 `brew trust sherlockgougou/tap`，再执行
+  `brew install --cask sherlockgougou/tap/devecocode-desktop` 或
+  `brew install --cask sherlockgougou/tap/devecocode-desktop-offline`。
+- cask 按 arm64/x64 使用不同 DMG 和 SHA-256；SHA 来自已发布 Release 的
+  `SHA256SUMS.txt`，不信任本地构建产物。
+- 自动更新由 `update-homebrew.yml` 完成：Release 成功后读取 release 资产，渲染
+  `Casks/*.rb`，只有内容变化才提交并推送。
+- 自动更新需要仓库 secret `HOMEBREW_TAP_TOKEN`。创建一个只授权
+  `SherlockGougou/homebrew-tap` 的 fine-grained PAT，权限选择
+  `Contents: Read and write`，再执行：
+
+```bash
+gh secret set HOMEBREW_TAP_TOKEN \
+  --repo SherlockGougou/devecocode-desktop
+```
+
+- token 过期或更新失败时，重新创建 PAT、更新 secret，然后手动重跑：
+
+```bash
+gh workflow run update-homebrew.yml \
+  -f tag=v0.2.3 \
+  --repo SherlockGougou/devecocode-desktop
+```
+
+- tap 仓库 CI 会运行 `brew audit --cask --strict --online` 和 `brew style`；发布后还应在
+  本机执行 `brew fetch --cask` 验证下载和 SHA。
+- 当前 v0.2.2 cask 已通过 tap CI（run `42488236055`），并在本机用 `brew fetch` 验证了
+  arm64 和 Intel 两种 DMG 的下载与 SHA-256。
 
 ## 发布操作
 
@@ -49,6 +84,8 @@ git push origin v0.2.3
 
 `release-check` 通过后再打标签。标签推送后观察 `Release` workflow：draft 创建、四个 DMG
 和两个 Offline zip 上传、`SHA256SUMS.txt`、双语正文、publish 和 immutable 检查都应成功。
+Release 成功后 `update-homebrew.yml` 会自动更新 tap；如果只看 Release 成功而 tap 失败，
+按上面的 `workflow_dispatch` 重跑，不要重新打标签或重建 Release。
 
 ## 发布后核验
 
@@ -57,13 +94,15 @@ gh release view v0.2.3 --json isDraft,isImmutable,assets
 gh release verify v0.2.3 -R SherlockGougou/devecocode-desktop
 gh attestation verify "DevEco.Code_0.2.3_aarch64.dmg" -R SherlockGougou/devecocode-desktop
 shasum -a 256 -c SHA256SUMS.txt
+brew trust sherlockgougou/tap
+brew info --cask sherlockgougou/tap/devecocode-desktop
+brew fetch --cask sherlockgougou/tap/devecocode-desktop
+brew fetch --cask sherlockgougou/tap/devecocode-desktop-offline
 ```
 
 ## 暂未启用
 
 - **Discussions**：暂不开启，避免在没有稳定维护承诺时增加支持渠道。
 - **Copilot code review**：取决于账号的 Copilot 可用性和仓库设置，当前未配置。
-- **Homebrew tap**：需要独立 tap 仓库和持续的 formula 维护；当前只提供 GitHub Releases。
 - **zizmor**：本地扫描发现 42 个 high 级提示，主要来自 action tag 未固定到 SHA 和
   Offline CLI 的有意临时安装。先在 CI 外逐项处理，再考虑作为阻断检查。
-- **Dependabot 自动合并**：未启用；依赖升级仍需通过 PR 检查和人工确认。

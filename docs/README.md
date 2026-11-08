@@ -4,6 +4,7 @@
 
 | 文档 | 适合谁 | 内容 |
 |---|---|---|
+| [English README](../README.en.md) | English readers | 仓库概览、功能、安装、Homebrew 与发布说明 |
 | [macOS 安装与使用](installation.md) | 下载应用的用户 | 架构选择、首次打开、CLI 配置、更新与卸载 |
 | [离线版打包](offline-packaging.md) | 开发者、发布者 | 内置 CLI 资源、构建、数据隔离和发布验收 |
 | [功能说明](features.md) | 用户、产品与测试 | 三栏界面、会话、文件、任务、设备与设置行为 |

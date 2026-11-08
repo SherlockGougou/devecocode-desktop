@@ -1,0 +1,96 @@
+name: Update Homebrew tap
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要同步到 tap 的发布标签，例如 v0.2.2"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-tap
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update casks in SherlockGougou/homebrew-tap
+    if: >
+      github.repository == 'SherlockGougou/devecocode-desktop' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        startsWith(github.event.workflow_run.head_branch, 'v')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.event.workflow_run.head_branch }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+    steps:
+      - name: Verify tap token
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::error title=Missing HOMEBREW_TAP_TOKEN::Create a fine-grained PAT with Contents: Read and write on SherlockGougou/homebrew-tap and store it as HOMEBREW_TAP_TOKEN."
+            exit 1
+          fi
+
+      - name: Checkout main repository
+        uses: actions/checkout@v7
+
+      - name: Validate release
+        run: |
+          set -euo pipefail
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Invalid release tag::Expected vX.Y.Z, got $RELEASE_TAG"
+            exit 1
+          fi
+          is_draft="$(gh release view "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --json isDraft \
+            --jq '.isDraft')"
+          test "$is_draft" = "false"
+
+      - name: Download SHA256SUMS
+        run: |
+          mkdir -p "$RUNNER_TEMP/homebrew"
+          gh release download "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern SHA256SUMS.txt \
+            --dir "$RUNNER_TEMP/homebrew" \
+            --clobber
+
+      - name: Checkout tap
+        uses: actions/checkout@v7
+        with:
+          repository: SherlockGougou/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Render casks
+        run: |
+          node scripts/render-homebrew-casks.mjs \
+            --version "$RELEASE_TAG" \
+            --sums "$RUNNER_TEMP/homebrew/SHA256SUMS.txt" \
+            --out-dir tap/Casks
+
+      - name: Commit and push
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Casks already match $RELEASE_TAG"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks
+          git commit -m "chore: update casks to $RELEASE_TAG"
+          git push

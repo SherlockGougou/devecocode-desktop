@@ -42,4 +42,5 @@ console.log(`
   1. 编写 docs/releases/v${input}.md（中文和 English 两段）
   2. 更新 CHANGELOG.md、docs/releases/README.md 和官网页脚版本
   3. 运行 npm run check && npm run check:version ${input}
-  4. 提交后运行 Release readiness workflow，再打 v${input} 标签`);
+  4. 提交后运行 Release readiness workflow，再打 v${input} 标签
+  5. Release 成功后会通过 update-homebrew.yml 更新 Homebrew tap`);

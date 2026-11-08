@@ -10,6 +10,10 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
 </p>
 
+<p>
+  <a href="README.en.md">English</a> · <strong>简体中文</strong>
+</p>
+
 面向 macOS 的 DevEco Code 桌面客户端。它驱动本机
 [DevEco Code CLI](https://www.npmjs.com/package/@deveco/deveco-code)（opencode 的
 HarmonyOS 定制分支）的 HTTP + SSE 契约，提供自研三栏界面、系统通知、工作区/会话管理、
@@ -104,6 +108,20 @@ npm run dev
 
 开发模式会自动拉起本机 `deveco serve`。第一次启动时，macOS 可能请求文稿目录和通知权限。
 
+### Homebrew
+
+已安装 Homebrew 可以直接使用独立 tap：
+
+```bash
+brew trust sherlockgougou/tap
+brew install --cask sherlockgougou/tap/devecocode-desktop
+# 或带内置 CLI 的 Offline 版
+brew install --cask sherlockgougou/tap/devecocode-desktop-offline
+```
+
+tap 按 Apple Silicon / Intel 分别校验 DMG。当前发布包仍是 ad-hoc 签名、未公证；
+首次打开请右键应用选择“打开”，或到“系统设置 → 隐私与安全性”放行。
+
 ### 构建
 
 ```bash
@@ -139,6 +157,8 @@ npm run check:selftest
   `cargo audit`；Linux-only 的 `glib` 例外在 workflow 中注明。
 - `.github/dependabot.yml` 每周检查组依赖更新，覆盖根 npm、UI npm、Cargo 和 GitHub Actions；
   Dependabot security updates 已启用。
+- `.github/workflows/dependabot-automerge.yml` 对 patch/minor 更新在 7 项必需检查通过后
+  自动 squash 合并；major 和未知类型继续人工处理。
 - `.github/workflows/release-check.yml` 手动检查版本一致性、双语 Release notes 和占位符；
   `npm run release:prepare -- 0.2.2` 同步四个版本文件。
 - `.github/workflows/release.yml` 在推送 `v*` 标签或手动触发时构建 Apple Silicon 与 Intel
@@ -151,6 +171,8 @@ npm run check:selftest
 - `.github/workflows/labeler.yml` 按改动路径给 pull request 添加 `frontend`、`rust`、
   `docs` 和 `ci` 标签。
 - `.github/workflows/pages.yml` 在官网源码更新时部署到 GitHub Pages。
+- `.github/workflows/update-homebrew.yml` 在 Release 成功后更新
+  [Homebrew tap](https://github.com/SherlockGougou/homebrew-tap)；失败可用 `v*` 标签手动重跑。
 - 发布包不做 Developer ID 签名，不做公证；下载校验和首次放行步骤见
   [macOS 安装与使用](docs/installation.md)。
 
