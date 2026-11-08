@@ -175,6 +175,8 @@ CI 还会并行运行 `offline-resources` job，分别下载 arm64/x64 的固定
   依赖图未启用时该检查会报错，仓库设置中必须保持 Dependency graph 开启。
 - `.github/dependabot.yml`：根 npm、`ui/` npm、`src-tauri` Cargo 和 GitHub Actions
   每周更新；minor/patch 分组，major 单独提 PR。
+  Cargo 侧显式忽略 Linux-only 传递依赖 `glib`，本项目只构建 macOS，当前依赖链无法
+  解析到 Dependabot 要求的修复版本。
 
 `.github/rulesets/main.json` 和 `tags.json` 是仓库 ruleset 的可审查副本。首次创建或重建：
 

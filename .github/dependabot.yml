@@ -40,6 +40,10 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    # glib 是 Tauri 的 Linux-only 传递依赖；本项目只构建 macOS，
+    # 当前依赖链无法解析到 Dependabot 要求的修复版本。
+    ignore:
+      - dependency-name: "glib"
     labels:
       - "dependencies"
     groups:
