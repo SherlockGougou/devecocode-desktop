@@ -143,6 +143,7 @@ brew install --cask sherlockgougou/tap/devecocode-desktop-offline
 The tap verifies the DMG separately for Apple Silicon and Intel. The current build is
 ad-hoc signed and not notarized. On first launch, right-click the app and choose Open, or
 allow it under System Settings → Privacy & Security.
+[Tap source and notes](https://github.com/SherlockGougou/homebrew-tap)
 
 ### Build
 

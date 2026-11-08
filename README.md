@@ -121,6 +121,7 @@ brew install --cask sherlockgougou/tap/devecocode-desktop-offline
 
 tap 按 Apple Silicon / Intel 分别校验 DMG。当前发布包仍是 ad-hoc 签名、未公证；
 首次打开请右键应用选择“打开”，或到“系统设置 → 隐私与安全性”放行。
+[tap 源码与说明](https://github.com/SherlockGougou/homebrew-tap)
 
 ### 构建
 
