@@ -44,7 +44,7 @@ jobs:
           npx --yes html-validate@9 --config website/.htmlvalidate.json website/index.html website/install.html
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload website artifact
         uses: actions/upload-pages-artifact@v3
