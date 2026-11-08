@@ -72,8 +72,63 @@ export function normalizeTodos(value: unknown): TodoItem[] {
   return result;
 }
 
+/** `/session/status` 只返回忙/重试会话；其余情况都按空闲处理。 */
+export function isBusyStatus(status: SessionStatus | undefined): boolean {
+  return status?.type === "busy" || status?.type === "retry";
+}
+
+/**
+ * CLI 进程被异常结束时，持久化的 tool part 可能停在 running/pending。
+ * 会话快照已经确认空闲后，只在展示层改成 interrupted，不能回写 CLI 存储。
+ */
+export function markInterruptedMessages(
+  messages: Message[],
+  sessionActive: boolean,
+): Message[] {
+  let changed = false;
+  const next = messages.map((message) => {
+    if (message.info.role !== "assistant") return message;
+    // 已完成的助手消息不会再有活动 part；未完成消息只在本轮仍在运行时保留 running。
+    const messageActive = sessionActive && !message.info.time?.completed;
+    if (messageActive) return message;
+    let messageChanged = false;
+    const parts = message.parts.map((part) => {
+      if (part.synthetic) return part;
+      if (part.type === "tool") {
+        const status = part.state?.status;
+        if (status === "running" || status === "pending") {
+          messageChanged = true;
+          return {
+            ...part,
+            state: { ...(part.state ?? {}), status: "interrupted" as const },
+          };
+        }
+        return part;
+      }
+      if (part.type === "reasoning") {
+        if (!part.time?.end && !part.interrupted) {
+          messageChanged = true;
+          return { ...part, interrupted: true };
+        }
+      }
+      return part;
+    });
+    if (!messageChanged) return message;
+    changed = true;
+    return { ...message, parts };
+  });
+  return changed ? next : messages;
+}
+
 function taskStatus(value: unknown): SubagentTask["status"] {
-  if (value === "running" || value === "completed" || value === "error") return value;
+  if (
+    value === "running" ||
+    value === "completed" ||
+    value === "error" ||
+    value === "interrupted"
+  ) {
+    return value;
+  }
   return "pending";
 }
 

@@ -7,7 +7,8 @@ const GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
     title: "会话",
     items: [
       ["⌘N", "新建会话"],
-      ["Enter", "发送消息"],
+      ["Enter", "发送消息；执行中加入排队"],
+      ["⌘Enter", "执行中作为引导发送"],
       ["⇧Enter", "换行"],
       ["@", "引用工作区文件"],
     ],

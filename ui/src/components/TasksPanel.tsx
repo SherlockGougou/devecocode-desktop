@@ -15,6 +15,7 @@ const STATUS_LABEL: Record<SubagentTask["status"], string> = {
   running: "执行中",
   completed: "完成",
   error: "失败",
+  interrupted: "已中断",
 };
 
 export function TaskStatusBadge({ status }: { status: SubagentTask["status"] }) {
@@ -23,6 +24,7 @@ export function TaskStatusBadge({ status }: { status: SubagentTask["status"] }) 
       {status === "running" && <span className="tool-spinner" />}
       {status === "completed" && <Icon name="check" size={11} strokeWidth={2.2} />}
       {status === "error" && <Icon name="alert" size={11} />}
+      {status === "interrupted" && <Icon name="stop" size={11} />}
       {status === "pending" && <span className="todo-pending-dot" />}
       {STATUS_LABEL[status]}
     </span>
@@ -222,6 +224,8 @@ function ActivityRow({ item }: { item: TaskActivityItem }) {
       marker = <Icon name="check" size={11} strokeWidth={2.2} />;
     } else if (item.status === "error") {
       marker = <Icon name="alert" size={11} />;
+    } else if (item.status === "interrupted") {
+      marker = <Icon name="stop" size={11} />;
     } else {
       marker = <span className="activity-dot" />;
     }

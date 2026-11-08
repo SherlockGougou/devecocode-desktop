@@ -81,6 +81,11 @@ cargo run --manifest-path src-tauri/Cargo.toml --features selftest --bin deveco-
 14. **终端 PTY 连接只在 Rust 侧建立**：前端调用 `terminal_*` 命令，不接触 `/pty` 端口、
     ticket 或 Basic Auth。Rust 先创建 PTY、调整初始尺寸，再用一次性 ticket 连接
     `/pty/{id}/connect`；关闭面板时必须 `DELETE /pty/{id}`，避免 shell 残留。
+15. **排队/引导走 v1 客户端投递**：忙时前端按会话 FIFO 排队，`session.idle` 后逐条
+    `prompt_async`；引导消息带客户端 `messageID`，用 assistant `parentID` 对账，错过当轮时
+    发送 synthetic 继续消息。不要改用 `/api/session/:id/prompt` 的 `delivery`，
+    CLI 0.2.5 的 serve 尚未接通 v2 执行层。`messageID` 必须是 ULID 形状的 `msg_` + 26 位
+    Crockford 字符，非 ULID 值会返回 204 但消息静默不落库。
 
 ## 代码约定
 
@@ -107,6 +112,8 @@ cargo run --manifest-path src-tauri/Cargo.toml --features selftest --bin deveco-
 - 用字符串替换打补丁时，`cargo fmt`/格式化会改掉锚点导致补丁**静默失效**；补丁后必须 `grep` 核对。
 - Vite 构建产物落在 `dist/`，Tauri 打包时 `beforeBuildCommand` 会重新构建，不要在源码里手改 `dist/`。
 - 打包后的应用要**退出重开**才加载新构建；托盘「退出」是干净退出路径。
+- 应用启动卡在 macOS 文件夹授权等待时，系统若弹出「文稿」等文件夹访问提示，
+  允许代理直接点击允许，再等待应用完成加载。
 - 系统通知：未签名也能投递；通知点击只能聚焦窗口，不能定位到会话。
 - 权限审批卡片需要 CLI 侧 `permission` 为 `ask` 才会触发；本机默认 `allow` 时不会出现。
 - 新增或更新 skill 后 CLI 只在启动时扫描；普通版下次拉起 serve 生效，复用已有实例时需显式重启服务。

@@ -2259,3 +2259,143 @@ tool call，但工具真正执行要到 +17.2s；中间约 13.8s 是执行前等
   口径略高（本例 218 vs 176.5）；新产生的 live 会话使用精确事件时间。
 - 若某个工具在首个 running 事件时就已经开始执行，`streamedAt` 会接近执行开始时间；
   当前 CLI 的 bash 工具会先有 running+input 帧，未覆盖其他工具类型。
+
+### 22.61 异常终止后的任务状态同步（2026-11-08）
+
+现象：一个正在执行的会话因为工具命令重启应用而被强制结束，重新打开会话后最后一条
+`bash` 工具仍显示“执行中”转圈，但侧栏、标题栏和 `/session/status` 已经是空闲。
+
+定位：CLI 持久化的工具 part 停在 `state.status="running"`，对应 assistant 消息只有
+`time.created`、没有 `time.completed`；`GET /session/status?directory=...` 已不包含该
+会话。界面直接信任持久化 part 状态，没有用会话状态和消息完成标记校正。
+
+实现：
+
+- `tasks.ts` 增加 `markInterruptedMessages(messages, sessionActive)`：会话空闲时把残留的
+  `running`/`pending` 工具、未结束的 reasoning 标记为 UI 专用 `interrupted`；已完成消息
+  即使本轮仍在运行也会校正，未完成消息只在会话仍忙时保留 running。
+- `openSession`、`refreshAfterReconnect` 并行读取消息和 `/session/status`，用快照设置
+  `streaming` 并同步 `sessionStatuses`/`busySessions`；打开正在运行的会话会恢复
+  “执行中”、状态栏“运行中”和 Composer“停止”。
+- `session.idle`/`session.error` 校正当前或子会话消息并写入 idle 状态；
+  `session.status` 的 busy/retry 只用于补 `streaming: true`，idle 仍由
+  `session.idle`/`session.error` 收尾。
+- 工具卡片、思考卡片、子代理任务徽标和活动行识别 `interrupted`，显示“已中断”，不再
+  使用 spinner 或成功勾选；不写 CLI 数据库。
+
+验证：
+
+- `npm run check` 通过：前端构建（含 `tsc --noEmit`）和 85+9 项 Rust 单测通过。
+- 真机打开异常会话 `ses_e4626ea91ffeypGex3Qaq25uDs`，最后一条工具显示
+  `bash 已中断`、无 spinner，历史完成工具仍为勾选；快速重启后结果一致。
+- 通过 CLI API 创建临时会话并启动 `sleep 15` 任务：切到旧会话再切回，标题栏显示
+  “· 执行中”、状态栏“运行中”、Composer“停止”；点击停止后恢复空闲。临时会话已删除。
+
+未验证：
+
+- 当前数据没有“未结束 reasoning”或“中断的子代理任务”fixture；对应展示分支只经过
+  类型检查、构建和代码审阅，未单独真机触发。
+- 外部 CLI 客户端仍会看到原始 `running` 记录；本次只修桌面端展示层。
+
+### 22.62 执行中的排队与引导消息（2026-11-08）
+
+需求：Agent 执行中仍可继续输入，支持 Codex/DSH 风格的“排队”和“引导”两种投递方式。
+
+调研：
+
+- CLI 0.2.5 的 OpenAPI 已有 `/api/session/:id/prompt`，payload 支持
+  `delivery: "steer" | "queue"`，内部也有 `session_input` 晋升逻辑和
+  `session.next.prompt.admitted/promoted` 事件。
+- 但在 `deveco serve` 中实测：v2 prompt 只产生 `session.next.prompt.admitted`，
+  不产生 promoted，也不执行 agent loop；`/api/session/:id/wait` 和 `/compact` 返回
+  503 `ServiceUnavailableError`。因此本版不能依赖 v2 原生 delivery。
+
+实现：
+
+- `delivery.ts` 定义每会话 FIFO 队列、引导待定状态、模型/Agent 快照和 20 条 / 64MB 上限。
+- `store.ts` 新增 `queuedMessages`、`queuePaused`、`queueSending`、`pendingSteers`、
+  `steerMessageIDs`、`stoppingSessions`，用 `session.idle` 驱动队首发送；停止会暂停队列。
+- 引导消息用客户端 ULID `messageID` 发送，assistant `parentID` 匹配后确认消费；当前轮
+  已结束仍未消费时，发送带 `synthetic: true` 的继续消息开启新一轮，避免重复写入用户消息。
+- Composer 执行中显示“排队/引导”提示、队列托盘和停止按钮；`⌘Enter` 引导，Enter 排队；
+  队列项支持引导、编辑、删除、失败重试。
+- 所有发送仍走 v1 `prompt_async`，普通发送不携带 `messageID`，避免影响旧 CLI。
+
+验证：
+
+- `npm --prefix ui run build` 通过（含 `tsc --noEmit`）。
+- `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 通过；
+  `cargo test` 94 passed、1 ignored。
+- `deveco-selftest` 18 项全通过；新增断言确认 `prompt_async` 保留客户端 `messageID`
+  和 `synthetic` part。
+- 真机 debug 应用：执行 `sleep 25` 时排队 A/B，`⌘Enter` 引导 E；工具结束后先回应
+  引导，再逐轮回应 A/B。执行 `sleep 20` 时排队 2 条并点停止，队列显示“已暂停”、不自动
+  发送；点“继续发送”后按 FIFO 完成。暂停状态下编辑队首会恢复文本到输入框，删除后托盘消失。
+- 截图：`.agent-temp/queue-steer/queue-steer.png`（排队 2 条 + 引导等待）与
+  `.agent-temp/queue-steer/queue-paused.png`（停止后暂停）。
+- 停止后不再弹“会话错误：Aborted”红色提示；会话内仍保留 CLI 自己写入的 `Aborted`
+  消息块。
+
+未验证：
+
+- 旧版 CLI 对 `messageID` / synthetic part 的兼容性未做专门回归。
+- 引导只在 v1 的下一个模型步骤生效，无法硬中断当前模型输出或工具执行。
+- “当前轮最后一帧才到达、必须触发 synthetic 兜底唤醒”的边界时序没有稳定复现；兜底
+  代码路径已实现，但真机验证主要覆盖了正常下一步消费和停止暂停。
+
+### 22.63 历史用户消息编辑（2026-11-08）
+
+需求：会话过程中可以修改已发送的历史用户消息，并从该消息重新开始；需要同时处理工作区
+文件状态，避免只改 UI 而模型上下文/代码状态不一致。
+
+契约：
+
+- `POST /session/{id}/revert` 保存回滚边界、还原快照并返回 `session.revert`；真正删除
+  边界后的消息发生在下一次 prompt 的 `SessionRevert.cleanup`，不是 revert 请求本身。
+- `POST /session/{id}/unrevert` 恢复消息与工作区；CLI 在 clear/unrevert 后会直接省略
+  `revert` 字段，所以前端会话 upsert 必须把该字段作为权威值显式写回。
+- `GET /session/{id}` 用于打开会话和 prompt 失败后的边界判断；全局事件流提供
+  `message.removed` / `message.part.removed`，cleanup 后需要同步删除本地消息。
+
+实现：
+
+- `types.ts` 增加 `Session.revert` 和消息 model/variant；`api.ts` 增加 session/revert/
+  unrevert 包装，仍全部走 Rust 代理。
+- `store.ts` 增加 `editing` / `editPhase`（idle/reverting/reverted/prompting）；
+  `beginEditMessage` 校验空闲、排队状态和 part 类型；`resendEditedMessage` 先 revert，
+  再以原 Agent/模型/variant 调 `prompt_async`，成功后按消息 ID 集合删除旧后缀并清除
+  revert，避免 prompt 期间 SSE 已到达的新消息被按长度切片误删。
+- prompt 失败时读取 `/session/{id}` 并尝试 `unrevert`：旧消息恢复则回到 idle；
+  cleanup 已删除则保留编辑器和本地快照，重试时跳过 revert；unrevert 也失败时保留回滚态，
+  取消后由 RevertDock 恢复。
+- 新增 `MessageEditor.tsx`：2–10 行自适应、原上传附件 chip、原 Agent/模型提示、内联
+  二次确认、Esc/⌘Enter 和中文 IME 保护。Composer 在编辑期间保留草稿但禁用发送。
+- 聊天区按 `session.revert.messageID` 过滤可见消息，搜索/live/continued 均使用过滤后的
+  快照；底部 RevertDock 支持恢复，恢复确认和“回滚状态下继续发送”都改成应用内确认
+  （WKWebView 中 `window.confirm` 不会显示，不能用于破坏性操作）。
+- 编辑提交期间保留目标消息本地快照并忽略自身 cleanup 的 removed 事件；编辑器和 Composer
+  都做并发守卫，避免排队/引导或普通发送与截断交错。
+
+验证：
+
+- `npm --prefix ui run build` 通过（含 `tsc --noEmit`）；`npm run build:debug` 出包成功。
+- `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 通过；
+  `cargo test` 94 passed、1 ignored。
+- `deveco-selftest` 19 项全通过；新增 `历史消息 revert/unrevert 契约`，用两条 noReply
+  消息验证 revert 边界持久化和 unrevert 清空，不消耗模型 token。
+- 真实 debug `.app`：40 条历史消息的旧会话能打开内联编辑器，确认框显示“删除其后 39 条
+  消息”，取消后消息与文件无变化；临时两会话编辑首条为“请只回复 OK”，确认后旧消息全部
+  消失、重新执行并返回 OK；外部 API revert 后 RevertDock 显示“已回滚 2 条消息”，内联
+  确认恢复成功；回滚状态下在 Composer 发送会显示应用内确认，取消后草稿保留。
+- 截图：`.agent-temp/message-edit/editor.png`、`confirm.png`、
+  `revert-dock2.png`、`revert-inline-confirm.png`、`composer-revert-confirm2.png`。
+
+未验证：
+
+- 临时会话没有真实文件改动，因此“revert 覆盖未提交修改”只验证了请求与 UI 提示，没有
+  在脏工作区上做破坏性验收。
+- prompt 失败、unrevert 失败和 cleanup 已完成后再失败的组合没有逐条真机构造；代码路径
+  已按服务器 session 状态分支实现。
+- 带图片附件、`@引用` 的编辑重发未在真实 `.app` 中逐项验证；正文引用重建和附件保留
+  仅经过类型检查与代码审阅。
+- 中文 IME、浅色主题和窄窗口下的编辑器布局未逐一截图验收。

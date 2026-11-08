@@ -27,6 +27,8 @@ export interface Session {
   tokens?: Tokens;
   time?: { created: number; updated: number; archived?: number };
   summary?: { additions: number; deletions: number; files: number };
+  /** CLI 原生回滚状态；下一次 prompt 的 cleanup 会删除边界后的消息并清空 */
+  revert?: { messageID: string; partID?: string; snapshot?: string; diff?: string };
 }
 
 export interface Part {
@@ -41,6 +43,8 @@ export interface Part {
   callID?: string;
   state?: ToolState;
   time?: { start?: number; end?: number };
+  /** 会话已停止但快照里仍没有结束时间的 reasoning part，仅用于展示 */
+  interrupted?: boolean;
   /** 事件流观测到的工具调用输出结束时间；不含工具执行等待 */
   streamedAt?: number;
   /* 其余字段按需透传 */
@@ -48,7 +52,8 @@ export interface Part {
 }
 
 export interface ToolState {
-  status?: "pending" | "running" | "completed" | "error";
+  /** `interrupted` 是桌面端校正快照时写入的展示状态，CLI 不会返回 */
+  status?: "pending" | "running" | "completed" | "error" | "interrupted";
   input?: unknown;
   output?: unknown;
   title?: string;
@@ -61,10 +66,14 @@ export interface MessageInfo {
   id: string;
   sessionID: string;
   role: "user" | "assistant";
+  /** assistant 消息指向触发它的 user 消息；v1 事件与消息快照都会返回 */
+  parentID?: string;
   agent?: string;
   providerID?: string;
   modelID?: string;
-  model?: { providerID: string; modelID: string };
+  /** assistant 使用顶层字段，user 使用 model 对象；variant 两处都可能出现 */
+  variant?: string;
+  model?: { providerID: string; modelID: string; variant?: string };
   time?: { created: number; completed?: number };
   cost?: number;
   tokens?: Tokens;
@@ -496,7 +505,7 @@ export interface SubagentTask {
   agent: string;
   description: string;
   prompt: string;
-  status: "pending" | "running" | "completed" | "error";
+  status: "pending" | "running" | "completed" | "error" | "interrupted";
   startedAt?: number;
   endedAt?: number;
   error?: string;

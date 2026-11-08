@@ -1,17 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useApp } from "../store";
+import {
+  messageEditProblem,
+  useApp,
+  type MessageEditTarget,
+} from "../store";
 import type { Message, Part } from "../types";
-import { parseMentions } from "../mentions";
+import { matchMentionFiles, type InlineFileRef } from "../mentions";
 import { copyText } from "../clipboard";
 import {
   copyItem,
   referenceItem,
   revealItem,
   useContextMenu,
+  type ContextMenuEntry,
 } from "../contextMenu";
 import {
   absoluteWorkspacePath,
-  normalizeWorkspacePath,
   relativeWorkspacePath,
 } from "../paths";
 import Markdown from "./Markdown";
@@ -24,6 +28,7 @@ import {
   todoProgress,
 } from "../tasks";
 import { AppIcon } from "./AppIcon";
+import MessageEditor from "./MessageEditor";
 
 const MAX_PREVIEW = 4000;
 const MAX_ATTACHMENT_PREVIEW = 120_000;
@@ -72,43 +77,6 @@ function messageHasContent(message: Message) {
         part.type === "subtask" ||
         part.type === "reasoning"),
   );
-}
-
-type InlineFileRef = {
-  start: number;
-  end: number;
-  path: string;
-};
-
-function normalizePath(value: string) {
-  return normalizeWorkspacePath(value);
-}
-
-/** 正文里的 @token 与 CLI 回传的 file part 做匹配；source 已被 CLI 丢弃，只能用 filename。 */
-function resolveMentionFiles(text: string, files: Part[]) {
-  const used = new Set<string>();
-  const links: InlineFileRef[] = [];
-  for (const ref of parseMentions(text)) {
-    const exact = files.find(
-      (part) => !used.has(part.id) && normalizePath(String(part.filename ?? "")) === normalizePath(ref.path),
-    );
-    const matched =
-      exact ??
-      files.find(
-        (part) =>
-          !used.has(part.id) &&
-          typeof part.filename === "string" &&
-          normalizePath(part.filename).endsWith(`/${normalizePath(ref.path)}`),
-      );
-    if (!matched) continue;
-    used.add(matched.id);
-    links.push({
-      start: ref.start,
-      end: ref.end,
-      path: String(matched.filename ?? ref.path),
-    });
-  }
-  return { links, used };
 }
 
 function UserBubbleText({
@@ -324,7 +292,14 @@ function ToolCard({ part }: { part: Part }) {
   const menu = useContextMenu();
   const state = part.state ?? {};
   const status = state.status ?? "pending";
-  const statusLabel = status === "running" ? "执行中" : status === "error" ? "失败" : null;
+  const statusLabel =
+    status === "running"
+      ? "执行中"
+      : status === "error"
+        ? "失败"
+        : status === "interrupted"
+          ? "已中断"
+          : null;
   const contextItems = [
     ...(state.input !== undefined
       ? [copyItem("复制工具输入", fullValue(state.input), "工具输入已复制")]
@@ -348,9 +323,11 @@ function ToolCard({ part }: { part: Part }) {
           {status === "completed" && <Icon name="check" size={13} strokeWidth={2.1} />}
           {status === "error" && <Icon name="alert" size={13} />}
           {status === "running" && <span className="tool-spinner" />}
-          {status !== "completed" && status !== "error" && status !== "running" && (
-            <span className="tool-pending" />
-          )}
+          {status === "interrupted" && <Icon name="stop" size={12} />}
+          {status !== "completed" &&
+            status !== "error" &&
+            status !== "running" &&
+            status !== "interrupted" && <span className="tool-pending" />}
         </span>
         <span className="tool-name">{part.tool ?? "tool"}</span>
         {state.title && <span className="tool-title">{state.title}</span>}
@@ -381,7 +358,13 @@ function activitySnippet(activity: NonNullable<ReturnType<typeof latestTaskActiv
       ? activity.title
       : activity.detail.replace(/\s+/g, " ").trim();
   const suffix =
-    activity.kind === "tool" && activity.status === "running" ? " · 执行中" : "";
+    activity.kind === "tool"
+      ? activity.status === "running"
+        ? " · 执行中"
+        : activity.status === "interrupted"
+          ? " · 已中断"
+          : ""
+      : "";
   const text = `${value}${suffix}`;
   return text.length > 150 ? `${text.slice(0, 150)}…` : text;
 }
@@ -436,6 +419,8 @@ function SubagentPartCard({ part, fallbackTime }: { part: Part; fallbackTime?: n
                 <span className="tool-spinner" />
               ) : activity.status === "error" ? (
                 <Icon name="alert" size={10} />
+              ) : activity.status === "interrupted" ? (
+                <Icon name="stop" size={10} />
               ) : (
                 <Icon name="check" size={10} strokeWidth={2.2} />
               )}
@@ -499,13 +484,14 @@ function AssistantBlocks({ parts, fallbackTime }: { parts: Part[]; fallbackTime?
         if (part.type === "reasoning") {
           if (!part.text) return null;
           const time = part.time as { start?: number; end?: number } | undefined;
-          const running = !time?.end;
+          const interrupted = !time?.end && Boolean(part.interrupted);
+          const running = !time?.end && !interrupted;
           const seconds =
             time?.start && time?.end ? Math.max(0.1, (time.end - time.start) / 1000).toFixed(1) : null;
           return (
             <details
               key={part.id}
-              className={`reasoning${running ? " running" : ""}`}
+              className={`reasoning${running ? " running" : ""}${interrupted ? " interrupted" : ""}`}
               open={running}
               onContextMenu={(event) =>
                 menu.open(
@@ -519,6 +505,7 @@ function AssistantBlocks({ parts, fallbackTime }: { parts: Part[]; fallbackTime?
                 <Icon name="spark" size={13} className="reasoning-icon" />
                 <span className="reasoning-label">{running ? "思考中" : "思考"}</span>
                 {seconds && <span className="reasoning-time">{seconds}s</span>}
+                {interrupted && <span className="reasoning-time">· 已中断</span>}
                 <Icon name="chevron-right" size={12} className="caret" />
               </summary>
               <div className="reasoning-body">{part.text}</div>
@@ -540,7 +527,9 @@ function LiveActivity({ parts }: { parts: Part[] }) {
     if (part.synthetic) continue;
     if (part.type === "tool") {
       const status = part.state?.status;
-      return status === "running" || status === "pending" ? null : <LiveLabel text="正在准备" />;
+      return status === "running" || status === "pending" || status === "interrupted"
+        ? null
+        : <LiveLabel text="正在准备" />;
     }
     if (part.type === "reasoning") {
       const time = part.time as { end?: number } | undefined;
@@ -618,6 +607,22 @@ export default function ChatView() {
   const directory = useApp((s) => s.directory);
   const permissions = useApp((s) => s.permissions);
   const streaming = useApp((s) => s.streaming);
+  const busySessions = useApp((s) => s.busySessions);
+  const stoppingSessions = useApp((s) => s.stoppingSessions);
+  const queuedMessages = useApp((s) =>
+    s.sessionID ? s.queuedMessages[s.sessionID] : undefined,
+  );
+  const pendingSteers = useApp((s) =>
+    s.sessionID ? s.pendingSteers[s.sessionID] : undefined,
+  );
+  const editing = useApp((s) => s.editing);
+  const editPhase = useApp((s) => s.editPhase);
+  const beginEditMessage = useApp((s) => s.beginEditMessage);
+  const cancelEditMessage = useApp((s) => s.cancelEditMessage);
+  const restoreRevertedMessages = useApp((s) => s.restoreRevertedMessages);
+  const steerMessageIDs = useApp((s) =>
+    s.sessionID ? s.steerMessageIDs[s.sessionID] : undefined,
+  );
   const newSession = useApp((s) => s.newSession);
   const replyPermission = useApp((s) => s.replyPermission);
   const openFile = useApp((s) => s.openFile);
@@ -625,9 +630,12 @@ export default function ChatView() {
   const openSettings = useApp((s) => s.openSettings);
   const menu = useContextMenu();
   const [attachmentPreview, setAttachmentPreview] = useState<Part | null>(null);
+  const [restoringReverted, setRestoringReverted] = useState(false);
+  const [restoreConfirming, setRestoreConfirming] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  const wasEditing = useRef(false);
 
   const findOpen = useApp((s) => s.findOpen);
   const findQuery = useApp((s) => s.findQuery);
@@ -644,6 +652,22 @@ export default function ChatView() {
     );
   }, [directory, sessionID, sessions]);
 
+  const activeSession = useMemo(
+    () =>
+      directory && sessionID
+        ? (sessions[directory] ?? []).find((item) => item.id === sessionID)
+        : undefined,
+    [directory, sessionID, sessions],
+  );
+  const revert = activeSession?.revert;
+  const busy = Boolean(
+    sessionID &&
+      (streaming || busySessions[sessionID] || stoppingSessions[sessionID]),
+  );
+  const queueBlocked = Boolean(
+    (queuedMessages?.length ?? 0) > 0 || (pendingSteers?.length ?? 0) > 0,
+  );
+
   useEffect(() => {
     // 用户往上翻的时候不要把他拽回底部
     if (stickToBottom.current) {
@@ -651,28 +675,94 @@ export default function ChatView() {
     }
   }, [messages, permissions.length, streaming]);
 
+  useEffect(() => {
+    if (wasEditing.current && !editing && streaming) {
+      stickToBottom.current = true;
+      requestAnimationFrame(() =>
+        bottomRef.current?.scrollIntoView({ block: "end" }),
+      );
+    }
+    wasEditing.current = Boolean(editing);
+  }, [editing, streaming]);
+
   const pending = permissions.filter((p) => p.sessionID === sessionID);
+
+  const visibleBase = useMemo(() => {
+    if (!revert?.messageID) return messages;
+    const index = messages.findIndex(
+      (message) => message.info.id === revert.messageID,
+    );
+    return index === -1 ? messages : messages.slice(0, index);
+  }, [messages, revert?.messageID]);
+  const revertedItems =
+    visibleBase.length < messages.length
+      ? messages.slice(visibleBase.length)
+      : [];
+  const revertPreview = useMemo(() => {
+    const first = revertedItems.find(
+      (message) =>
+        message.info.role === "user" && messageText(message.parts).trim(),
+    );
+    const text = first
+      ? messageText(first.parts).replace(/\s+/g, " ").trim()
+      : "";
+    return text.length > 64 ? `${text.slice(0, 64)}…` : text;
+  }, [revertedItems]);
 
   const matches = useMemo(() => {
     const keyword = findQuery.trim().toLowerCase();
     if (!keyword) return [];
-    return messages.filter((message) =>
+    return visibleBase.filter((message) =>
       messageText(message.parts).toLowerCase().includes(keyword),
     );
-  }, [messages, findQuery]);
+  }, [visibleBase, findQuery]);
 
-  const visibleMessages = findQuery.trim() ? matches : messages;
+  const visibleMessages = findQuery.trim() ? matches : visibleBase;
+  const displayMessages = useMemo(() => {
+    if (
+      !editing ||
+      editing.sessionID !== sessionID ||
+      visibleMessages.some((message) => message.info.id === editing.messageID)
+    ) {
+      return visibleMessages;
+    }
+    const target = messages.find(
+      (message) => message.info.id === editing.messageID,
+    );
+    return target ? [...visibleMessages, target] : visibleMessages;
+  }, [visibleMessages, messages, editing, sessionID, editPhase]);
+
+  useEffect(() => {
+    if (
+      !editing ||
+      editing.sessionID !== sessionID ||
+      editPhase !== "idle"
+    ) {
+      return;
+    }
+    if (!visibleBase.some((message) => message.info.id === editing.messageID)) {
+      cancelEditMessage();
+    }
+  }, [editing, sessionID, editPhase, visibleBase, cancelEditMessage]);
+
+  useEffect(() => {
+    if (editing || revertedItems.length === 0) setRestoreConfirming(false);
+  }, [editing, revertedItems.length]);
 
   const liveMessageId = useMemo(() => {
     if (!streaming) return null;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
+    for (let index = visibleBase.length - 1; index >= 0; index -= 1) {
+      const message = visibleBase[index];
       if (message.info.role !== "assistant") continue;
       // 上一步已经完成、下一步还没落库时，不要把“正在生成”挂到旧消息下面。
       return message.info.time?.completed ? null : message.info.id;
     }
     return null;
-  }, [messages, streaming]);
+  }, [visibleBase, streaming]);
+  const steerIDs = useMemo(
+    () => new Set(steerMessageIDs ?? []),
+    [steerMessageIDs],
+  );
 
   const continued = useMemo(() => {
     const flags = new Map<string, boolean>();
@@ -690,6 +780,17 @@ export default function ChatView() {
     const target = matches[Math.min(findIndex, matches.length - 1)];
     document.getElementById(`msg-${target.info.id}`)?.scrollIntoView({ block: "center" });
   }, [findIndex, findQuery, matches]);
+
+  const restoreReverted = async () => {
+    if (revertedItems.length === 0) return;
+    setRestoreConfirming(false);
+    setRestoringReverted(true);
+    try {
+      await restoreRevertedMessages();
+    } finally {
+      setRestoringReverted(false);
+    }
+  };
 
   return (
     <section
@@ -802,22 +903,105 @@ export default function ChatView() {
           </div>
         )}
 
-        {visibleMessages.map((message, index) => (
-          <div
-            id={`msg-${message.info.id}`}
-            key={message.info.id}
-            className={findQuery.trim() && index === findIndex ? "find-hit" : undefined}
-          >
-            <MessageRow
-              message={message}
-              continued={continued.get(message.info.id) ?? false}
-              live={message.info.id === liveMessageId}
-              directory={directory ?? ""}
-              onOpenFile={(path) => void openFile(path)}
-              onOpenAttachment={setAttachmentPreview}
-            />
+        {displayMessages.map((message, index) => {
+          const fullIndex = messages.findIndex(
+            (item) => item.info.id === message.info.id,
+          );
+          const laterCount =
+            fullIndex === -1 ? 0 : messages.length - fullIndex - 1;
+          const editReason = busy
+            ? "当前会话正在执行，请先停止回复"
+            : queueBlocked
+              ? "请先处理排队或待确认的消息"
+              : messageEditProblem(message);
+          return (
+            <div
+              id={`msg-${message.info.id}`}
+              key={message.info.id}
+              className={findQuery.trim() && index === findIndex ? "find-hit" : undefined}
+            >
+              <MessageRow
+                message={message}
+                continued={continued.get(message.info.id) ?? false}
+                live={message.info.id === liveMessageId}
+                steer={steerIDs.has(message.info.id)}
+                directory={directory ?? ""}
+                editingSeed={
+                  editing?.sessionID === sessionID &&
+                  editing.messageID === message.info.id
+                    ? editing
+                    : undefined
+                }
+                editable={!editReason}
+                editReason={editReason ?? undefined}
+                laterCount={laterCount}
+                onStartEdit={() => beginEditMessage(message.info.id)}
+                onOpenFile={(path) => void openFile(path)}
+                onOpenAttachment={setAttachmentPreview}
+              />
+            </div>
+          );
+        })}
+        {editing &&
+          editing.sessionID === sessionID &&
+          !displayMessages.some((message) => message.info.id === editing.messageID) && (
+            <div className="row user editing">
+              <MessageEditor seed={editing} laterCount={revertedItems.length} />
+            </div>
+          )}
+        {!editing && revertedItems.length > 0 && (
+          <div className="revert-dock" role="status">
+            <div className="revert-dock-row">
+              <span className="revert-dock-icon">
+                <Icon name="undo" size={15} />
+              </span>
+              <span className="revert-dock-copy">
+                <span className="revert-dock-title">
+                  已回滚 {revertedItems.length} 条消息
+                </span>
+                {revertPreview && (
+                  <span className="revert-dock-preview">从「{revertPreview}」开始</span>
+                )}
+              </span>
+              <button
+                type="button"
+                className="mini-btn"
+                disabled={restoringReverted || busy}
+                onClick={() => setRestoreConfirming(true)}
+                title={
+                  busy
+                    ? "会话正在执行，停止后可恢复"
+                    : "恢复消息，并把工作区恢复到回滚前"
+                }
+              >
+                {restoringReverted ? "恢复中…" : "恢复消息"}
+              </button>
+            </div>
+            {restoreConfirming && (
+              <div className="revert-dock-confirm">
+                <span>
+                  恢复会把消息和工作区文件一起还原到回滚前，可能覆盖之后的修改。
+                </span>
+                <div className="revert-dock-confirm-actions">
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    onClick={() => setRestoreConfirming(false)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-btn small"
+                    onClick={() => void restoreReverted()}
+                  >
+                    确认恢复
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        ))}
+        )}
         {findQuery.trim() !== "" && matches.length === 0 && (
           <div className="empty-line">没有匹配的消息</div>
         )}
@@ -872,14 +1056,26 @@ function MessageRow({
   message,
   continued,
   live,
+  steer,
   directory,
+  editingSeed,
+  editable,
+  editReason,
+  laterCount,
+  onStartEdit,
   onOpenFile,
   onOpenAttachment,
 }: {
   message: Message;
   continued: boolean;
   live: boolean;
+  steer: boolean;
   directory: string;
+  editingSeed?: MessageEditTarget;
+  editable: boolean;
+  editReason?: string;
+  laterCount: number;
+  onStartEdit: () => void;
   onOpenFile: (path: string) => void;
   onOpenAttachment: (part: Part) => void;
 }) {
@@ -891,21 +1087,48 @@ function MessageRow({
       (part) => part.type === "subtask" && !part.synthetic,
     );
     if (!text.trim() && files.length === 0 && subtasks.length === 0) return null;
-    const { links, used } = resolveMentionFiles(text, files);
+    if (editingSeed) {
+      return (
+        <div className="row user editing">
+          <MessageEditor seed={editingSeed} laterCount={laterCount} />
+        </div>
+      );
+    }
+    const { links, used } = matchMentionFiles(text, files);
     const uploads = files.filter((part) => !used.has(part.id));
+    const menuItems: ContextMenuEntry[] = [];
+    if (message.info.role === "user") {
+      menuItems.push({
+        type: "item",
+        label: "编辑消息",
+        icon: "pencil",
+        disabled: !editable,
+        onSelect: onStartEdit,
+      });
+    }
+    if (text.trim()) {
+      if (menuItems.length > 0) menuItems.push({ type: "separator" });
+      menuItems.push(copyItem("复制消息", text, "消息已复制"));
+    }
     return (
       <div
         className="row user"
         onContextMenu={
-          text.trim()
+          menuItems.length > 0
             ? (event) =>
-                menu.open(event, [copyItem("复制消息", text, "消息已复制")], {
+                menu.open(event, menuItems, {
                   label: "用户消息菜单",
                 })
             : undefined
         }
       >
         <div className="bubble-wrap">
+          {steer && (
+            <span className="steer-tag" title="作为当前任务的引导消息发送">
+              <Icon name="spark" size={10} />
+              引导
+            </span>
+          )}
           {uploads.length > 0 && (
             <UploadAttachments parts={uploads} onOpen={onOpenAttachment} />
           )}
@@ -926,7 +1149,13 @@ function MessageRow({
               fallbackTime={message.info.time?.created}
             />
           ))}
-          <MessageMeta text={text} time={formatTime(message.info.time?.created)} />
+          <MessageMeta
+            text={text}
+            time={formatTime(message.info.time?.created)}
+            onEdit={onStartEdit}
+            editDisabled={!editable}
+            editTitle={editReason ?? "编辑这条消息"}
+          />
         </div>
       </div>
     );
@@ -968,9 +1197,34 @@ function MessageRow({
   );
 }
 
-function MessageMeta({ text, time }: { text: string; time: string }) {
+function MessageMeta({
+  text,
+  time,
+  onEdit,
+  editDisabled,
+  editTitle,
+}: {
+  text: string;
+  time: string;
+  onEdit?: () => void;
+  editDisabled?: boolean;
+  editTitle?: string;
+}) {
   return (
     <div className="msg-meta">
+      {onEdit && (
+        <button
+          type="button"
+          className="mini-btn copy-btn"
+          title={editTitle ?? "编辑这条消息"}
+          aria-label={editTitle ?? "编辑这条消息"}
+          disabled={editDisabled}
+          onClick={onEdit}
+        >
+          <Icon name="pencil" size={14} />
+          编辑
+        </button>
+      )}
       <CopyButton text={text} />
       {time && <span className="msg-time">{time}</span>}
     </div>

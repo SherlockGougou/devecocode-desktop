@@ -44,11 +44,17 @@ function ChatRow({
   session,
   directory,
   active,
+  running,
+  unread,
   onOpen,
 }: {
   session: Session;
   directory: string;
   active: boolean;
+  /** 该会话正在执行：标题前显示旋转的加载指示 */
+  running: boolean;
+  /** 执行已结束但尚未打开查看：标题前显示未读圆点 */
+  unread: boolean;
   onOpen: () => void;
 }) {
   const renameSession = useApp((s) => s.renameSession);
@@ -128,6 +134,18 @@ function ChatRow({
           title={session.title ?? session.id}
           aria-current={active ? "true" : undefined}
         >
+          {running ? (
+            <span className="chat-spinner" title="正在执行" aria-label="正在执行" />
+          ) : (
+            unread && (
+              <span
+                className="chat-unread"
+                role="img"
+                title="有未读更新"
+                aria-label="有未读更新"
+              />
+            )
+          )}
           <span className="chat-title">{title}</span>
           <span className="chat-time">{timeAgo(session.time?.updated)}</span>
         </button>
@@ -199,6 +217,9 @@ export default function Sidebar() {
   const toggleArchivedView = useApp((s) => s.toggleArchivedView);
   const sessionSort = useApp((s) => s.sessionSort);
   const sessionPreview = useApp((s) => s.sessionPreview);
+  const busySessions = useApp((s) => s.busySessions);
+  const unreadSessions = useApp((s) => s.unreadSessions);
+  const streaming = useApp((s) => s.streaming);
   const setSessionSort = useApp((s) => s.setSessionSort);
   const setSessionPreview = useApp((s) => s.setSessionPreview);
   const toggleAllProjects = useApp((s) => s.toggleAllProjects);
@@ -610,6 +631,8 @@ export default function Sidebar() {
                 session={session}
                 directory={dir}
                 active={isCurrent && session.id === sessionID}
+                running={isRunning(session.id)}
+                unread={unreadSessions[session.id] ?? false}
                 onOpen={() => void openSessionIn(dir, session.id)}
               />
             ))}
@@ -635,6 +658,10 @@ export default function Sidebar() {
 
   const viewCustomized =
     showArchived || sessionSort !== "updated" || sessionPreview !== 5;
+  // 当前会话刚发送时 streaming 立刻为真，不必等 session.status 事件；
+  // 其他工作区的会话仍以全局 busySessions 为准。
+  const isRunning = (id: string) =>
+    Boolean(busySessions[id]) || (id === sessionID && streaming);
   const cliTone =
     backend.state === "ready" ? "ok" : backend.state === "failed" ? "bad" : "warn";
   const cliState =
@@ -819,6 +846,8 @@ export default function Sidebar() {
                       session={session}
                       directory={dir}
                       active={session.id === sessionID && dir === directory}
+                      running={isRunning(session.id)}
+                      unread={unreadSessions[session.id] ?? false}
                       onOpen={() => void openSessionIn(dir, session.id)}
                     />
                   ))}

@@ -207,6 +207,8 @@ export const api = {
   health: () => request<{ healthy: boolean }>("GET", "/api/health"),
   projects: (timeoutMs?: number) =>
     request<Project[]>("GET", "/project", undefined, undefined, timeoutMs),
+  session: (directory: string, sessionID: string, timeoutMs?: number) =>
+    request<Session>("GET", `/session/${sessionID}`, { directory }, undefined, timeoutMs),
   sessions: (directory: string, timeoutMs?: number) =>
     request<Session[]>("GET", "/session", { directory, roots: "true", limit: 200 }, undefined, timeoutMs),
   searchSessions: (directory: string, search: string) =>
@@ -220,26 +222,43 @@ export const api = {
     request<Session[]>("GET", `/session/${sessionID}/children`, { directory }),
   todos: (directory: string, sessionID: string) =>
     request<TodoItem[]>("GET", `/session/${sessionID}/todo`, { directory }),
-  sessionStatus: (directory: string) =>
-    request<Record<string, SessionStatus>>("GET", "/session/status", { directory }),
+  sessionStatus: (directory: string, timeoutMs?: number) =>
+    request<Record<string, SessionStatus>>(
+      "GET",
+      "/session/status",
+      { directory },
+      undefined,
+      timeoutMs,
+    ),
   createSession: (directory: string, title?: string) =>
     request<Session>("POST", "/session", { directory }, title ? { title } : {}),
   prompt: (
     directory: string,
     sessionID: string,
     parts: Array<Record<string, unknown>>,
-    options?: { model?: { providerID: string; modelID: string }; agent?: string; variant?: string },
+    options?: {
+      model?: { providerID: string; modelID: string };
+      agent?: string;
+      variant?: string;
+      /** 引导消息提前生成 ID，用于 parentID 对账；普通发送不传 */
+      messageID?: string;
+    },
   ) =>
     // 同步 message 接口会一直等到整个 agent loop 结束，长任务必然撞上代理超时；
     // prompt_async 只负责接收消息，进度统一由全局 SSE 推送。
     request<void>("POST", `/session/${sessionID}/prompt_async`, { directory }, {
       parts,
+      ...(options?.messageID ? { messageID: options.messageID } : {}),
       ...(options?.model ? { model: options.model } : {}),
       ...(options?.agent ? { agent: options.agent } : {}),
       ...(options?.variant ? { variant: options.variant } : {}),
     }),
   abort: (directory: string, sessionID: string) =>
     request<boolean>("POST", `/session/${sessionID}/abort`, { directory }, {}),
+  revert: (directory: string, sessionID: string, messageID: string) =>
+    request<Session>("POST", `/session/${sessionID}/revert`, { directory }, { messageID }),
+  unrevert: (directory: string, sessionID: string) =>
+    request<Session>("POST", `/session/${sessionID}/unrevert`, { directory }, {}),
   /**
    * 隔离的单轮 Agent 问答：只读取当前会话历史，不写入会话消息，
    * 用于生成提交信息；结果通过全局 SSE 的 btw.* 事件流增量返回。

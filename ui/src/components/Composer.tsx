@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import type { Attachment, MentionRef } from "../types";
 import { api } from "../api";
-import { useApp } from "../store";
+import { revertedCount, useApp } from "../store";
 import { MAX_REFS, parseMentions } from "../mentions";
 import { onAppEvent } from "../appEvents";
 import { copyItem, revealItem, useContextMenu } from "../contextMenu";
@@ -14,10 +14,17 @@ import {
   clipboardImageToAttachment,
   pastedImageName,
 } from "../attachments";
+import {
+  previewQueuedMessage,
+  type PendingSteer,
+  type QueuedMessage,
+} from "../delivery";
 import { Icon } from "./Icon";
 
 /** 弹层最多展示多少条候选 */
 const MAX_MENTION_ITEMS = 8;
+const EMPTY_QUEUE: QueuedMessage[] = [];
+const EMPTY_STEERS: PendingSteer[] = [];
 
 /** 正在填写的 @ 引用：start/end 是它在文本里的范围（end 通常就是光标处） */
 type MentionDraft = { query: string; start: number; end: number };
@@ -65,11 +72,33 @@ function normalizePickerPath(path: string) {
 }
 
 export default function Composer() {
-  const send = useApp((s) => s.send);
   const stop = useApp((s) => s.stop);
   const streaming = useApp((s) => s.streaming);
+  const busySessions = useApp((s) => s.busySessions);
+  const stoppingSessions = useApp((s) => s.stoppingSessions);
   const directory = useApp((s) => s.directory);
   const sessionID = useApp((s) => s.sessionID);
+  const sessions = useApp((s) => s.sessions);
+  const queuedMessages = useApp((s) =>
+    s.sessionID ? s.queuedMessages[s.sessionID] : undefined,
+  );
+  const queuePaused = useApp((s) =>
+    s.sessionID ? s.queuePaused[s.sessionID] === true : false,
+  );
+  const queueSending = useApp((s) =>
+    s.sessionID ? s.queueSending[s.sessionID] === true : false,
+  );
+  const pendingSteers = useApp((s) =>
+    s.sessionID ? s.pendingSteers[s.sessionID] : undefined,
+  );
+  const submitMessage = useApp((s) => s.submitMessage);
+  const steerQueuedMessage = useApp((s) => s.steerQueuedMessage);
+  const removeQueuedMessage = useApp((s) => s.removeQueuedMessage);
+  const restoreQueuedMessage = useApp((s) => s.restoreQueuedMessage);
+  const retryQueuedMessage = useApp((s) => s.retryQueuedMessage);
+  const resumeDelivery = useApp((s) => s.resumeDelivery);
+  const retryPendingSteer = useApp((s) => s.retryPendingSteer);
+  const dismissPendingSteer = useApp((s) => s.dismissPendingSteer);
   const projects = useApp((s) => s.projects);
   const changeDraftWorkspace = useApp((s) => s.changeDraftWorkspace);
   const pickWorkspaceFolder = useApp((s) => s.pickWorkspaceFolder);
@@ -85,6 +114,8 @@ export default function Composer() {
   const loadModels = useApp((s) => s.loadModels);
   const selectModel = useApp((s) => s.selectModel);
   const showNotice = useApp((s) => s.showNotice);
+  const editing = useApp((s) => s.editing);
+  const cancelEditMessage = useApp((s) => s.cancelEditMessage);
   const messages = useApp((s) => s.messages);
   const [text, setText] = useState("");
   /** @ 引用：始终与 text 同步，见 applyText 的注释 */
@@ -99,6 +130,8 @@ export default function Composer() {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [workspacePicking, setWorkspacePicking] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [revertConfirm, setRevertConfirm] = useState(false);
+  const revertDeliveryRef = useRef<"queue" | "steer">("queue");
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -106,6 +139,8 @@ export default function Composer() {
   const clearFailedText = useApp((s) => s.clearFailedText);
   /** 上次发送的引用：失败恢复原文时用它把 chip 一起还回来 */
   const lastSentRefs = useRef<MentionRef[]>([]);
+  /** 上次发送的附件：失败恢复原文时一并还原 */
+  const lastSentAttachments = useRef<Attachment[]>([]);
   const [keyword, setKeyword] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const agentPickerRef = useRef<HTMLDivElement>(null);
@@ -120,6 +155,23 @@ export default function Composer() {
       models.filter((model) => !hiddenModelKeys.has(modelKey(model.providerID, model.id))),
     [hiddenModelKeys, models],
   );
+  const queue = queuedMessages ?? EMPTY_QUEUE;
+  const pending = pendingSteers ?? EMPTY_STEERS;
+  const stopping = Boolean(sessionID && stoppingSessions[sessionID]);
+  const busy = Boolean(
+    sessionID && (streaming || busySessions[sessionID] || stopping),
+  );
+  const pendingFailed = pending.some((item) => item.status === "failed");
+  const pendingPaused = pending.some((item) => item.status === "paused");
+  const editingActive = Boolean(editing && editing.sessionID === sessionID);
+  const activeSession = useMemo(
+    () =>
+      directory && sessionID
+        ? (sessions[directory] ?? []).find((item) => item.id === sessionID)
+        : undefined,
+    [directory, sessionID, sessions],
+  );
+  const revertCount = revertedCount(messages, activeSession?.revert);
 
   // 设备面板截图通过轻量事件总线附加到当前输入框；不把附件状态提升到全局，
   // 避免影响 Composer 现有的草稿、失败恢复和工作区切换逻辑。
@@ -176,7 +228,11 @@ export default function Composer() {
       const restored = lastSentRefs.current.filter((ref) => failedText.includes(ref.token));
       applyText(failedText, restored);
     }
+    if (attachments.length === 0 && lastSentAttachments.current.length > 0) {
+      setAttachments(lastSentAttachments.current);
+    }
     lastSentRefs.current = [];
+    lastSentAttachments.current = [];
     clearFailedText();
     // 只在失败文本变化时触发；text 取当前渲染值即可
   }, [failedText, clearFailedText]);
@@ -415,17 +471,61 @@ export default function Composer() {
       .slice(0, 60);
   }, [keyword, visibleModels]);
 
-  const submit = () => {
+  const performSubmit = (delivery: "queue" | "steer") => {
     const value = text.trim();
-    if ((!value && attachments.length === 0) || !directory || streaming) return;
+    if ((!value && attachments.length === 0) || !directory) return;
+    if (editingActive) {
+      showNotice("正在编辑历史消息，请先完成或取消编辑");
+      return;
+    }
     const files = attachments;
     // 位置按真正发出去的文本重算（trim 会挪动下标），保证 source.text 与 text part 对得上
     const mentioned = parseMentions(value);
+    if (!submitMessage(value, files, mentioned, delivery)) return;
     lastSentRefs.current = mentioned;
+    lastSentAttachments.current = files;
     applyText("", []);
     setAttachments([]);
     setMention(null);
-    void send(value, files, mentioned);
+  };
+
+  const submit = (delivery: "queue" | "steer") => {
+    const value = text.trim();
+    if ((!value && attachments.length === 0) || !directory) return;
+    if (editingActive) {
+      showNotice("正在编辑历史消息，请先完成或取消编辑");
+      return;
+    }
+    if (revertCount > 0) {
+      revertDeliveryRef.current = delivery;
+      setRevertConfirm(true);
+      return;
+    }
+    performSubmit(delivery);
+  };
+
+  useEffect(() => {
+    setRevertConfirm(false);
+  }, [sessionID, directory]);
+
+  useEffect(() => {
+    if (revertCount === 0 || editingActive) setRevertConfirm(false);
+  }, [revertCount, editingActive]);
+
+  const editQueued = (item: QueuedMessage) => {
+    if (text.trim() || attachments.length > 0 || refs.length > 0) {
+      showNotice("请先清空输入框，再编辑排队消息");
+      return;
+    }
+    const restored = restoreQueuedMessage(item.sessionID, item.id);
+    if (!restored) return;
+    applyText(restored.text, restored.refs);
+    setAttachments(restored.attachments);
+    requestAnimationFrame(() => {
+      const area = areaRef.current;
+      area?.focus();
+      area?.setSelectionRange(restored.text.length, restored.text.length);
+    });
   };
 
   /** 把一批附件并入当前列表，超出上限的部分丢弃并明确提示 */
@@ -530,6 +630,36 @@ export default function Composer() {
 
   return (
     <div className="composer">
+      {editingActive && (
+        <div className="composer-edit-banner">
+          <Icon name="pencil" size={14} />
+          <span>正在编辑历史消息；完成或取消后可继续发送。</span>
+          <button type="button" onClick={cancelEditMessage}>
+            取消编辑
+          </button>
+        </div>
+      )}
+      {!editingActive && revertConfirm && revertCount > 0 && (
+        <div className="composer-edit-banner composer-revert-banner">
+          <Icon name="undo" size={14} />
+          <span>
+            会话中还有 {revertCount} 条已回滚消息。继续发送会永久删除它们，工作区保持当前回滚状态。
+          </span>
+          <button type="button" onClick={() => setRevertConfirm(false)}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="composer-revert-send"
+            onClick={() => {
+              setRevertConfirm(false);
+              performSubmit(revertDeliveryRef.current);
+            }}
+          >
+            丢弃并发送
+          </button>
+        </div>
+      )}
       <div className="composer-box">
         <input
           ref={fileInputRef}
@@ -623,6 +753,151 @@ export default function Composer() {
               )}
             </div>
             <span className="composer-workspace-hint">发送后固定</span>
+          </div>
+        )}
+        {(queue.length > 0 || pending.length > 0) && (
+          <div className="queue-tray">
+            <div className="queue-tray-head">
+              <span className="queue-tray-title">
+                {queueSending
+                  ? "发送中…"
+                  : queue.length > 0
+                    ? `待发送 ${queue.length} 条`
+                    : "引导消息"}
+              </span>
+              {queuePaused && queue.length > 0 && (
+                <span className="queue-paused">已暂停</span>
+              )}
+              <span className="queue-shortcut">Enter 排队 · ⌘Enter 引导</span>
+              {queuePaused &&
+                queue.length > 0 &&
+                !pendingFailed &&
+                sessionID && (
+                  <button
+                    type="button"
+                    className="queue-head-btn"
+                    onClick={() => resumeDelivery(sessionID)}
+                  >
+                    继续发送
+                  </button>
+                )}
+            </div>
+            {pending.length > 0 && (
+              <div
+                className={`queue-steer-status${pendingFailed ? " failed" : ""}`}
+                role="status"
+              >
+                <Icon name="spark" size={12} />
+                <span>
+                  {pendingFailed
+                    ? "引导消息未送达"
+                    : pendingPaused
+                      ? "引导消息已暂停"
+                      : "引导消息等待下一步…"}
+                </span>
+                {sessionID && pendingFailed && (
+                  <button
+                    type="button"
+                    className="queue-head-btn"
+                    onClick={() => void retryPendingSteer(sessionID)}
+                  >
+                    重试
+                  </button>
+                )}
+                {sessionID && pendingPaused && !pendingFailed && (
+                  <button
+                    type="button"
+                    className="queue-head-btn"
+                    onClick={() => resumeDelivery(sessionID)}
+                  >
+                    继续
+                  </button>
+                )}
+                {sessionID && (pendingFailed || pendingPaused) && (
+                  <button
+                    type="button"
+                    className="queue-head-btn"
+                    onClick={() => dismissPendingSteer(sessionID)}
+                  >
+                    忽略
+                  </button>
+                )}
+              </div>
+            )}
+            {queue.map((item) => (
+              <div className={`queue-item ${item.status}`} key={item.id}>
+                <span className="queue-badge">
+                  {item.status === "sending"
+                    ? "发送中"
+                    : item.status === "failed"
+                      ? "失败"
+                      : "排队"}
+                </span>
+                <span
+                  className="queue-preview"
+                  title={item.text || previewQueuedMessage(item)}
+                >
+                  {previewQueuedMessage(item)}
+                </span>
+                <span className="queue-meta">
+                  {item.refs.length > 0 && (
+                    <span title={`引用 ${item.refs.length} 个文件`}>
+                      <Icon name="file" size={11} />
+                      {item.refs.length}
+                    </span>
+                  )}
+                  {item.attachments.length > 0 && (
+                    <span title={`附件 ${item.attachments.length} 个`}>
+                      <Icon name="paperclip" size={11} />
+                      {item.attachments.length}
+                    </span>
+                  )}
+                </span>
+                <span className="queue-actions">
+                  <button
+                    type="button"
+                    disabled={item.status === "sending" || stopping}
+                    onClick={() =>
+                      void steerQueuedMessage(item.sessionID, item.id)
+                    }
+                    title={busy ? "作为引导发送" : "立即发送"}
+                  >
+                    {busy ? "引导" : "发送"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={item.status === "sending" || stopping}
+                    onClick={() => editQueued(item)}
+                    title="编辑"
+                  >
+                    编辑
+                  </button>
+                  <button
+                    type="button"
+                    disabled={item.status === "sending"}
+                    onClick={() =>
+                      removeQueuedMessage(item.sessionID, item.id)
+                    }
+                    title="删除"
+                  >
+                    删除
+                  </button>
+                  {item.status === "failed" && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        retryQueuedMessage(item.sessionID, item.id)
+                      }
+                    >
+                      重试
+                    </button>
+                  )}
+                </span>
+                {item.status === "failed" && item.error && (
+                  <span className="queue-error">{item.error}</span>
+                )}
+              </div>
+            ))}
           </div>
         )}
         {refs.length > 0 && (
@@ -822,14 +1097,20 @@ export default function Composer() {
             }
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
-              submit();
+              submit(event.metaKey || event.ctrlKey ? "steer" : "queue");
             }
           }}
           onPaste={handlePaste}
           onBlur={() => setMention(null)}
           placeholder={
             directory
-              ? "发消息，@ 引用文件，可粘贴截图，Enter 发送"
+              ? editingActive
+                ? "正在编辑历史消息：完成或取消后可继续发送"
+                : busy
+                ? stopping
+                  ? "正在停止：新消息会加入排队"
+                  : "执行中：Enter 排队，⌘Enter 引导，可继续 @ 引用文件"
+                : "发消息，@ 引用文件，可粘贴截图，Enter 发送"
               : "请先在左侧选择工作区"
           }
           rows={2}
@@ -1046,18 +1327,60 @@ export default function Composer() {
                 )}
               </div>
             )}
-            {streaming ? (
-              <button type="button" className="stop-btn" onClick={() => void stop()}>
-                <Icon name="stop" size={12} />
-                停止
-              </button>
+            {busy ? (
+              <div className="composer-send-group">
+                <button
+                  type="button"
+                  className="send-btn"
+                  onClick={(event) =>
+                    submit(event.metaKey || event.ctrlKey ? "steer" : "queue")
+                  }
+                  disabled={
+                    (!text.trim() && attachments.length === 0) ||
+                    !directory ||
+                    editingActive
+                  }
+                  title={
+                    editingActive
+                      ? "请先完成或取消历史消息编辑"
+                      : revertCount > 0
+                        ? "发送前会确认是否丢弃回滚消息"
+                      : "排队发送（Enter）；引导发送（⌘Enter）"
+                  }
+                  aria-label="排队发送"
+                >
+                  <Icon name="arrow-up" size={18} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  className="stop-btn"
+                  onClick={() => void stop()}
+                  disabled={stopping}
+                  title="停止当前任务；排队消息会暂停保留"
+                >
+                  <Icon name="stop" size={12} />
+                  {stopping ? "停止中…" : "停止"}
+                </button>
+              </div>
             ) : (
               <button
                 type="button"
                 className="send-btn"
-                onClick={submit}
-                disabled={(!text.trim() && attachments.length === 0) || !directory}
-                title="发送（Enter）"
+                onClick={(event) =>
+                  submit(event.metaKey || event.ctrlKey ? "steer" : "queue")
+                }
+                disabled={
+                  (!text.trim() && attachments.length === 0) ||
+                  !directory ||
+                  editingActive
+                }
+                title={
+                  editingActive
+                    ? "请先完成或取消历史消息编辑"
+                    : revertCount > 0
+                      ? "发送前会确认是否丢弃回滚消息"
+                    : "发送（Enter）"
+                }
                 aria-label="发送"
               >
                 <Icon name="arrow-up" size={18} strokeWidth={2} />

@@ -119,6 +119,36 @@ graph LR
    输出经 `deveco://terminal` 事件交给 xterm，前端按键再由 Rust 写回同一条连接。
 8. 退出或崩溃时按进程组停止 serve；异常断开进入自愈状态机。
 
+前端在打开会话、后端恢复或收到 `session.idle`/`session.error` 后，会用
+`/session/status` 与消息快照校准执行态。空闲会话里残留的 `running`/`pending` 工具和未结束的
+`reasoning` 只在展示层标记为 `interrupted`，不回写 CLI 存储；外部 CLI 客户端仍可能看到原始
+`running` 记录。
+
+### 排队与引导
+
+排队和引导是桌面端的投递层，不改变 CLI 的会话存储：
+
+- 每个会话维护 FIFO 队列；执行中按 Enter 入队，`session.idle` 后只发送队首，发送成功才出队。
+- 引导消息发送时携带客户端生成的 `msg_` ULID，agent 回应后可通过 assistant `parentID`
+  判断是否被当前轮消费；若当前轮已结束，则发送一条可被界面隐藏的 synthetic 继续消息，
+  开启新一轮而不是重复写入用户消息。
+- 点“停止”只中止当前轮；有待发送内容时置 `queuePaused`，不自动再起一轮，用户恢复后继续。
+- CLI 0.2.5 虽然暴露 `/api/session/:id/prompt` 的 `delivery: steer|queue`，但 serve 的
+  v2 执行层未接通（`wait`/`compact` 返回 503，prompt 只产生 admitted 事件），本版不依赖它。
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Busy: 普通发送 / 发送引导
+  Busy --> Busy: Enter 入队
+  Busy --> Busy: ⌘Enter 发引导
+  Busy --> Idle: session.idle
+  Busy --> Paused: 停止（有队列）
+  Idle --> Busy: 队首发送 / 唤醒未消费引导
+  Paused --> Busy: 继续发送
+  Idle --> Idle: 队列已空
+```
+
 ## 后端自愈
 
 ```mermaid
@@ -158,19 +188,33 @@ stateDiagram-v2
    本次会话用 `/session/{id}/diff`；`/vcs` 的 `branch=null` 用于区分非 Git 工作区。
    文件状态徽标读取 `/vcs/status`，与 diff 来源相互独立。
 8. **归档是元数据操作。** 使用 `PATCH time.archived`，会话列表不会自动过滤，由前端处理。
-9. **消息统一走 `prompt_async`。** 同步 `/message` 会等待整个 Agent loop，长任务容易撞上
+9. **历史消息编辑必须走 `revert → prompt_async`。** `POST /session/{id}/revert` 先保存
+   回滚边界、还原工作区快照并返回 `session.revert`；下一次 prompt 的 cleanup 才会永久删除
+   该消息及其后内容。不要只逐条删除消息或只 PATCH text part，否则模型上下文和文件状态会
+   不一致。`prompt` 失败时要读取 `/session/{id}` 判断 revert 是否已清除，再决定 `unrevert`
+   或保留回滚态重试。
+10. **`Session.revert` 是可选权威字段。** CLI 在 unrevert/cleanup 后会直接省略该字段；
+    前端 upsert 会话时必须显式写回 `revert`（缺失即清空），否则旧边界会把新消息误判为
+    已回滚。`message.removed` / `message.part.removed` 事件用于同步 CLI 的 cleanup 或其他
+    客户端删除；编辑提交期间要保留目标消息的本地快照，忽略自身 cleanup 的 removed 事件。
+11. **消息统一走 `prompt_async`。** 同步 `/message` 会等待整个 Agent loop，长任务容易撞上
    代理超时；进度依赖 `/global/event`。
-10. **工作区文件引用使用 `file://` file part。** 由 CLI 自己读盘并合成 Read 调用，
+12. **工作区文件引用使用 `file://` file part。** 由 CLI 自己读盘并合成 Read 调用，
     客户端不内联文件内容；附件仍使用 data URL。
-11. **权限事件兼容 v1/v2 字段。** 至少兼容 `permission.asked/replied` 与
+13. **权限事件兼容 v1/v2 字段。** 至少兼容 `permission.asked/replied` 与
     `permission.v2.asked/replied`，未知事件忽略。
-12. **内嵌 skill 不能改写 CLI 配置。** 设备 skill 只写入 CLI 的 `skills/<name>/SKILL.md`，
+14. **内嵌 skill 不能改写 CLI 配置。** 设备 skill 只写入 CLI 的 `skills/<name>/SKILL.md`，
     用 `.deveco-desktop-managed` 标记所有权；不修改 `deveco.jsonc`，不覆盖无标记同名目录。
     CLI 只在启动时扫描 skill，复用已有 serve 实例时不会热加载。
-13. **PTY 连接不能交给 WebView。** `/pty/{id}/connect-token` 要求内部请求头，返回的一次性
+15. **PTY 连接不能交给 WebView。** `/pty/{id}/connect-token` 要求内部请求头，返回的一次性
     ticket 只用于 Rust 侧建立 WebSocket；输出是字符串帧，首帧可能是 `0x00 + {"cursor":...}`
     的二进制控制帧，xterm 只接收普通输出。关闭面板时先断开连接，再调用 `DELETE /pty/{id}`
     回收 shell。
+16. **排队/引导走 v1 客户端投递。** 忙时由前端按会话 FIFO 排队，`session.idle` 后逐条
+    `prompt_async`；引导消息带客户端 `messageID`，用 assistant `parentID` 对账，错过当轮时
+    发送 synthetic 继续消息。不要改用 `/api/session/:id/prompt` 的 `delivery`，
+    CLI 0.2.5 的 serve 尚未接通 v2 执行层。客户端 `messageID` 必须是 ULID 形状的
+    `msg_` + 26 位 Crockford 字符；非 ULID 值仍返回 204，但消息会静默不落库。
 
 ## 数据与配置
 

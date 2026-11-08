@@ -1,6 +1,16 @@
 import { create } from "zustand";
 import { api } from "./api";
 import {
+  MAX_QUEUE_ATTACHMENT_BYTES,
+  MAX_QUEUE_ITEMS,
+  newQueueItemID,
+  queueAttachmentBytes,
+  type PendingSteer,
+  type PromptSelection,
+  type QueuedMessage,
+  type SteerDelivery,
+} from "./delivery";
+import {
   classifyPreview,
   mimeForPath,
   quickLookFirst,
@@ -13,6 +23,7 @@ import {
   sortFileNodes,
 } from "./fileTree";
 import { absoluteWorkspacePath } from "./paths";
+import { matchMentionFiles, parseMentions } from "./mentions";
 import type {
   AgentInfo,
   Attachment,
@@ -33,7 +44,13 @@ import type {
   TodoItem,
   VcsFileStatus,
 } from "./types";
-import { buildSubagentTasks, normalizeTodos } from "./tasks";
+import { newMessageID } from "./ids";
+import {
+  buildSubagentTasks,
+  isBusyStatus,
+  markInterruptedMessages,
+  normalizeTodos,
+} from "./tasks";
 import {
   highestModelVariant,
   isModelAvailable,
@@ -44,6 +61,31 @@ import {
 
 export type RightTab = "changes" | "files" | "device" | "tasks";
 export type ChangeSource = "workspace" | "session";
+export type MessageEditPhase = "idle" | "reverting" | "reverted" | "prompting";
+
+export interface MessageEditModel {
+  providerID: string;
+  modelID: string;
+  variant?: string;
+}
+
+/** 编辑期间保存完整的初始草稿，避免消息快照刷新导致编辑器卸载或丢附件。 */
+export interface MessageEditTarget {
+  sessionID: string;
+  messageID: string;
+  text: string;
+  uploads: Part[];
+  agent?: string;
+  model?: MessageEditModel;
+}
+
+export interface EditedMessageInput {
+  messageID: string;
+  text: string;
+  uploads: Part[];
+  agent?: string;
+  model?: MessageEditModel;
+}
 
 /** 没有当前会话时视觉上回退到工作区，但保留用户上次的来源偏好。 */
 export function resolvedChangeSource(
@@ -61,6 +103,7 @@ const REMOVED_WORKSPACES = "deveco.desktop.removedWorkspaces";
 const WORKSPACE_ORDER = "deveco.desktop.workspaceOrder";
 const SESSION_SORT = "deveco.desktop.sessionSort";
 const SESSION_PREVIEW = "deveco.desktop.sessionPreview";
+const UNREAD_SESSIONS = "deveco.desktop.unreadSessions";
 const SIDEBAR_OPEN = "deveco.desktop.sidebarOpen";
 const RIGHT_WIDTH = "deveco.desktop.rightWidth";
 const TERMINAL_OPEN = "deveco.desktop.terminalOpen";
@@ -186,6 +229,186 @@ function hasRunningAgent(state: Pick<AppState, "streaming" | "sessionStatuses">)
   );
 }
 
+const stopTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const deliveryReconciling = new Set<string>();
+const idleDuringSend = new Set<string>();
+/** 引导消息从 prompt_async 返回到异步落库之间的观察窗口。 */
+const STEER_PERSIST_GRACE_MS = 1500;
+/** 等待引导消息落库后再重新对账，避免与仍在途的 prompt 重复执行。 */
+const steerWakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** 当前会话是否正在执行；排队/引导的判断都走这一个口径。 */
+function isSessionBusy(
+  state: Pick<AppState, "sessionID" | "streaming" | "busySessions" | "stoppingSessions">,
+  sessionID: string | null,
+): boolean {
+  if (!sessionID) return false;
+  return (
+    state.busySessions[sessionID] === true ||
+    state.stoppingSessions[sessionID] === true ||
+    (state.sessionID === sessionID && state.streaming)
+  );
+}
+
+/** 新发出的引导可能还没落库；等过观察窗口再唤醒，避免并发起第二轮。 */
+function scheduleSteerRecheck(sessionID: string, pending: PendingSteer[]): void {
+  const newest = pending.reduce(
+    (latest, item) => Math.max(latest, item.createdAt),
+    0,
+  );
+  const delay = Math.max(
+    200,
+    STEER_PERSIST_GRACE_MS - (Date.now() - newest) + 100,
+  );
+  const existing = steerWakeTimers.get(sessionID);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    steerWakeTimers.delete(sessionID);
+    const state = useApp.getState();
+    if ((state.pendingSteers[sessionID]?.length ?? 0) === 0) return;
+    if (isSessionBusy(state, sessionID)) return;
+    void state.handleDeliveryIdle(sessionID);
+  }, delay);
+  steerWakeTimers.set(sessionID, timer);
+}
+
+function currentSelection(
+  state: Pick<AppState, "selectedModel" | "selectedAgent" | "selectedVariant">,
+): PromptSelection {
+  return {
+    model: state.selectedModel,
+    agent: state.selectedAgent,
+    variant: state.selectedVariant,
+  };
+}
+
+function messageText(parts: Part[]): string {
+  return parts
+    .filter((part) => part.type === "text" && !part.synthetic)
+    .map((part) => part.text ?? "")
+    .join("\n");
+}
+
+function messageModel(info: Message["info"]): MessageEditModel | undefined {
+  const nested = info.model;
+  if (nested?.providerID && nested.modelID) {
+    return {
+      providerID: nested.providerID,
+      modelID: nested.modelID,
+      ...(nested.variant ? { variant: nested.variant } : {}),
+    };
+  }
+  if (info.providerID && info.modelID) {
+    return {
+      providerID: info.providerID,
+      modelID: info.modelID,
+      ...(info.variant ? { variant: info.variant } : {}),
+    };
+  }
+  return undefined;
+}
+
+/** 返回不可编辑的原因；null 表示可以编辑。 */
+export function messageEditProblem(message: Message): string | null {
+  if (message.info.role !== "user") return "只有用户消息可以编辑";
+  const parts = message.parts.filter((part) => !part.synthetic);
+  if (
+    parts.some((part) => part.type !== "text" && part.type !== "file")
+  ) {
+    return "这条消息包含内联命令，暂不支持编辑";
+  }
+  if (!messageText(message.parts).trim() && !parts.some((part) => part.type === "file")) {
+    return "这条消息没有可编辑内容";
+  }
+  return null;
+}
+
+function editSeed(message: Message, sessionID: string): MessageEditTarget {
+  const text = messageText(message.parts);
+  const files = message.parts.filter((part) => part.type === "file" && !part.synthetic);
+  const used = matchMentionFiles(text, files).used;
+  const seed: MessageEditTarget = {
+    sessionID,
+    messageID: message.info.id,
+    text,
+    uploads: files.filter((part) => !used.has(part.id)),
+  };
+  if (message.info.agent) seed.agent = message.info.agent;
+  const model = messageModel(message.info);
+  if (model) seed.model = model;
+  return seed;
+}
+
+function messageIndex(messages: Message[], messageID: string): number {
+  return messages.findIndex((message) => message.info.id === messageID);
+}
+
+/** 截断时按 ID 删除旧后缀，而不是按长度切片；prompt 期间可能已有新消息通过 SSE 到达。 */
+function messageSuffixIDs(
+  messages: Message[],
+  messageID: string,
+): Set<string> {
+  const index = messageIndex(messages, messageID);
+  return new Set(
+    index === -1
+      ? []
+      : messages.slice(index).map((message) => message.info.id),
+  );
+}
+
+function isAtOrAfterMessage(
+  messages: Message[],
+  messageID: string,
+  boundaryID: string,
+): boolean {
+  const index = messageIndex(messages, messageID);
+  const boundary = messageIndex(messages, boundaryID);
+  return index !== -1 && boundary !== -1 && index >= boundary;
+}
+
+export function revertedCount(
+  messages: Message[],
+  revert: Session["revert"],
+): number {
+  if (!revert?.messageID) return 0;
+  const index = messageIndex(messages, revert.messageID);
+  return index === -1 ? 0 : messages.length - index;
+}
+
+function editFailureMessage(error: unknown, suffix = ""): string {
+  const text = error instanceof Error ? error.message : String(error);
+  if (/SessionBusy|busy/i.test(text)) {
+    return "当前会话正在执行，请先停止回复再编辑";
+  }
+  if (/NotFound|404/i.test(text)) {
+    return "消息或会话已不存在，已刷新列表";
+  }
+  return `重新发送失败：${text}${suffix}`;
+}
+
+function hasPausedPendingSteers(
+  state: Pick<AppState, "pendingSteers">,
+  sessionID: string,
+): boolean {
+  return (state.pendingSteers[sessionID] ?? []).some(
+    (item) => item.status === "paused" || item.status === "failed",
+  );
+}
+
+/** 用一次状态快照重算某工作区的侧栏执行指示，避免旧会话残留转圈。 */
+function mergeBusySessions(
+  current: Record<string, boolean>,
+  sessions: Session[],
+  statuses: Record<string, SessionStatus>,
+) {
+  const next = { ...current };
+  for (const session of sessions) delete next[session.id];
+  for (const [id, status] of Object.entries(statuses)) {
+    if (isBusyStatus(status)) next[id] = true;
+  }
+  return next;
+}
+
 function normalizeWorkspace(path: string) {
   const trimmed = path.trim();
   return trimmed === "/" ? trimmed : trimmed.replace(/\/+$/, "");
@@ -242,6 +465,26 @@ function readSessionPreview(): SessionPreview {
   if (value === "all") return "all";
   const count = Number(value);
   return count === 10 || count === 20 ? count : 5;
+}
+
+function readUnreadSessions(): Record<string, boolean> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(UNREAD_SESSIONS) ?? "[]");
+    if (!Array.isArray(parsed)) return {};
+    const result: Record<string, boolean> = {};
+    for (const value of parsed) {
+      if (typeof value === "string" && value) result[value] = true;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function rememberUnreadSessions(sessions: Record<string, boolean>) {
+  const ids = Object.keys(sessions).filter((id) => sessions[id]);
+  if (ids.length === 0) localStorage.removeItem(UNREAD_SESSIONS);
+  else localStorage.setItem(UNREAD_SESSIONS, JSON.stringify(ids));
 }
 
 function readRightTabOrder(): RightTab[] {
@@ -433,7 +676,9 @@ function upsertSession(list: Session[], session: Session): Session[] {
   const index = list.findIndex((item) => item.id === session.id);
   if (index === -1) return [session, ...list];
   const next = list.slice();
-  next[index] = { ...next[index], ...session };
+  // revert 是可选字段：CLI 在 unrevert/cleanup 后直接省略它。
+  // 若仍按普通 spread 合并，旧边界会永久残留并把新消息误判为已回滚。
+  next[index] = { ...next[index], ...session, revert: session.revert };
   return next;
 }
 
@@ -524,6 +769,8 @@ function emptyConversationPatch() {
     findOpen: false,
     findQuery: "",
     findIndex: 0,
+    editing: null,
+    editPhase: "idle" as MessageEditPhase,
   };
 }
 
@@ -572,6 +819,28 @@ export interface AppState {
   childMessages: Record<string, Message[]>;
   childTodos: Record<string, TodoItem[]>;
   sessionStatuses: Record<string, SessionStatus>;
+  /** 所有工作区里正在执行的会话（跨目录），仅用于侧栏标题前的加载指示 */
+  busySessions: Record<string, boolean>;
+  /** 执行已结束、但用户还没打开查看的会话（跨目录），侧栏标题前显示未读圆点 */
+  unreadSessions: Record<string, boolean>;
+  /** 每个会话待发送的消息，按 FIFO 保存；只在内存中，不跨应用重启 */
+  queuedMessages: Record<string, QueuedMessage[]>;
+  /** 停止当前轮后暂停自动发送，保留队列 */
+  queuePaused: Record<string, boolean>;
+  /** 正在把某条排队消息交给 CLI，避免 idle 重复触发 */
+  queueSending: Record<string, boolean>;
+  /** 已发送但还没有被当前轮消费的引导消息 */
+  pendingSteers: Record<string, PendingSteer[]>;
+  /** 引导消息 ID，用于在对话流里显示“引导”标记 */
+  steerMessageIDs: Record<string, string[]>;
+  /** 正在停止的会话；停止确认前仍按忙碌处理 */
+  stoppingSessions: Record<string, boolean>;
+  /** 首条消息正在创建会话，阻止并发创建第二个会话 */
+  creatingSession: boolean;
+  /** 正在内联编辑的历史用户消息；为空表示不在编辑态 */
+  editing: MessageEditTarget | null;
+  /** 编辑提交阶段：idle → reverting → reverted → prompting */
+  editPhase: MessageEditPhase;
   selectedTaskID: string | null;
   tasksLoading: boolean;
   streaming: boolean;
@@ -659,6 +928,41 @@ export interface AppState {
   pickWorkspaceFolder(): Promise<void>;
   /** refs 是 Composer 里 @ 引用的工作区文件；不传时行为与之前完全一致 */
   send(text: string, attachments?: Attachment[], refs?: MentionRef[]): Promise<void>;
+  beginEditMessage(messageID: string): void;
+  cancelEditMessage(): void;
+  /** 先 revert 再 prompt，成功后本地截断；失败时按 CLI 状态回滚或保留可重试状态 */
+  resendEditedMessage(input: EditedMessageInput): Promise<void>;
+  /** 恢复外部 revert 留下的回滚消息与文件 */
+  restoreRevertedMessages(): Promise<void>;
+  /** 根据当前忙碌状态决定排队或引导；返回 false 表示草稿不应被清空 */
+  submitMessage(
+    text: string,
+    attachments: Attachment[] | undefined,
+    refs: MentionRef[] | undefined,
+    delivery: "queue" | "steer",
+  ): boolean;
+  enqueueMessage(text: string, attachments?: Attachment[], refs?: MentionRef[]): boolean;
+  steerMessage(text: string, attachments?: Attachment[], refs?: MentionRef[]): Promise<void>;
+  /** 内部：真正发送一条引导消息，供输入框和队列共用 */
+  deliverSteer(input: SteerDelivery): Promise<boolean>;
+  steerQueuedMessage(sessionID: string, itemID: string): Promise<void>;
+  removeQueuedMessage(sessionID: string, itemID: string): void;
+  restoreQueuedMessage(sessionID: string, itemID: string): QueuedMessage | null;
+  retryQueuedMessage(sessionID: string, itemID: string): void;
+  resumeDelivery(sessionID: string): void;
+  retryPendingSteer(sessionID: string, messageID?: string): Promise<void>;
+  dismissPendingSteer(sessionID: string, messageID?: string): void;
+  drainQueue(sessionID: string): Promise<void>;
+  handleDeliveryIdle(sessionID: string): Promise<void>;
+  handleDeliveryError(sessionID: string): void;
+  reconcilePendingSteers(
+    sessionID: string,
+  ): Promise<{ remaining: number; failed: number }>;
+  wakePendingSteers(sessionID: string): Promise<boolean>;
+  supersedePendingSteers(sessionID: string): void;
+  clearSessionDelivery(sessionID: string): void;
+  finishStopping(sessionID: string): void;
+  resumeAllDelivery(): Promise<void>;
   stop(): Promise<void>;
   replyPermission(id: string, reply: "once" | "always" | "reject"): Promise<void>;
   onSse(raw: string): void;
@@ -691,6 +995,8 @@ export interface AppState {
   runSearch(query: string): Promise<void>;
   openSessionIn(directory: string, id: string): Promise<void>;
   toggleProject(directory: string): Promise<void>;
+  /** 读取某工作区所有会话的执行状态，补齐侧栏加载指示（不依赖用户先打开会话） */
+  refreshBusySessions(directory: string): Promise<void>;
   loadModels(force?: boolean): Promise<void>;
   setModelVisible(model: { providerID: string; modelID: string }, visible: boolean): void;
   loadMeta(): Promise<void>;
@@ -758,6 +1064,17 @@ export const useApp = create<AppState>()((set, get) => ({
   childMessages: {},
   childTodos: {},
   sessionStatuses: {},
+  busySessions: {},
+  unreadSessions: readUnreadSessions(),
+  queuedMessages: {},
+  queuePaused: {},
+  queueSending: {},
+  pendingSteers: {},
+  steerMessageIDs: {},
+  stoppingSessions: {},
+  creatingSession: false,
+  editing: null,
+  editPhase: "idle",
   selectedTaskID: null,
   tasksLoading: false,
   streaming: false,
@@ -964,6 +1281,8 @@ export const useApp = create<AppState>()((set, get) => ({
         expanded: { ...get().expanded, [directory]: true },
         sessionID: null,
         messages: [],
+        editing: null,
+        editPhase: "idle",
         permissions: [],
         todos: [],
         sessionChildren: [],
@@ -999,6 +1318,8 @@ export const useApp = create<AppState>()((set, get) => ({
         loadedDirs: { ...get().loadedDirs, [directory]: true },
         error: null,
       });
+      // 启动/切换工作区时补一次执行状态，已在跑的会话不必等下一次事件才显示
+      void get().refreshBusySessions(directory);
       stopPermissionWatch();
       const permissions = await api.permissions(directory, timeout).catch(() => []);
       set({ permissions });
@@ -1023,7 +1344,9 @@ export const useApp = create<AppState>()((set, get) => ({
 
   async openSessionIn(directory, id) {
     if (get().directory !== directory) {
-      await get().selectProject(directory);
+      // 直接打开目标会话，避免 selectProject 先自动打开最近会话、
+      // 把另一个还没看的会话误标为已读。
+      await get().selectProject(directory, { openRecent: false });
     }
     await get().openSession(id);
   },
@@ -1034,6 +1357,13 @@ export const useApp = create<AppState>()((set, get) => ({
     const timeout = patient ? BOOT_LOAD_TIMEOUT_MS : undefined;
     const directory = get().directory;
     if (!directory) return;
+    // 打开会话即视为已读：清掉侧栏的未读圆点。
+    if (get().unreadSessions[id]) {
+      const unreadSessions = { ...get().unreadSessions };
+      delete unreadSessions[id];
+      rememberUnreadSessions(unreadSessions);
+      set({ unreadSessions });
+    }
     localStorage.setItem(`${LAST_SESSION}.${directory}`, id);
     if (!retry) stopPermissionWatch();
     if (retry && get().sessionID === id) {
@@ -1052,6 +1382,8 @@ export const useApp = create<AppState>()((set, get) => ({
         selectedTaskID: null,
         tasksLoading: true,
         streaming: false,
+        editing: null,
+        editPhase: "idle",
         sessionDiff: [],
         diffPath: null,
         overviewGit: null,
@@ -1067,11 +1399,51 @@ export const useApp = create<AppState>()((set, get) => ({
       });
     }
     try {
-      const messages = await api.messages(directory, id, timeout);
+      const [messages, statuses, detail] = await Promise.all([
+        api.messages(directory, id, timeout),
+        api.sessionStatus(directory, timeout).catch(() => null),
+        api.session(directory, id, timeout).catch(() => null),
+      ]);
       // 打开会话期间可能已经有事件到达，合并而不是覆盖
       const merged = mergeMessages(messages, get().messages);
+      // 进程被异常结束时 CLI 不会补写工具终态；以 /session/status 为准校正展示。
+      const active = statuses
+        ? isBusyStatus(statuses[id])
+        : get().busySessions[id] === true || get().streaming;
       stopPermissionWatch();
-      set({ messages: merged, error: null });
+      set({
+        messages: markInterruptedMessages(merged, active),
+        streaming: active,
+        error: null,
+        ...(detail
+          ? {
+              sessions: {
+                ...get().sessions,
+                [directory]: upsertSession(
+                  get().sessions[directory] ?? [],
+                  detail,
+                ),
+              },
+            }
+          : {}),
+        ...(statuses
+          ? {
+              sessionStatuses: statuses,
+              busySessions: mergeBusySessions(
+                get().busySessions,
+                get().sessions[directory] ?? [],
+                statuses,
+              ),
+            }
+          : {}),
+      });
+      if (
+        !isSessionBusy(get(), id) &&
+        ((get().queuedMessages[id]?.length ?? 0) > 0 ||
+          (get().pendingSteers[id]?.length ?? 0) > 0)
+      ) {
+        void get().handleDeliveryIdle(id);
+      }
       void get().refreshTasks();
       if (get().overviewOpen) void get().refreshOverview();
       if (get().rightOpen && get().rightTab === "changes") {
@@ -1177,6 +1549,16 @@ export const useApp = create<AppState>()((set, get) => ({
     const loadedDirs = { ...state.loadedDirs };
     const searchResults = { ...state.searchResults };
     const expanded = { ...state.expanded };
+    const deliveryIds = new Set<string>([
+      ...(state.sessions[target] ?? []).map((session) => session.id),
+      ...Object.entries(state.queuedMessages)
+        .filter(([, items]) => items[0]?.directory === target)
+        .map(([id]) => id),
+      ...Object.entries(state.pendingSteers)
+        .filter(([, items]) => items[0]?.directory === target)
+        .map(([id]) => id),
+    ]);
+    for (const id of deliveryIds) get().clearSessionDelivery(id);
     delete sessions[target];
     delete loadedDirs[target];
     delete searchResults[target];
@@ -1251,11 +1633,16 @@ export const useApp = create<AppState>()((set, get) => ({
   },
 
   async send(text, attachments, refs) {
+    if (get().editing) {
+      get().showNotice("正在编辑历史消息，请先完成或取消编辑");
+      return;
+    }
     const directory = get().directory;
     const files = attachments ?? [];
     const mentions = refs ?? [];
     if (!directory || (!text.trim() && files.length === 0 && mentions.length === 0)) return;
     let sessionID = get().sessionID;
+    if (!sessionID) set({ creatingSession: true });
     try {
       if (!sessionID) {
         const session = await api.createSession(directory);
@@ -1271,35 +1658,1194 @@ export const useApp = create<AppState>()((set, get) => ({
           childTodos: {},
           sessionStatuses: {},
           selectedTaskID: null,
+          creatingSession: false,
         });
         void get().refreshTasks();
       }
-      set({ streaming: true, error: null });
-      const { selectedModel: model, selectedAgent, selectedVariant } = get();
-      const parts: Array<Record<string, unknown>> = [];
-      if (text.trim()) parts.push({ type: "text", text });
-      // @ 引用：文本里已经保留 @path，这里再补 file part（file:// 绝对路径），
-      // 由 serve 自己读盘并合成 Read 调用，模型才能看到文件内容
-      for (const ref of mentions) parts.push(buildMentionPart(directory, ref));
-      for (const file of files) {
-        parts.push({ type: "file", mime: file.mime, url: file.url, filename: file.name });
+      // 手动开启新一轮时，之前暂停的引导会随新消息一起进入模型上下文，
+      // 不再单独唤醒；否则同一段内容会被处理两次。
+      if (
+        sessionID &&
+        !isSessionBusy(get(), sessionID) &&
+        (get().pendingSteers[sessionID]?.length ?? 0) > 0
+      ) {
+        get().supersedePendingSteers(sessionID);
       }
+      const active = (get().sessions[directory] ?? []).find(
+        (item) => item.id === sessionID,
+      );
+      const revertSuffix =
+        active?.revert?.messageID
+          ? messageSuffixIDs(get().messages, active.revert.messageID)
+          : null;
+      set({ streaming: true, error: null });
+      const selection = currentSelection(get());
+      const parts = buildPromptParts(directory, text, mentions, files);
       await api.prompt(directory, sessionID, parts, {
-        ...(model ? { model } : {}),
-        agent: selectedAgent,
-        ...(selectedVariant ? { variant: selectedVariant } : {}),
+        ...(selection.model ? { model: selection.model } : {}),
+        agent: selection.agent,
+        ...(selection.variant ? { variant: selection.variant } : {}),
       });
+      if (revertSuffix && revertSuffix.size > 0) {
+        const current = get();
+        const list = current.sessions[directory] ?? [];
+        const session = list.find((item) => item.id === sessionID);
+        const nextMessages = current.messages.filter(
+          (message) => !revertSuffix.has(message.info.id),
+        );
+        const steerMessageIDs = {
+          ...current.steerMessageIDs,
+          [sessionID]: (current.steerMessageIDs[sessionID] ?? []).filter((id) =>
+            nextMessages.some((message) => message.info.id === id),
+          ),
+        };
+        if (steerMessageIDs[sessionID].length === 0) {
+          delete steerMessageIDs[sessionID];
+        }
+        set({
+          messages: nextMessages,
+          steerMessageIDs,
+          ...(session
+            ? {
+                sessions: {
+                  ...current.sessions,
+                  [directory]: upsertSession(list, { ...session, revert: undefined }),
+                },
+              }
+            : {}),
+        });
+        void (async () => {
+          const detail = await api.session(directory, sessionID).catch(() => null);
+          if (!detail) return;
+          const latest = get();
+          set({
+            sessions: {
+              ...latest.sessions,
+              [directory]: upsertSession(latest.sessions[directory] ?? [], detail),
+            },
+          });
+        })();
+      }
     } catch (error) {
       // 失败的原文还回输入框，用户不用重新打一遍
-      set({ streaming: false, error: `发送失败：${String(error)}`, failedText: text });
+      set({
+        creatingSession: false,
+        streaming: false,
+        error: `发送失败：${String(error)}`,
+        failedText: text,
+      });
+      // revert 下的普通发送可能已经触发 cleanup 后又失败；重读一次，
+      // 避免本地为了显示编辑器保留的旧后缀在 revert 清除后重新出现。
+      if (sessionID) {
+        void (async () => {
+          const [detail, messages] = await Promise.all([
+            api.session(directory, sessionID).catch(() => null),
+            api.messages(directory, sessionID).catch(() => null),
+          ]);
+          if (get().directory !== directory || get().sessionID !== sessionID) {
+            return;
+          }
+          const list = get().sessions[directory] ?? [];
+          set({
+            ...(detail
+              ? {
+                  sessions: {
+                    ...get().sessions,
+                    [directory]: upsertSession(list, detail),
+                  },
+                }
+              : {}),
+            ...(messages ? { messages } : {}),
+          });
+        })();
+      }
+    }
+  },
+
+  beginEditMessage(messageID) {
+    const state = get();
+    const { directory, sessionID } = state;
+    if (!directory || !sessionID) return;
+    const message = state.messages.find((item) => item.info.id === messageID);
+    if (!message) {
+      get().showNotice("消息已不存在，请刷新后重试");
+      return;
+    }
+    const problem = messageEditProblem(message);
+    if (problem) {
+      get().showNotice(problem);
+      return;
+    }
+    if (isSessionBusy(state, sessionID)) {
+      get().showNotice("当前会话正在执行，请先停止回复再编辑");
+      return;
+    }
+    if (
+      (state.queuedMessages[sessionID]?.length ?? 0) > 0 ||
+      (state.pendingSteers[sessionID]?.length ?? 0) > 0
+    ) {
+      get().showNotice("请先处理排队或待确认的消息，再编辑历史消息");
+      return;
+    }
+    set({
+      editing: editSeed(message, sessionID),
+      editPhase: "idle",
+      findOpen: false,
+      findQuery: "",
+      findIndex: 0,
+    });
+  },
+
+  cancelEditMessage() {
+    const editing = get().editing;
+    const phase = get().editPhase;
+    if (!editing) return;
+    if (phase === "reverting" || phase === "prompting") {
+      get().showNotice("正在重新发送，请稍候");
+      return;
+    }
+    const directory = get().directory;
+    set({ editing: null, editPhase: "idle" });
+    if (phase !== "reverted" || !directory) return;
+    // 取消可能发生在 cleanup 已经删除旧消息之后；以服务器快照为准刷新，
+    // 避免本地为了保持编辑器而保留的旧后缀继续显示。
+    void (async () => {
+      const [detail, messages] = await Promise.all([
+        api.session(directory, editing.sessionID).catch(() => null),
+        api.messages(directory, editing.sessionID).catch(() => null),
+      ]);
+      if (
+        get().directory !== directory ||
+        get().sessionID !== editing.sessionID
+      ) {
+        return;
+      }
+      const list = get().sessions[directory] ?? [];
+      set({
+        ...(detail
+          ? { sessions: { ...get().sessions, [directory]: upsertSession(list, detail) } }
+          : {}),
+        ...(messages ? { messages } : {}),
+      });
+      void get().refreshTasks();
+      if (get().rightOpen) void refreshPanel(get, set);
+      void get().refreshFileStatuses();
+    })();
+  },
+
+  async resendEditedMessage(input) {
+    const state = get();
+    const editing = state.editing;
+    const directory = state.directory;
+    const sessionID = state.sessionID;
+    if (
+      !editing ||
+      !directory ||
+      !sessionID ||
+      editing.sessionID !== sessionID ||
+      editing.messageID !== input.messageID
+    ) {
+      throw new Error("编辑状态已失效，请重新打开消息");
+    }
+    if (state.editPhase === "reverting" || state.editPhase === "prompting") {
+      throw new Error("正在重新发送，请稍候");
+    }
+    if (isSessionBusy(state, sessionID)) {
+      throw new Error("当前会话正在执行，请先停止回复再编辑");
+    }
+    if (
+      (state.queuedMessages[sessionID]?.length ?? 0) > 0 ||
+      (state.pendingSteers[sessionID]?.length ?? 0) > 0
+    ) {
+      throw new Error("请先处理排队或待确认的消息，再重新发送");
+    }
+
+    const parts = buildEditedPromptParts(directory, input.text, input.uploads);
+    if (parts.length === 0) {
+      throw new Error("消息内容不能为空");
+    }
+    const suffixIDs = messageSuffixIDs(state.messages, input.messageID);
+    if (
+      state.editPhase === "idle" &&
+      messageIndex(state.messages, input.messageID) === -1
+    ) {
+      set({ editing: null, editPhase: "idle" });
+      throw new Error("消息已不存在，已刷新列表");
+    }
+
+    const model = input.model ?? state.selectedModel ?? undefined;
+    const agent = input.agent ?? state.selectedAgent;
+    const variant =
+      input.model?.variant ??
+      (input.model ? undefined : state.selectedVariant ?? undefined);
+    // 消息编辑是长请求；切换会话/工作区后编辑状态会被重置，迟到的结果
+    // 只能回写目标目录的会话表，不能再改当前界面的消息或运行态。
+    const editTarget = editing;
+    const sameSession = () => {
+      const current = get();
+      return current.directory === directory && current.sessionID === sessionID;
+    };
+    const stillEditing = () => {
+      const current = get();
+      return sameSession() && current.editing === editTarget;
+    };
+
+    if (state.editPhase === "idle") {
+      set({ editPhase: "reverting", error: null });
+      try {
+        const session = await api.revert(directory, sessionID, input.messageID);
+        const current = get();
+        const sessions = {
+          ...current.sessions,
+          [directory]: upsertSession(current.sessions[directory] ?? [], session),
+        };
+        if (stillEditing()) set({ editPhase: "reverted", sessions });
+        else set({ sessions });
+      } catch (error) {
+        if (stillEditing()) set({ editPhase: "idle" });
+        throw new Error(editFailureMessage(error));
+      }
+    }
+
+    if (stillEditing()) set({ editPhase: "prompting", error: null });
+    try {
+      await api.prompt(directory, sessionID, parts, {
+        ...(model
+          ? { model: { providerID: model.providerID, modelID: model.modelID } }
+          : {}),
+        agent,
+        ...(variant ? { variant } : {}),
+      });
+    } catch (error) {
+      // prompt 失败时 cleanup 可能已经执行：先尝试 unrevert，再用服务器消息
+      // 判断旧消息是否真的恢复，避免误报“已恢复”。
+      let unrevertError: unknown = null;
+      await api.unrevert(directory, sessionID).catch((rollback) => {
+        unrevertError = rollback;
+      });
+      const [detail, serverMessages] = await Promise.all([
+        api.session(directory, sessionID).catch(() => null),
+        api.messages(directory, sessionID).catch(() => null),
+      ]);
+      const current = get();
+      const list = current.sessions[directory] ?? [];
+      const targetRestored =
+        serverMessages?.some((message) => message.info.id === input.messageID) ??
+        false;
+      if (detail) {
+        set({
+          sessions: {
+            ...current.sessions,
+            [directory]: upsertSession(list, detail),
+          },
+        });
+      }
+      if (targetRestored && serverMessages) {
+        if (stillEditing()) {
+          set({
+            messages: serverMessages,
+            editPhase: "idle",
+          });
+        }
+        throw new Error(
+          editFailureMessage(error, "。已恢复原消息，可修改后重试。"),
+        );
+      }
+      // cleanup 已发生，或 unrevert 也失败：保留本地快照与编辑器，
+      // 重试时直接 prompt；取消时再按服务器状态刷新。
+      if (stillEditing()) set({ editPhase: "reverted" });
+      const suffix = unrevertError
+        ? "。自动恢复失败，取消编辑后可在会话底部恢复回滚消息。"
+        : "。原消息已回滚，可重试发送；取消将接受当前截断状态。";
+      throw new Error(editFailureMessage(error, suffix));
+    }
+
+    const current = get();
+    const list = current.sessions[directory] ?? [];
+    const session = list.find((item) => item.id === sessionID);
+    const sessions = session
+      ? {
+          ...current.sessions,
+          [directory]: upsertSession(list, { ...session, revert: undefined }),
+        }
+      : current.sessions;
+    if (!stillEditing()) {
+      if (sessions !== current.sessions) set({ sessions });
+      return;
+    }
+    const nextMessages =
+      suffixIDs.size > 0
+        ? current.messages.filter((message) => !suffixIDs.has(message.info.id))
+        : current.messages;
+    const steerMessageIDs = {
+      ...current.steerMessageIDs,
+      [sessionID]: (current.steerMessageIDs[sessionID] ?? []).filter((id) =>
+        nextMessages.some((message) => message.info.id === id),
+      ),
+    };
+    if (steerMessageIDs[sessionID].length === 0) {
+      delete steerMessageIDs[sessionID];
+    }
+    set({
+      messages: nextMessages,
+      sessions,
+      steerMessageIDs,
+      streaming: true,
+      editing: null,
+      editPhase: "idle",
+      error: null,
+    });
+    void (async () => {
+      const detail = await api.session(directory, sessionID).catch(() => null);
+      if (detail) {
+        const latest = get();
+        set({
+          sessions: {
+            ...latest.sessions,
+            [directory]: upsertSession(latest.sessions[directory] ?? [], detail),
+          },
+        });
+      }
+      if (!sameSession()) return;
+      const permissions = await api.permissions(directory).catch(() => null);
+      if (permissions && sameSession()) set({ permissions });
+      if (!sameSession()) return;
+      void get().refreshTasks();
+      if (get().rightOpen) void refreshPanel(get, set);
+      void get().refreshFileStatuses();
+    })();
+  },
+
+  async restoreRevertedMessages() {
+    const state = get();
+    const { directory, sessionID } = state;
+    if (!directory || !sessionID || state.editing) return;
+    if (isSessionBusy(state, sessionID)) {
+      get().showNotice("当前会话正在执行，请先停止后再恢复消息");
+      return;
+    }
+    try {
+      const restored = await api.unrevert(directory, sessionID);
+      const messages = await api.messages(directory, sessionID);
+      const current = get();
+      if (current.directory !== directory || current.sessionID !== sessionID) {
+        return;
+      }
+      set({
+        messages: markInterruptedMessages(
+          messages,
+          isSessionBusy(current, sessionID),
+        ),
+        sessions: {
+          ...current.sessions,
+          [directory]: upsertSession(
+            current.sessions[directory] ?? [],
+            restored,
+          ),
+        },
+        error: null,
+      });
+      void get().refreshTasks();
+      if (get().rightOpen) void refreshPanel(get, set);
+      void get().refreshFileStatuses();
+      get().showNotice("已恢复回滚的消息");
+    } catch (error) {
+      set({ error: `恢复回滚消息失败：${String(error)}` });
+    }
+  },
+
+  submitMessage(text, attachments, refs, delivery) {
+    const state = get();
+    const directory = state.directory;
+    const files = attachments ?? [];
+    const mentions = refs ?? [];
+    if (!directory || (!text.trim() && files.length === 0 && mentions.length === 0)) {
+      return false;
+    }
+    if (state.editing) {
+      get().showNotice("正在编辑历史消息，请先完成或取消编辑");
+      return false;
+    }
+    if (!state.sessionID) {
+      if (state.creatingSession) {
+        get().showNotice("正在创建会话，请稍候");
+        return false;
+      }
+      void get().send(text, files, mentions);
+      return true;
+    }
+
+    const sessionID = state.sessionID;
+    const busy = isSessionBusy(state, sessionID);
+    const stopping = state.stoppingSessions[sessionID] === true;
+    if (busy) {
+      if (delivery === "steer" && !stopping) {
+        void get().steerMessage(text, files, mentions);
+        return true;
+      }
+      const queued = get().enqueueMessage(text, files, mentions);
+      if (queued) get().showNotice(stopping ? "正在停止，已加入排队" : "已加入排队");
+      return queued;
+    }
+
+    const queuedCount = state.queuedMessages[sessionID]?.length ?? 0;
+    const paused = state.queuePaused[sessionID] === true;
+    if (queuedCount > 0 && !paused) {
+      const queued = get().enqueueMessage(text, files, mentions);
+      if (queued) {
+        get().showNotice("已加入排队");
+        void get().drainQueue(sessionID);
+      }
+      return queued;
+    }
+    if (paused && (state.pendingSteers[sessionID]?.length ?? 0) > 0) {
+      // 新的一轮会把暂停的引导一起带进上下文，不再单独唤醒。
+      get().supersedePendingSteers(sessionID);
+    }
+    void get().send(text, files, mentions);
+    return true;
+  },
+
+  enqueueMessage(text, attachments, refs) {
+    const state = get();
+    const directory = state.directory;
+    const sessionID = state.sessionID;
+    if (!directory || !sessionID) return false;
+    const files = attachments ?? [];
+    const mentions = refs ?? [];
+    if (!text.trim() && files.length === 0 && mentions.length === 0) return false;
+    const current = state.queuedMessages[sessionID] ?? [];
+    if (current.length >= MAX_QUEUE_ITEMS) {
+      get().showNotice(`排队消息最多 ${MAX_QUEUE_ITEMS} 条，请先发送或删除`);
+      return false;
+    }
+    const bytes =
+      queueAttachmentBytes(current) +
+      files.reduce((sum, file) => sum + file.size, 0);
+    if (bytes > MAX_QUEUE_ATTACHMENT_BYTES) {
+      get().showNotice("排队消息的附件总大小不能超过 64MB");
+      return false;
+    }
+    const item: QueuedMessage = {
+      id: newQueueItemID(),
+      sessionID,
+      directory,
+      text,
+      refs: [...mentions],
+      attachments: [...files],
+      selection: currentSelection(state),
+      createdAt: Date.now(),
+      status: "queued",
+    };
+    set({
+      queuedMessages: {
+        ...state.queuedMessages,
+        [sessionID]: [...current, item],
+      },
+    });
+    return true;
+  },
+
+  async steerMessage(text, attachments, refs) {
+    const state = get();
+    const sessionID = state.sessionID;
+    const directory = state.directory;
+    const files = attachments ?? [];
+    const mentions = refs ?? [];
+    if (!sessionID || !directory) return;
+    if (!isSessionBusy(state, sessionID)) {
+      await get().send(text, files, mentions);
+      return;
+    }
+    if (state.stoppingSessions[sessionID]) {
+      if (get().enqueueMessage(text, files, mentions)) {
+        get().showNotice("正在停止，已加入排队");
+      }
+      return;
+    }
+    await get().deliverSteer({
+      sessionID,
+      directory,
+      text,
+      refs: mentions,
+      attachments: files,
+      selection: currentSelection(state),
+      restoreOnFailure: true,
+    });
+  },
+
+  async deliverSteer(input) {
+    const state = get();
+    if (state.stoppingSessions[input.sessionID]) {
+      if (input.restoreOnFailure) get().showNotice("正在停止，请稍后再发送");
+      return false;
+    }
+    const wasBusy = isSessionBusy(state, input.sessionID);
+    const messageID = newMessageID();
+    const pending: PendingSteer = {
+      messageID,
+      sessionID: input.sessionID,
+      directory: input.directory,
+      createdAt: Date.now(),
+      selection: input.selection,
+      status: "sent",
+    };
+    const existing = state.pendingSteers[input.sessionID] ?? [];
+    const steerIDs = [
+      ...(state.steerMessageIDs[input.sessionID] ?? []),
+      messageID,
+    ].slice(-200);
+    set({
+      pendingSteers: {
+        ...state.pendingSteers,
+        [input.sessionID]: [...existing, pending],
+      },
+      steerMessageIDs: {
+        ...state.steerMessageIDs,
+        [input.sessionID]: steerIDs,
+      },
+      busySessions: { ...state.busySessions, [input.sessionID]: true },
+      ...(state.sessionID === input.sessionID ? { streaming: true } : {}),
+    });
+    try {
+      await api.prompt(
+        input.directory,
+        input.sessionID,
+        buildPromptParts(
+          input.directory,
+          input.text,
+          input.refs,
+          input.attachments,
+        ),
+        {
+          ...(input.selection.model ? { model: input.selection.model } : {}),
+          agent: input.selection.agent,
+          ...(input.selection.variant ? { variant: input.selection.variant } : {}),
+          messageID,
+        },
+      );
+      return true;
+    } catch (error) {
+      const current = get();
+      const nextPending = (current.pendingSteers[input.sessionID] ?? []).filter(
+        (item) => item.messageID !== messageID,
+      );
+      const pendingSteers = { ...current.pendingSteers };
+      if (nextPending.length > 0) pendingSteers[input.sessionID] = nextPending;
+      else delete pendingSteers[input.sessionID];
+      const nextIDs = (current.steerMessageIDs[input.sessionID] ?? []).filter(
+        (id) => id !== messageID,
+      );
+      const steerMessageIDs = { ...current.steerMessageIDs };
+      if (nextIDs.length > 0) steerMessageIDs[input.sessionID] = nextIDs;
+      else delete steerMessageIDs[input.sessionID];
+      const busySessions = { ...current.busySessions };
+      if (!wasBusy) delete busySessions[input.sessionID];
+      set({
+        pendingSteers,
+        steerMessageIDs,
+        busySessions,
+        ...(current.sessionID === input.sessionID && !wasBusy
+          ? { streaming: false }
+          : {}),
+        ...(input.restoreOnFailure
+          ? { failedText: input.text, error: `引导发送失败：${String(error)}` }
+          : { error: `引导发送失败：${String(error)}` }),
+      });
+      return false;
+    }
+  },
+
+  async steerQueuedMessage(sessionID, itemID) {
+    const state = get();
+    const queue = state.queuedMessages[sessionID] ?? [];
+    const index = queue.findIndex((item) => item.id === itemID);
+    if (index === -1) return;
+    const item = queue[index];
+    if (item.status === "sending") return;
+    if (state.stoppingSessions[sessionID]) {
+      get().showNotice("正在停止当前任务，请稍后再发送引导");
+      return;
+    }
+    const next = queue.filter((entry) => entry.id !== itemID);
+    const queuedMessages = { ...state.queuedMessages };
+    if (next.length > 0) queuedMessages[sessionID] = next;
+    else delete queuedMessages[sessionID];
+    const queuePaused = { ...state.queuePaused };
+    if (next.length === 0 && !hasPausedPendingSteers(state, sessionID)) {
+      delete queuePaused[sessionID];
+    }
+    set({ queuedMessages, queuePaused });
+
+    const accepted = await get().deliverSteer({
+      sessionID,
+      directory: item.directory,
+      text: item.text,
+      refs: item.refs,
+      attachments: item.attachments,
+      selection: item.selection,
+      restoreOnFailure: false,
+    });
+    if (accepted) return;
+
+    const current = get();
+    const currentQueue = current.queuedMessages[sessionID] ?? [];
+    const insertAt = Math.min(index, currentQueue.length);
+    const failed: QueuedMessage = {
+      ...item,
+      status: "failed",
+      error: "引导发送失败",
+    };
+    set({
+      queuedMessages: {
+        ...current.queuedMessages,
+        [sessionID]: [
+          ...currentQueue.slice(0, insertAt),
+          failed,
+          ...currentQueue.slice(insertAt),
+        ],
+      },
+      queuePaused: { ...current.queuePaused, [sessionID]: true },
+    });
+  },
+
+  removeQueuedMessage(sessionID, itemID) {
+    const state = get();
+    const queue = state.queuedMessages[sessionID] ?? [];
+    const item = queue.find((entry) => entry.id === itemID);
+    if (!item || item.status === "sending") return;
+    const next = queue.filter((entry) => entry.id !== itemID);
+    const queuedMessages = { ...state.queuedMessages };
+    if (next.length > 0) queuedMessages[sessionID] = next;
+    else delete queuedMessages[sessionID];
+    const queuePaused = { ...state.queuePaused };
+    if (next.length === 0 && !hasPausedPendingSteers(state, sessionID)) {
+      delete queuePaused[sessionID];
+    }
+    set({ queuedMessages, queuePaused });
+  },
+
+  restoreQueuedMessage(sessionID, itemID) {
+    const state = get();
+    const queue = state.queuedMessages[sessionID] ?? [];
+    const item = queue.find((entry) => entry.id === itemID);
+    if (!item || item.status === "sending") return null;
+    get().removeQueuedMessage(sessionID, itemID);
+    return item;
+  },
+
+  retryQueuedMessage(sessionID, itemID) {
+    const state = get();
+    const queue = state.queuedMessages[sessionID] ?? [];
+    const index = queue.findIndex((entry) => entry.id === itemID);
+    if (index === -1) return;
+    const next = queue.map((entry, entryIndex) =>
+      entryIndex === index
+        ? { ...entry, status: "queued" as const, error: undefined }
+        : entry,
+    );
+    const queuePaused = { ...state.queuePaused };
+    delete queuePaused[sessionID];
+    set({
+      queuedMessages: { ...state.queuedMessages, [sessionID]: next },
+      queuePaused,
+    });
+    if (!isSessionBusy(state, sessionID)) void get().drainQueue(sessionID);
+  },
+
+  resumeDelivery(sessionID) {
+    const state = get();
+    const queuePaused = { ...state.queuePaused };
+    delete queuePaused[sessionID];
+    set({ queuePaused });
+    const pending = state.pendingSteers[sessionID] ?? [];
+    const hasFailed = pending.some((item) => item.status === "failed");
+    const hasPaused = pending.some((item) => item.status === "paused");
+    if (hasFailed) {
+      get().showNotice("有引导消息未送达，请先重试或忽略");
+      return;
+    }
+    if (isSessionBusy(state, sessionID)) return;
+    if (hasPaused) {
+      void get().wakePendingSteers(sessionID);
+      return;
+    }
+    void get().handleDeliveryIdle(sessionID);
+  },
+
+  async retryPendingSteer(sessionID, messageID) {
+    const state = get();
+    const pending = state.pendingSteers[sessionID] ?? [];
+    const target = messageID
+      ? pending.find((item) => item.messageID === messageID)
+      : undefined;
+    if (messageID && !target) return;
+    const next = pending.map((item) =>
+      item.status === "failed" || item.status === "paused"
+        ? { ...item, status: "sent" as const, error: undefined }
+        : item,
+    );
+    const queuePaused = { ...state.queuePaused };
+    delete queuePaused[sessionID];
+    set({
+      pendingSteers: { ...state.pendingSteers, [sessionID]: next },
+      queuePaused,
+    });
+    if (isSessionBusy(state, sessionID)) return;
+    await get().wakePendingSteers(sessionID);
+  },
+
+  dismissPendingSteer(sessionID, messageID) {
+    const state = get();
+    const pending = state.pendingSteers[sessionID] ?? [];
+    const next = messageID
+      ? pending.filter((item) => item.messageID !== messageID)
+      : pending.filter(
+          (item) => item.status !== "failed" && item.status !== "paused",
+        );
+    const pendingSteers = { ...state.pendingSteers };
+    if (next.length > 0) pendingSteers[sessionID] = next;
+    else delete pendingSteers[sessionID];
+    set({ pendingSteers });
+    if (next.length > 0) return;
+    if (get().queuePaused[sessionID] !== true) {
+      void get().handleDeliveryIdle(sessionID);
+    }
+  },
+
+  async drainQueue(sessionID) {
+    const state = get();
+    const queue = state.queuedMessages[sessionID] ?? [];
+    if (queue.length === 0) {
+      const queuePaused = { ...state.queuePaused };
+      if (!hasPausedPendingSteers(state, sessionID)) {
+        delete queuePaused[sessionID];
+      }
+      set({ queuePaused });
+      return;
+    }
+    if (state.queuePaused[sessionID] === true) return;
+    if (state.queueSending[sessionID] === true) return;
+    if ((state.pendingSteers[sessionID]?.length ?? 0) > 0) return;
+    if (isSessionBusy(state, sessionID)) return;
+    const item = queue[0];
+    // sending 说明已有一条消息交给 CLI；重连恢复时不能把它再发一次。
+    if (item.status === "failed" || item.status === "sending") return;
+    const sending: QueuedMessage = { ...item, status: "sending" };
+    set({
+      queuedMessages: {
+        ...state.queuedMessages,
+        [sessionID]: [sending, ...queue.slice(1)],
+      },
+      queueSending: { ...state.queueSending, [sessionID]: true },
+      busySessions: { ...state.busySessions, [sessionID]: true },
+      ...(state.sessionID === sessionID ? { streaming: true } : {}),
+    });
+    try {
+      await api.prompt(
+        item.directory,
+        item.sessionID,
+        buildPromptParts(
+          item.directory,
+          item.text,
+          item.refs,
+          item.attachments,
+        ),
+        {
+          ...(item.selection.model ? { model: item.selection.model } : {}),
+          agent: item.selection.agent,
+          ...(item.selection.variant ? { variant: item.selection.variant } : {}),
+        },
+      );
+      const current = get();
+      const next = (current.queuedMessages[sessionID] ?? []).filter(
+        (entry) => entry.id !== item.id,
+      );
+      const queuedMessages = { ...current.queuedMessages };
+      if (next.length > 0) queuedMessages[sessionID] = next;
+      else delete queuedMessages[sessionID];
+      const queuePaused = { ...current.queuePaused };
+      if (next.length === 0 && !hasPausedPendingSteers(current, sessionID)) {
+        delete queuePaused[sessionID];
+      }
+      set({ queuedMessages, queuePaused });
+    } catch (error) {
+      const current = get();
+      const next = (current.queuedMessages[sessionID] ?? []).map((entry) =>
+        entry.id === item.id
+          ? { ...entry, status: "failed" as const, error: String(error) }
+          : entry,
+      );
+      const busySessions = { ...current.busySessions };
+      delete busySessions[sessionID];
+      set({
+        queuedMessages: { ...current.queuedMessages, [sessionID]: next },
+        queuePaused: { ...current.queuePaused, [sessionID]: true },
+        busySessions,
+        ...(current.sessionID === sessionID ? { streaming: false } : {}),
+        error: `排队消息发送失败：${String(error)}`,
+      });
+    } finally {
+      const current = get();
+      const queueSending = { ...current.queueSending };
+      delete queueSending[sessionID];
+      set({ queueSending });
+      if (idleDuringSend.delete(sessionID)) {
+        const busySessions = { ...get().busySessions };
+        delete busySessions[sessionID];
+        set({
+          busySessions,
+          ...(get().sessionID === sessionID ? { streaming: false } : {}),
+        });
+        // 给 CLI 一点时间发出新轮次的 busy；若已经忙，handleDeliveryIdle 会自然返回。
+        setTimeout(() => {
+          void get().handleDeliveryIdle(sessionID);
+        }, 250);
+      }
+    }
+  },
+
+  async handleDeliveryIdle(sessionID) {
+    if (deliveryReconciling.has(sessionID)) return;
+    deliveryReconciling.add(sessionID);
+    try {
+      const state = get();
+      if ((state.pendingSteers[sessionID]?.length ?? 0) > 0) {
+        const result = await get().reconcilePendingSteers(sessionID);
+        if (result.failed > 0) {
+          set({
+            queuePaused: { ...get().queuePaused, [sessionID]: true },
+          });
+          get().showNotice("有引导消息未送达，请重试或忽略", 6000);
+          return;
+        }
+        const pending = get().pendingSteers[sessionID] ?? [];
+        if (pending.length > 0) {
+          if (get().queuePaused[sessionID] === true) {
+            const next = pending.map((item) =>
+              item.status === "sent"
+                ? { ...item, status: "paused" as const }
+                : item,
+            );
+            set({
+              pendingSteers: { ...get().pendingSteers, [sessionID]: next },
+            });
+            return;
+          }
+          const newest = pending.reduce(
+            (latest, item) => Math.max(latest, item.createdAt),
+            0,
+          );
+          if (Date.now() - newest <= STEER_PERSIST_GRACE_MS) {
+            // prompt_async 可能已经返回 204，但用户消息还没落库；等落库后再决定
+            // 是 synthetic 继续，还是按未送达处理。
+            scheduleSteerRecheck(sessionID, pending);
+            return;
+          }
+          await get().wakePendingSteers(sessionID);
+          return;
+        }
+      }
+      if (get().queuePaused[sessionID] === true) return;
+      if ((get().queuedMessages[sessionID]?.length ?? 0) > 0) {
+        await get().drainQueue(sessionID);
+      }
+    } finally {
+      deliveryReconciling.delete(sessionID);
+    }
+  },
+
+  handleDeliveryError(sessionID) {
+    const state = get();
+    const pending = state.pendingSteers[sessionID] ?? [];
+    const hasQueue = (state.queuedMessages[sessionID]?.length ?? 0) > 0;
+    if (!hasQueue && pending.length === 0) return;
+    const next = pending.map((item) =>
+      item.status === "sent"
+        ? { ...item, status: "failed" as const, error: "任务出错，未能确认引导" }
+        : item,
+    );
+    const pendingSteers = { ...state.pendingSteers };
+    if (next.length > 0) pendingSteers[sessionID] = next;
+    else delete pendingSteers[sessionID];
+    set({
+      pendingSteers,
+      queuePaused: { ...state.queuePaused, [sessionID]: true },
+    });
+    get().showNotice("任务出错，排队与引导已暂停", 6000);
+  },
+
+  async reconcilePendingSteers(sessionID) {
+    const state = get();
+    const pending = state.pendingSteers[sessionID] ?? [];
+    if (pending.length === 0) return { remaining: 0, failed: 0 };
+    const directory = pending[0].directory;
+    const messages = await api.messages(directory, sessionID).catch(() => null);
+    if (!messages) {
+      set({ queuePaused: { ...get().queuePaused, [sessionID]: true } });
+      get().showNotice("无法确认引导消息状态，已暂停队列", 6000);
+      return { remaining: pending.length, failed: 0 };
+    }
+    if (messages.length === 0) {
+      const now = Date.now();
+      let failed = 0;
+      const next = pending.map((item) => {
+        if (item.status === "failed") {
+          failed += 1;
+          return item;
+        }
+        if (now - item.createdAt <= STEER_PERSIST_GRACE_MS) return item;
+        failed += 1;
+        return { ...item, status: "failed" as const, error: "引导消息未落库" };
+      });
+      set({ pendingSteers: { ...get().pendingSteers, [sessionID]: next } });
+      return { remaining: next.length, failed };
+    }
+
+    const userIndex = new Map<string, number>();
+    messages.forEach((message, index) => {
+      if (message.info.role === "user") userIndex.set(message.info.id, index);
+    });
+    let latestAssistantParent = -1;
+    for (const message of messages) {
+      if (message.info.role !== "assistant" || !message.info.parentID) continue;
+      const index = userIndex.get(message.info.parentID);
+      if (index !== undefined && index > latestAssistantParent) {
+        latestAssistantParent = index;
+      }
+    }
+    const now = Date.now();
+    let failed = 0;
+    const next: PendingSteer[] = [];
+    for (const item of pending) {
+      const index = userIndex.get(item.messageID);
+      if (index === undefined) {
+        if (now - item.createdAt > STEER_PERSIST_GRACE_MS) {
+          failed += 1;
+          next.push({ ...item, status: "failed", error: "引导消息未落库" });
+        } else {
+          next.push(item);
+        }
+        continue;
+      }
+      if (index <= latestAssistantParent) continue;
+      if (item.status === "failed") {
+        failed += 1;
+        next.push(item);
+        continue;
+      }
+      next.push(item);
+    }
+    const pendingSteers = { ...get().pendingSteers };
+    if (next.length > 0) pendingSteers[sessionID] = next;
+    else delete pendingSteers[sessionID];
+    set({ pendingSteers });
+    return { remaining: next.length, failed };
+  },
+
+  async wakePendingSteers(sessionID) {
+    const state = get();
+    const pending = (state.pendingSteers[sessionID] ?? []).filter(
+      (item) => item.status === "sent" || item.status === "paused",
+    );
+    if (pending.length === 0) return false;
+    if (isSessionBusy(state, sessionID)) return false;
+    const targetIDs = new Set(pending.map((item) => item.messageID));
+    const last = pending[pending.length - 1];
+    set({
+      busySessions: { ...state.busySessions, [sessionID]: true },
+      ...(state.sessionID === sessionID ? { streaming: true } : {}),
+    });
+    try {
+      await api.prompt(
+        last.directory,
+        sessionID,
+        [
+          {
+            type: "text",
+            text: "Continue with the latest user steering message.",
+            synthetic: true,
+          },
+        ],
+        {
+          ...(last.selection.model ? { model: last.selection.model } : {}),
+          agent: last.selection.agent,
+          ...(last.selection.variant ? { variant: last.selection.variant } : {}),
+        },
+      );
+      const current = get();
+      const next = (current.pendingSteers[sessionID] ?? []).filter(
+        (item) => !targetIDs.has(item.messageID),
+      );
+      const pendingSteers = { ...current.pendingSteers };
+      if (next.length > 0) pendingSteers[sessionID] = next;
+      else delete pendingSteers[sessionID];
+      set({ pendingSteers });
+      return true;
+    } catch (error) {
+      const current = get();
+      const next = (current.pendingSteers[sessionID] ?? []).map((item) =>
+        targetIDs.has(item.messageID)
+          ? { ...item, status: "failed" as const, error: String(error) }
+          : item,
+      );
+      const busySessions = { ...current.busySessions };
+      delete busySessions[sessionID];
+      set({
+        pendingSteers: { ...current.pendingSteers, [sessionID]: next },
+        queuePaused: { ...current.queuePaused, [sessionID]: true },
+        busySessions,
+        ...(current.sessionID === sessionID ? { streaming: false } : {}),
+        error: `引导消息唤醒失败：${String(error)}`,
+      });
+      return false;
+    }
+  },
+
+  supersedePendingSteers(sessionID) {
+    const state = get();
+    if ((state.pendingSteers[sessionID]?.length ?? 0) === 0) return;
+    const pendingSteers = { ...state.pendingSteers };
+    delete pendingSteers[sessionID];
+    set({ pendingSteers });
+  },
+
+  clearSessionDelivery(sessionID) {
+    const state = get();
+    const timer = stopTimers.get(sessionID);
+    if (timer) {
+      clearTimeout(timer);
+      stopTimers.delete(sessionID);
+    }
+    const steerTimer = steerWakeTimers.get(sessionID);
+    if (steerTimer) {
+      clearTimeout(steerTimer);
+      steerWakeTimers.delete(sessionID);
+    }
+    const queuedMessages = { ...state.queuedMessages };
+    const queuePaused = { ...state.queuePaused };
+    const queueSending = { ...state.queueSending };
+    const pendingSteers = { ...state.pendingSteers };
+    const steerMessageIDs = { ...state.steerMessageIDs };
+    const stoppingSessions = { ...state.stoppingSessions };
+    delete queuedMessages[sessionID];
+    delete queuePaused[sessionID];
+    delete queueSending[sessionID];
+    delete pendingSteers[sessionID];
+    delete steerMessageIDs[sessionID];
+    delete stoppingSessions[sessionID];
+    set({
+      queuedMessages,
+      queuePaused,
+      queueSending,
+      pendingSteers,
+      steerMessageIDs,
+      stoppingSessions,
+    });
+  },
+
+  finishStopping(sessionID) {
+    const timer = stopTimers.get(sessionID);
+    if (timer) {
+      clearTimeout(timer);
+      stopTimers.delete(sessionID);
+    }
+    const state = get();
+    if (!state.stoppingSessions[sessionID]) return;
+    const stoppingSessions = { ...state.stoppingSessions };
+    delete stoppingSessions[sessionID];
+    set({ stoppingSessions });
+  },
+
+  async resumeAllDelivery() {
+    const state = get();
+    const sessionIDs = new Set([
+      ...Object.keys(state.queuedMessages),
+      ...Object.keys(state.pendingSteers),
+    ]);
+    if (sessionIDs.size === 0) return;
+    const byDirectory = new Map<string, Set<string>>();
+    const sending = new Set<string>();
+    for (const sessionID of sessionIDs) {
+      const item =
+        state.queuedMessages[sessionID]?.[0] ??
+        state.pendingSteers[sessionID]?.[0];
+      if (!item) continue;
+      const group = byDirectory.get(item.directory) ?? new Set<string>();
+      group.add(sessionID);
+      byDirectory.set(item.directory, group);
+      // 发送中的请求仍由 drainQueue 的 finally 收尾；这里清标记会让队首被重发。
+      if (state.queueSending[sessionID]) sending.add(sessionID);
+    }
+    for (const [directory, ids] of byDirectory) {
+      const statuses = await api.sessionStatus(directory).catch(() => null);
+      if (!statuses) continue;
+      set({
+        busySessions: mergeBusySessions(
+          get().busySessions,
+          get().sessions[directory] ?? [],
+          statuses,
+        ),
+      });
+      for (const sessionID of ids) {
+        if (sending.has(sessionID)) continue;
+        if (isBusyStatus(statuses[sessionID])) continue;
+        if (get().queuePaused[sessionID] === true) continue;
+        void get().handleDeliveryIdle(sessionID);
+      }
     }
   },
 
   async stop() {
     const { directory, sessionID } = get();
     if (!directory || !sessionID) return;
-    await api.abort(directory, sessionID).catch(() => undefined);
-    set({ streaming: false });
+    if (get().stoppingSessions[sessionID]) return;
+    const state = get();
+    const hasDelivery =
+      (state.queuedMessages[sessionID]?.length ?? 0) > 0 ||
+      (state.pendingSteers[sessionID]?.length ?? 0) > 0;
+    if (hasDelivery) {
+      get().showNotice("当前任务停止后，排队消息会暂停保留", 4000);
+    }
+    set({
+      stoppingSessions: { ...state.stoppingSessions, [sessionID]: true },
+      ...(hasDelivery
+        ? { queuePaused: { ...state.queuePaused, [sessionID]: true } }
+        : {}),
+    });
+    const timer = setTimeout(() => {
+      stopTimers.delete(sessionID);
+      const current = get();
+      const stoppingSessions = { ...current.stoppingSessions };
+      delete stoppingSessions[sessionID];
+      const busySessions = { ...current.busySessions };
+      delete busySessions[sessionID];
+      set({
+        stoppingSessions,
+        busySessions,
+        ...(current.sessionID === sessionID ? { streaming: false } : {}),
+        ...(hasDelivery
+          ? { queuePaused: { ...current.queuePaused, [sessionID]: true } }
+          : {}),
+      });
+      get().showNotice("停止超时，已按空闲处理", 5000);
+    }, 5000);
+    stopTimers.set(sessionID, timer);
+    try {
+      const aborted = await api.abort(directory, sessionID);
+      if (!aborted) {
+        get().finishStopping(sessionID);
+        const current = get();
+        const busySessions = { ...current.busySessions };
+        delete busySessions[sessionID];
+        set({
+          busySessions,
+          ...(current.sessionID === sessionID ? { streaming: false } : {}),
+        });
+      }
+    } catch {
+      // abort 失败时仍可能收到 idle/error；超时兜底会恢复输入区。
+    }
   },
 
   async replyPermission(id, reply) {
@@ -1358,9 +2904,10 @@ export const useApp = create<AppState>()((set, get) => ({
       const [todos, children, statuses] = await Promise.all([
         api.todos(directory, target).catch(() => []),
         api.children(directory, target).catch(() => []),
-        api.sessionStatus(directory).catch(() => ({}) as Record<string, SessionStatus>),
+        api.sessionStatus(directory).catch(() => null),
       ]);
-      const tasks = buildSubagentTasks(get().messages, target, children, statuses);
+      const statusMap = statuses ?? get().sessionStatuses;
+      const tasks = buildSubagentTasks(get().messages, target, children, statusMap);
       const childIDs = Array.from(
         new Set([
           ...children.map((child) => child.id),
@@ -1373,7 +2920,12 @@ export const useApp = create<AppState>()((set, get) => ({
             api.taskMessages(directory, childID).catch(() => []),
             api.todos(directory, childID).catch(() => []),
           ]);
-          return { childID, messages, todos: normalizeTodos(childTodos) };
+          return {
+            childID,
+            messages,
+            active: statuses ? isBusyStatus(statuses[childID]) : null,
+            todos: normalizeTodos(childTodos),
+          };
         }),
       );
       // 请求期间可能已经切到别的会话，迟到结果不能污染当前界面
@@ -1381,10 +2933,12 @@ export const useApp = create<AppState>()((set, get) => ({
       const childMessages: Record<string, Message[]> = {};
       const childTodos: Record<string, TodoItem[]> = {};
       for (const entry of taskData) {
-        childMessages[entry.childID] = mergeMessages(
+        const merged = mergeMessages(
           entry.messages,
           get().childMessages[entry.childID] ?? [],
         );
+        childMessages[entry.childID] =
+          entry.active === null ? merged : markInterruptedMessages(merged, entry.active);
         childTodos[entry.childID] = entry.todos;
       }
       set({
@@ -1392,7 +2946,7 @@ export const useApp = create<AppState>()((set, get) => ({
         sessionChildren: children,
         childMessages,
         childTodos,
-        sessionStatuses: statuses,
+        ...(statuses ? { sessionStatuses: statuses } : {}),
         tasksLoading: false,
       });
     } catch (error) {
@@ -1411,15 +2965,51 @@ export const useApp = create<AppState>()((set, get) => ({
       sessions.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
       set({ sessions: { ...get().sessions, [directory]: sessions } });
       if (sessionID) {
-        const [messages, permissions] = await Promise.all([
+        const [messages, permissions, statuses] = await Promise.all([
           api.messages(directory, sessionID),
           api.permissions(directory).catch(() => []),
+          api.sessionStatus(directory).catch(() => null),
         ]);
-        set({ messages, permissions });
+        // 重连期间会丢失 status/idle 事件；用快照重新确认当前会话是否仍在运行。
+        const active = statuses
+          ? isBusyStatus(statuses[sessionID])
+          : get().streaming || get().busySessions[sessionID] === true;
+        const editing = get().editing;
+        const editingSnapshot =
+          editing?.sessionID === sessionID
+            ? mergeMessages(
+                markInterruptedMessages(messages, active),
+                get().messages,
+              )
+            : null;
+        const targetGone =
+          editing?.sessionID === sessionID &&
+          get().editPhase === "idle" &&
+          !messages.some((message) => message.info.id === editing.messageID);
+        set({
+          messages:
+            editingSnapshot ?? markInterruptedMessages(messages, active),
+          permissions,
+          streaming: active,
+          ...(targetGone ? { editing: null, editPhase: "idle" as MessageEditPhase } : {}),
+          ...(statuses
+            ? {
+                sessionStatuses: statuses,
+                busySessions: mergeBusySessions(get().busySessions, sessions, statuses),
+              }
+            : {}),
+        });
+        if (targetGone) {
+          get().showNotice("正在编辑的消息已不存在，编辑已取消");
+        }
+        if (!statuses) void get().refreshBusySessions(directory);
         if (get().rightOpen) void refreshPanel(get, set);
         void get().refreshTasks();
         if (get().overviewOpen) void get().refreshOverview();
+      } else {
+        void get().refreshBusySessions(directory);
       }
+      void get().resumeAllDelivery();
     } catch (error) {
       // 断线场景下请求失败是预期内的：提示条已经说明状态，等下一次 ready 再刷新，
       // 不要用红色 toast 打断用户（真实原因保留在控制台便于排查）。
@@ -1454,6 +3044,22 @@ export const useApp = create<AppState>()((set, get) => ({
         set({ sseOk: true });
         break;
       case "message.updated":
+        // assistant.parentID 指向它实际回应的 user 消息：匹配到某条引导时，
+        // 同一轮里更早的引导也已经进入模型上下文，可以一起收口。
+        if (eventSession && props.info?.parentID) {
+          const pending = get().pendingSteers[eventSession];
+          if (pending?.length) {
+            const parentID = String(props.info.parentID);
+            const index = pending.findIndex((item) => item.messageID === parentID);
+            if (index !== -1) {
+              const pendingSteers = { ...get().pendingSteers };
+              const remaining = pending.filter((_, itemIndex) => itemIndex > index);
+              if (remaining.length > 0) pendingSteers[eventSession] = remaining;
+              else delete pendingSteers[eventSession];
+              set({ pendingSteers });
+            }
+          }
+        }
         if (eventSession === currentSession && props.info) {
           // 助手消息在跑 → 正在执行；不管这条任务是从哪触发的（界面/CLI）
           const streaming = props.info.role === "assistant" ? true : get().streaming;
@@ -1467,6 +3073,48 @@ export const useApp = create<AppState>()((set, get) => ({
           });
         }
         break;
+      case "message.removed": {
+        const messageID =
+          typeof props.messageID === "string" ? props.messageID : "";
+        if (!messageID) break;
+        const editing = get().editing;
+        const phase = get().editPhase;
+        // 自己的 revert/cleanup 会删除编辑目标及其后缀；编辑期间保留本地快照，
+        // 否则编辑器会在 prompt 返回前先被卸载。
+        if (
+          eventSession === currentSession &&
+          editing?.sessionID === eventSession &&
+          phase !== "idle" &&
+          isAtOrAfterMessage(get().messages, messageID, editing.messageID)
+        ) {
+          break;
+        }
+        if (eventSession === currentSession) {
+          set({
+            messages: get().messages.filter(
+              (message) => message.info.id !== messageID,
+            ),
+          });
+          if (
+            editing?.sessionID === eventSession &&
+            editing.messageID === messageID &&
+            phase === "idle"
+          ) {
+            set({ editing: null, editPhase: "idle" });
+            get().showNotice("正在编辑的消息已被删除");
+          }
+        } else if (isChildSession(eventSession)) {
+          set({
+            childMessages: {
+              ...get().childMessages,
+              [eventSession]: (
+                get().childMessages[eventSession] ?? []
+              ).filter((message) => message.info.id !== messageID),
+            },
+          });
+        }
+        break;
+      }
       case "message.part.updated": {
         const part = props.part as Part | undefined;
         if (!part) break;
@@ -1490,6 +3138,50 @@ export const useApp = create<AppState>()((set, get) => ({
                 part,
                 observedAt,
               ),
+            },
+          });
+        }
+        break;
+      }
+      case "message.part.removed": {
+        const messageID =
+          typeof props.messageID === "string" ? props.messageID : "";
+        const partID = typeof props.partID === "string" ? props.partID : "";
+        if (!messageID || !partID) break;
+        const editing = get().editing;
+        const phase = get().editPhase;
+        if (
+          eventSession === currentSession &&
+          editing?.sessionID === eventSession &&
+          phase !== "idle" &&
+          isAtOrAfterMessage(get().messages, messageID, editing.messageID)
+        ) {
+          break;
+        }
+        const removePart = (list: Message[]) =>
+          list.map((message) =>
+            message.info.id === messageID
+              ? {
+                  ...message,
+                  parts: message.parts.filter((part) => part.id !== partID),
+                }
+              : message,
+          );
+        if (eventSession === currentSession) {
+          set({ messages: removePart(get().messages) });
+          if (
+            editing?.sessionID === eventSession &&
+            editing.messageID === messageID &&
+            phase === "idle"
+          ) {
+            set({ editing: null, editPhase: "idle" });
+            get().showNotice("正在编辑的消息内容已变化，请重新打开");
+          }
+        } else if (isChildSession(eventSession)) {
+          set({
+            childMessages: {
+              ...get().childMessages,
+              [eventSession]: removePart(get().childMessages[eventSession] ?? []),
             },
           });
         }
@@ -1528,18 +3220,53 @@ export const useApp = create<AppState>()((set, get) => ({
         const childAdded =
           info.parentID === currentSession &&
           !get().sessionChildren.some((child) => child.id === info.id);
+        const editing = get().editing;
+        const cancelsEditing = Boolean(
+          editing &&
+            editing.sessionID === info.id &&
+            get().editPhase === "idle" &&
+            info.revert?.messageID &&
+            isAtOrAfterMessage(
+              get().messages,
+              editing.messageID,
+              info.revert.messageID,
+            ),
+        );
         set({
           sessions: { ...get().sessions, [directory]: upsertSession(list, info) },
           loadedDirs: { ...get().loadedDirs, [directory]: true },
           ...(info.parentID && info.parentID === currentSession
             ? { sessionChildren: upsertSession(get().sessionChildren, info) }
             : {}),
+          ...(cancelsEditing ? { editing: null, editPhase: "idle" as MessageEditPhase } : {}),
         });
+        if (cancelsEditing) {
+          get().showNotice("会话已被回滚，历史消息编辑已取消");
+        }
         if (childAdded) void get().refreshTasks();
         break;
       }
       case "session.status": {
         if (!eventSession) break;
+        // 全局事件流覆盖所有工作区：侧栏据此给任意会话的标题前显示加载指示，
+        // 不能只记当前会话，否则别的工作区在跑的会话看不出来。
+        const status = props.status as SessionStatus | undefined;
+        if (status && typeof status.type === "string") {
+          const busy = status.type === "busy" || status.type === "retry";
+          // 事件可能是本应用之外启动的任务；busy 时补上本地运行态。
+          // idle 仍交给 session.idle/session.error 收尾，避免步骤边界提前清掉
+          // 侧栏加载指示或把仍在执行的会话当成空闲。
+          if (busy) {
+            if (get().busySessions[eventSession] !== true) {
+              set({
+                busySessions: { ...get().busySessions, [eventSession]: true },
+              });
+            }
+            if (eventSession === currentSession && !get().streaming) {
+              set({ streaming: true });
+            }
+          }
+        }
         if (eventSession === currentSession || isChildSession(eventSession)) {
           set({
             sessionStatuses: {
@@ -1654,9 +3381,34 @@ export const useApp = create<AppState>()((set, get) => ({
         if (get().rightOpen) schedulePanelRefresh(600);
         break;
       }
-      case "session.idle":
+      case "session.idle": {
+        if (eventSession) get().finishStopping(eventSession);
+        // session.idle 是整轮任务结束的权威事件：无论之前有没有收到 status 事件，
+        // 都要清掉加载指示；非当前会话同时标记未读。
+        const busySessions = { ...get().busySessions };
+        delete busySessions[eventSession];
+        const unreadSessions = { ...get().unreadSessions };
+        const markUnread =
+          Boolean(eventSession) &&
+          eventSession !== currentSession &&
+          !isChildSession(eventSession);
+        if (markUnread) {
+          unreadSessions[eventSession] = true;
+          rememberUnreadSessions(unreadSessions);
+        }
+        set({
+          busySessions,
+          ...(markUnread ? { unreadSessions } : {}),
+        });
         if (eventSession === currentSession) {
-          set({ streaming: false });
+          set({
+            streaming: false,
+            messages: markInterruptedMessages(get().messages, false),
+            sessionStatuses: {
+              ...get().sessionStatuses,
+              [eventSession]: { type: "idle" },
+            },
+          });
           // 执行结束后变更与文件状态才有意义，顺手刷新右面板。
           const { rightOpen, rightTab } = get();
           if (rightOpen) void get().refreshChanges({ silent: true });
@@ -1667,24 +3419,66 @@ export const useApp = create<AppState>()((set, get) => ({
           if (get().overviewOpen) void get().refreshOverview();
         } else if (isChildSession(eventSession)) {
           set({
+            childMessages: {
+              ...get().childMessages,
+              [eventSession]: markInterruptedMessages(
+                get().childMessages[eventSession] ?? [],
+                false,
+              ),
+            },
             sessionStatuses: {
               ...get().sessionStatuses,
               [eventSession]: { type: "idle" },
             },
           });
         }
+        if (eventSession && !isChildSession(eventSession)) {
+          if (get().queueSending[eventSession]) idleDuringSend.add(eventSession);
+          else void get().handleDeliveryIdle(eventSession);
+        }
         break;
+      }
       case "session.error": {
+        const wasStopping = Boolean(
+          eventSession && get().stoppingSessions[eventSession],
+        );
+        if (eventSession) get().finishStopping(eventSession);
+        const busySessions = { ...get().busySessions };
+        delete busySessions[eventSession];
+        set({ busySessions });
         if (eventSession === currentSession) {
           const message = props.error?.data?.message ?? props.error?.name ?? "未知错误";
-          set({ streaming: false, error: `会话错误：${message}` });
-        } else if (isChildSession(eventSession)) {
           set({
+            streaming: false,
+            ...(wasStopping ? {} : { error: `会话错误：${message}` }),
+            messages: markInterruptedMessages(get().messages, false),
             sessionStatuses: {
               ...get().sessionStatuses,
               [eventSession]: { type: "idle" },
             },
           });
+        } else if (isChildSession(eventSession)) {
+          set({
+            childMessages: {
+              ...get().childMessages,
+              [eventSession]: markInterruptedMessages(
+                get().childMessages[eventSession] ?? [],
+                false,
+              ),
+            },
+            sessionStatuses: {
+              ...get().sessionStatuses,
+              [eventSession]: { type: "idle" },
+            },
+          });
+        }
+        if (eventSession && eventSession !== currentSession && !isChildSession(eventSession)) {
+          const unreadSessions = { ...get().unreadSessions, [eventSession]: true };
+          rememberUnreadSessions(unreadSessions);
+          set({ unreadSessions });
+        }
+        if (eventSession && !isChildSession(eventSession) && !wasStopping) {
+          get().handleDeliveryError(eventSession);
         }
         break;
       }
@@ -1756,6 +3550,10 @@ export const useApp = create<AppState>()((set, get) => ({
   },
 
   openFind() {
+    if (get().editing) {
+      get().showNotice("正在编辑历史消息，请先完成或取消编辑");
+      return;
+    }
     set({ findOpen: true, findIndex: 0 });
   },
 
@@ -2153,10 +3951,24 @@ export const useApp = create<AppState>()((set, get) => ({
           sessions: { ...get().sessions, [directory]: sessions },
           loadedDirs: { ...get().loadedDirs, [directory]: true },
         });
+        void get().refreshBusySessions(directory);
       } catch (error) {
         set({ error: `读取会话失败：${String(error)}` });
       }
     }
+  },
+
+  async refreshBusySessions(directory) {
+    const statuses = await api.sessionStatus(directory).catch(() => null);
+    if (!statuses) return;
+    // /session/status 只返回忙/重试的会话；先清掉本工作区旧记录再合并。
+    set({
+      busySessions: mergeBusySessions(
+        get().busySessions,
+        get().sessions[directory] ?? [],
+        statuses,
+      ),
+    });
   },
 
   async toggleAllProjects() {
@@ -2180,6 +3992,7 @@ export const useApp = create<AppState>()((set, get) => ({
             sessions: { ...get().sessions, [project.worktree]: list },
             loadedDirs: { ...get().loadedDirs, [project.worktree]: true },
           });
+          void get().refreshBusySessions(project.worktree);
         } catch (error) {
           set({ error: `读取会话失败：${String(error)}` });
         }
@@ -2316,15 +4129,25 @@ export const useApp = create<AppState>()((set, get) => ({
     if (!directory) return;
     try {
       await api.deleteSession(directory, id);
+      get().clearSessionDelivery(id);
       const list = get().sessions[directory] ?? [];
+      const busySessions = { ...get().busySessions };
+      delete busySessions[id];
+      const unreadSessions = { ...get().unreadSessions };
+      delete unreadSessions[id];
+      rememberUnreadSessions(unreadSessions);
       set({
         sessions: { ...get().sessions, [directory]: list.filter((item) => item.id !== id) },
+        busySessions,
+        unreadSessions,
       });
       if (get().directory === directory && get().sessionID === id) {
         cancelBtwPending();
         set({
           sessionID: null,
           messages: [],
+          editing: null,
+          editPhase: "idle",
           permissions: [],
           todos: [],
           sessionChildren: [],
@@ -2881,6 +4704,58 @@ function fileURLFor(directory: string, relative: string): string {
  * url 用 file:// 绝对路径（serve 读盘）；source 带工作区相对路径与文本位置，
  * 消息里能还原成「引用了哪个文件、对应输入里的哪一段」。
  */
+function buildPromptParts(
+  directory: string,
+  text: string,
+  refs: MentionRef[],
+  attachments: Attachment[],
+): Array<Record<string, unknown>> {
+  const parts: Array<Record<string, unknown>> = [];
+  if (text.trim()) parts.push({ type: "text", text });
+  for (const ref of refs) parts.push(buildMentionPart(directory, ref));
+  for (const file of attachments) {
+    parts.push({
+      type: "file",
+      mime: file.mime,
+      url: file.url,
+      filename: file.name,
+    });
+  }
+  return parts;
+}
+
+/**
+ * 编辑历史消息时：正文和 @ 引用以新文本为准重新生成，
+ * 用户上传的附件按原 part 保留（已移除的不会进来）。
+ */
+function buildEditedPromptParts(
+  directory: string,
+  text: string,
+  uploads: Part[],
+): Array<Record<string, unknown>> {
+  const value = text.trim();
+  const parts: Array<Record<string, unknown>> = [];
+  if (value) parts.push({ type: "text", text: value });
+  for (const ref of parseMentions(value)) {
+    parts.push(buildMentionPart(directory, ref));
+  }
+  for (const part of uploads) {
+    if (part.type !== "file" || part.synthetic) continue;
+    const url = typeof part.url === "string" ? part.url : "";
+    if (!url) continue;
+    const file: Record<string, unknown> = {
+      type: "file",
+      mime: String(part.mime ?? "application/octet-stream"),
+      url,
+    };
+    if (typeof part.filename === "string" && part.filename) {
+      file.filename = part.filename;
+    }
+    parts.push(file);
+  }
+  return parts;
+}
+
 function buildMentionPart(directory: string, ref: MentionRef): Record<string, unknown> {
   const relative = ref.path.replace(/^\/+/, "");
   return {

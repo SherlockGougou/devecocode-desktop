@@ -15,9 +15,30 @@ use deveco_desktop::{
     sse::{self, SseEvent},
     supervise::Supervisor,
 };
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const EVENT_WAIT: Duration = Duration::from_secs(20);
+
+/// CLI 只接受 ULID 形状的 msg_ ID；非 ULID 会静默忽略（HTTP 仍 204）。
+fn new_message_id() -> String {
+    const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let mut millis = now.as_millis() as u64;
+    let mut time = [0u8; 10];
+    for index in (0..10).rev() {
+        time[index] = CROCKFORD[(millis % 32) as usize];
+        millis /= 32;
+    }
+    let mut seed = now.as_nanos() ^ ((std::process::id() as u128) << 64);
+    let mut random = String::with_capacity(16);
+    for _ in 0..16 {
+        random.push(CROCKFORD[(seed % 32) as usize] as char);
+        seed /= 32;
+    }
+    format!("msg_{}{}", String::from_utf8_lossy(&time), random)
+}
 
 #[derive(Default)]
 struct Report {
@@ -140,6 +161,10 @@ async fn main() {
     match proxy_roundtrip(&base).await {
         Ok(detail) => report.pass("代理读写路径（POST/GET/DELETE）", detail),
         Err(err) => report.fail("代理读写路径（POST/GET/DELETE）", err),
+    }
+    match check_revert_roundtrip(&base).await {
+        Ok(detail) => report.pass("历史消息 revert/unrevert 契约", detail),
+        Err(err) => report.fail("历史消息 revert/unrevert 契约", err),
     }
 
     // 6. 事件流
@@ -272,6 +297,8 @@ async fn proxy_roundtrip(base: &str) -> Result<String, String> {
 
     let message_path = format!("/session/{session_id}/message");
     let prompt_path = format!("/session/{session_id}/prompt_async");
+    // 引导消息依赖客户端生成的 messageID；这里用不调模型的 noReply 请求验证契约。
+    let message_id = new_message_id();
     let accepted = http::send(
         base,
         None,
@@ -279,7 +306,15 @@ async fn proxy_roundtrip(base: &str) -> Result<String, String> {
         &prompt_path,
         &query,
         Some(&serde_json::json!({
-            "parts": [{ "type": "text", "text": "自检消息" }],
+            "messageID": message_id,
+            "parts": [
+                { "type": "text", "text": "自检消息" },
+                {
+                    "type": "text",
+                    "text": "Continue with the latest user steering message.",
+                    "synthetic": true
+                }
+            ],
             "noReply": true
         })),
     )
@@ -291,19 +326,56 @@ async fn proxy_roundtrip(base: &str) -> Result<String, String> {
 
     // prompt_async 先返回 204，消息随后异步落库；给 CLI 最多 5s 完成这一步
     let deadline = Instant::now() + Duration::from_secs(5);
-    let count = loop {
+    let (count, first_message) = loop {
         let messages = http::send(base, None, "GET", &message_path, &query, None)
             .await
             .map_err(|err| format!("读消息失败：{err:#}"))?;
-        let count = messages.as_array().map(|items| items.len()).unwrap_or(0);
-        if count > 0 {
-            break count;
+        let items = messages.as_array();
+        let count = items.map(|items| items.len()).unwrap_or(0);
+        let first = items.and_then(|items| items.first());
+        let has_parts = first
+            .and_then(|message| message.get("parts"))
+            .and_then(|parts| parts.as_array())
+            .map(|parts| !parts.is_empty())
+            .unwrap_or(false);
+        if count > 0 && has_parts {
+            break (count, first.cloned());
         }
         if Instant::now() >= deadline {
-            return Err("prompt_async 5s 内未落库".into());
+            return Err(format!(
+                "prompt_async 5s 内未完整落库：{}",
+                first
+                    .map(|message| message.to_string())
+                    .unwrap_or_else(|| "没有消息".into())
+            ));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
+    let first_message = first_message.ok_or("读到消息但无法取第一条")?;
+    let stored_id = first_message
+        .get("info")
+        .and_then(|info| info.get("id"))
+        .and_then(|id| id.as_str());
+    if stored_id != Some(message_id.as_str()) {
+        return Err(format!(
+            "prompt_async 未保留客户端 messageID，实际为 {stored_id:?}"
+        ));
+    }
+    let has_synthetic = first_message
+        .get("parts")
+        .and_then(|parts| parts.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .any(|part| part.get("synthetic").and_then(|value| value.as_bool()) == Some(true))
+        })
+        .unwrap_or(false);
+    if !has_synthetic {
+        return Err(format!(
+            "prompt_async 未保留 synthetic part：{}",
+            first_message
+        ));
+    }
 
     let session_path = format!("/session/{session_id}");
     http::send(base, None, "DELETE", &session_path, &query, None)
@@ -311,6 +383,136 @@ async fn proxy_roundtrip(base: &str) -> Result<String, String> {
         .map_err(|err| format!("清理会话失败：{err:#}"))?;
 
     Ok(format!("会话 {session_id}，读到 {count} 条消息，已清理"))
+}
+
+/// 历史消息编辑依赖 `revert` 持久化边界、`unrevert` 清空边界。
+/// 全部使用 noReply 消息，不调用模型，因此不消耗 token。
+async fn check_revert_roundtrip(base: &str) -> Result<String, String> {
+    let directory = std::env::current_dir()
+        .map_err(|err| err.to_string())?
+        .to_string_lossy()
+        .to_string();
+    let query = vec![("directory".to_string(), directory)];
+    let created = http::send(
+        base,
+        None,
+        "POST",
+        "/session",
+        &query,
+        Some(&serde_json::json!({ "title": "desktop-selftest-revert" })),
+    )
+    .await
+    .map_err(|err| format!("创建会话失败：{err:#}"))?;
+    let session_id = created
+        .get("id")
+        .and_then(|value| value.as_str())
+        .ok_or("创建会话未返回 id")?
+        .to_string();
+    let session_path = format!("/session/{session_id}");
+    let message_path = format!("/session/{session_id}/message");
+    let prompt_path = format!("/session/{session_id}/prompt_async");
+
+    let result = async {
+        let mut message_ids = Vec::with_capacity(2);
+        for index in 0..2 {
+            let message_id = new_message_id();
+            http::send(
+                base,
+                None,
+                "POST",
+                &prompt_path,
+                &query,
+                Some(&serde_json::json!({
+                    "messageID": message_id,
+                    "parts": [{ "type": "text", "text": format!("revert selftest {index}") }],
+                    "noReply": true
+                })),
+            )
+            .await
+            .map_err(|err| format!("写入第 {} 条消息失败：{err:#}", index + 1))?;
+            wait_for_message(base, &message_path, &query, &message_id).await?;
+            message_ids.push(message_id);
+        }
+
+        let boundary = message_ids.get(1).ok_or("第二条消息 ID 缺失")?.clone();
+        let reverted = http::send(
+            base,
+            None,
+            "POST",
+            &format!("/session/{session_id}/revert"),
+            &query,
+            Some(&serde_json::json!({ "messageID": boundary })),
+        )
+        .await
+        .map_err(|err| format!("revert 失败：{err:#}"))?;
+        let revert_message = reverted
+            .get("revert")
+            .and_then(|value| value.get("messageID"))
+            .and_then(|value| value.as_str());
+        if revert_message != Some(boundary.as_str()) {
+            return Err(format!(
+                "revert 未持久化边界：期望 {boundary}，实际 {revert_message:?}"
+            ));
+        }
+
+        let restored = http::send(
+            base,
+            None,
+            "POST",
+            &format!("/session/{session_id}/unrevert"),
+            &query,
+            None,
+        )
+        .await
+        .map_err(|err| format!("unrevert 失败：{err:#}"))?;
+        if restored
+            .get("revert")
+            .and_then(|value| value.as_object())
+            .is_some()
+        {
+            return Err(format!("unrevert 后仍保留 revert：{restored}"));
+        }
+
+        Ok(format!(
+            "会话 {session_id}，revert 边界 {boundary}，unrevert 已清空"
+        ))
+    }
+    .await;
+
+    let _ = http::send(base, None, "DELETE", &session_path, &query, None).await;
+    result
+}
+
+async fn wait_for_message(
+    base: &str,
+    message_path: &str,
+    query: &[(String, String)],
+    message_id: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let messages = http::send(base, None, "GET", message_path, query, None)
+            .await
+            .map_err(|err| format!("读取消息失败：{err:#}"))?;
+        let found = messages
+            .as_array()
+            .map(|items| {
+                items.iter().any(|item| {
+                    item.get("info")
+                        .and_then(|info| info.get("id"))
+                        .and_then(|id| id.as_str())
+                        == Some(message_id)
+                })
+            })
+            .unwrap_or(false);
+        if found {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("消息 {message_id} 5s 内未落库"));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// 只校验路由契约存在，不调用模型，因此自检不消耗 token。
