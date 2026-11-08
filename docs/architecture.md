@@ -24,6 +24,7 @@ graph LR
   IPC -- "HTTP" --> CLI["deveco serve<br/>127.0.0.1:随机端口"]
   MAIN -- "SSE /global/event" --> CLI
   MAIN -- "WebSocket /pty" --> CLI
+  MAIN -- "HTTPS 更新清单与包" --> GH["GitHub Releases"]
   MAIN -- "系统通知" --> N["macOS 通知中心"]
   CLI <--> DATA["CLI 配置与会话数据<br/>~/.config/deveco<br/>~/.local/share/deveco"]
 ```
@@ -57,7 +58,7 @@ graph LR
 
 | 模块 | 职责 |
 |---|---|
-| `src/main.rs` | Tauri 主进程：窗口、托盘、菜单、单实例、信号、SSE 中继、通知和后端监管 |
+| `src/main.rs` | Tauri 主进程：窗口、托盘、菜单、单实例、信号、SSE 中继、通知、更新插件和后端监管 |
 | `src/lib.rs` | 共享库导出，供主进程与无头自检复用 |
 | `src/cli.rs` | 按“配置 → 环境变量 → 常见路径 → login shell → PATH”定位 CLI |
 | `src/backend.rs` | 启动编排：定位 CLI、复用或拉起 serve、健康检查、读取项目目录 |
@@ -96,6 +97,7 @@ graph LR
 | 底部终端 | `components/TerminalPanel.tsx` |
 | 右栏 | `components/RightPanel.tsx`、`components/ChangesPanel.tsx`、`components/FilesPanel.tsx`、`components/DiffView.tsx`、`components/FilePreview.tsx`、`components/TasksPanel.tsx`、`components/DevicePanel.tsx` |
 | 概览与设置 | `components/TaskOverview.tsx`、`components/Settings.tsx`、`components/settings/*` |
+| 应用内更新 | `update.ts`、`components/UpdateBanner.tsx`、`components/settings/AboutPage.tsx` |
 | 交互基础 | `contextMenu.tsx`、`components/Shortcuts.tsx`、`components/Icon.tsx` |
 | 纯逻辑工具 | `attachments.ts`、`changes.ts`、`diff.ts`、`fileTree.ts`、`clipboard.ts`、`filePreview.ts`、`mentions.ts`、`messageStats.ts`、`models.ts`、`paths.ts`、`tasks.ts`、`theme.ts`、`uiPrefs.ts` |
 
@@ -118,6 +120,8 @@ graph LR
 7. 底部终端由 `terminal.rs` 调用 `/pty` 创建会话，用一次性 ticket 建立 WebSocket；
    输出经 `deveco://terminal` 事件交给 xterm，前端按键再由 Rust 写回同一条连接。
 8. 退出或崩溃时按进程组停止 serve；异常断开进入自愈状态机。
+9. 应用内更新由 Tauri updater 读取 GitHub 的 `latest.json` 或 `latest-offline.json`，
+   校验 Ed25519 签名和签名中的版本号；用户确认后替换 `.app`，重启由用户触发。
 
 前端在打开会话、后端恢复或收到 `session.idle`/`session.error` 后，会用
 `/session/status` 与消息快照校准执行态。空闲会话里残留的 `running`/`pending` 工具和未结束的

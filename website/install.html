@@ -167,7 +167,8 @@ deveco --version</code></pre>
 
           <section>
             <h2>更新与卸载</h2>
-            <p>目前没有自动更新。更新时退出旧版本，下载新的 DMG 并覆盖“应用程序”中的旧应用。</p>
+            <p>应用启动后会检查 GitHub Releases；也可以在“设置 → 关于与更新”或菜单中手动检查。发现新版本后由你确认下载安装，重启应用后生效。普通版和 Offline 版各自使用独立清单，Offline 版更新会同时替换内置 CLI。</p>
+            <p>如果应用从 DMG 直接运行或没有写入权限，更新会失败，请先把应用拖入“应用程序”。更新使用 Ed25519 签名校验，但仍可能需要重新允许 macOS 的文件夹访问。</p>
             <p>
               卸载时先完全退出应用，再删除 <code>DevEco Code.app</code> 或 <code>DevEco Code Offline.app</code>。如确认不再需要本地配置、
               缓存和日志，可以手动删除：
@@ -235,7 +236,7 @@ rm -rf "$HOME/Library/Logs/DevEco Code Desktop"</code></pre>
           <a href="index.html">返回首页</a>
         </div>
         <div class="footer-meta">
-          <span>v0.2.2 · macOS 12+</span>
+          <span>v0.2.3 · macOS 12+</span>
           <span>© <span data-year>2026</span> DevEco Code Desktop contributors</span>
         </div>
       </div>

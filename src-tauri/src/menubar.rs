@@ -115,6 +115,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
+    let updates = MenuItem::with_id(
+        app,
+        MenuId::new("tray_updates"),
+        "检查更新…",
+        true,
+        None::<&str>,
+    )?;
     let always_on_top = CheckMenuItem::with_id(
         app,
         MenuId::new("tray_always_on_top"),
@@ -190,6 +197,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             &show,
             &hide,
             &settings,
+            &updates,
             &separator_a,
             &always_on_top,
             &icon_menu,
@@ -490,6 +498,10 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
         "tray_settings" => {
             crate::focus_main(app);
             emit_menu_action(app, "settings");
+        }
+        "tray_updates" => {
+            crate::focus_main(app);
+            emit_menu_action(app, "check_updates");
         }
         "tray_restart" => {
             app.state::<BackendCtl>().request_restart();

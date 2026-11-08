@@ -18,8 +18,10 @@ import Settings from "./components/Settings";
 import Shortcuts from "./components/Shortcuts";
 import TaskOverview from "./components/TaskOverview";
 import TerminalPanel from "./components/TerminalPanel";
+import UpdateBanner from "./components/UpdateBanner";
 import { Icon } from "./components/Icon";
 import { AppIcon } from "./components/AppIcon";
+import { checkForUpdates, configureAutoCheck } from "./update";
 
 export default function App() {
   const booted = useRef(false);
@@ -88,10 +90,20 @@ export default function App() {
         case "reload_ui":
           window.location.reload();
           break;
+        case "check_updates":
+          state.openSettings("about");
+          void checkForUpdates();
+          break;
         default:
           break;
       }
     }).then((un) => unlisteners.push(un));
+
+    // 启动后的更新检查由桌面端配置控制；读取失败时保持默认开启。
+    void api
+      .getSettings()
+      .then(({ config }) => configureAutoCheck(config.updates.auto_check))
+      .catch(() => configureAutoCheck(true));
 
     // ⌘, 打开设置（macOS 惯例）
     const onKey = (event: KeyboardEvent) => {
@@ -233,6 +245,7 @@ export default function App() {
       )}
       <main className="main">
         <BackendBanner />
+        <UpdateBanner />
         <ChatView />
         <Composer />
         <TerminalPanel />

@@ -32,7 +32,8 @@ deveco --version
 - Apple Silicon（M1/M2/M3/M4）：选择文件名带 `aarch64` 或 `arm64` 的 DMG；
 - Intel：选择文件名带 `x64` 或 `x86_64` 的 DMG。
 
-不要从第三方镜像下载安装包。发布页不提供自动更新，应用也不会自动替换自身。
+不要从第三方镜像下载安装包。应用会从 GitHub Releases 检查更新，但下载和安装仍需用户确认，
+不会在后台静默替换自身。
 
 ## 校验下载
 
@@ -53,8 +54,8 @@ Offline 版把模式换成 `DevEco.Code.Offline_.*aarch64.dmg$`。使用 GitHub 
 仓库启用 immutable release 后，还可以验证整个发布：
 
 ```bash
-gh attestation verify "DevEco.Code_0.2.2_aarch64.dmg" -R SherlockGougou/devecocode-desktop
-gh release verify v0.2.2 -R SherlockGougou/devecocode-desktop
+gh attestation verify "DevEco.Code_0.2.3_aarch64.dmg" -R SherlockGougou/devecocode-desktop
+gh release verify v0.2.3 -R SherlockGougou/devecocode-desktop
 ```
 
 attestation 只证明资产来自该仓库的构建工作流，不能替代 Apple Developer ID 签名或公证；
@@ -115,6 +116,24 @@ tap 源在 <https://github.com/SherlockGougou/homebrew-tap>。查看安装信息
 brew info --cask sherlockgougou/tap/devecocode-desktop
 ```
 
+## 应用内更新
+
+正常启动后，应用会静默检查 GitHub Releases；也可以在“设置 → 关于与更新”或应用菜单中手动
+检查。发现新版本后，主窗口顶部会出现横幅：
+
+1. 点击“下载并安装”，等待下载和签名校验完成；
+2. 安装完成后点击“立即重启”，或稍后手动退出再打开应用；
+3. 正在执行的会话和内存中的排队消息会因重启中断，应用会在重启前再次确认。
+
+普通版与 Offline 版分别使用 `latest.json` 和 `latest-offline.json`。Offline 版更新会一并
+替换内置 CLI。更新包使用 Ed25519 签名，公钥固定在应用内；不要从未知来源替换
+`DevEco Code.app`。
+
+从 DMG 直接运行或没有写入权限时，更新无法替换应用，请先把应用拖入“应用程序”。更新后
+ad-hoc 签名可能变化，macOS 的“文稿”等文件夹授权可能需要重新允许。Homebrew cask 安装的
+应用可以使用应用内更新，但 Homebrew 的版本记录不会同步；需要时继续执行
+`brew upgrade --cask`。
+
 ## 首次配置
 
 ### 连接 CLI
@@ -158,9 +177,9 @@ brew info --cask sherlockgougou/tap/devecocode-desktop
 - `~/Library/Application Support/DevEco Code Desktop/device-shots/`
 - 日志：`~/Library/Logs/DevEco Code Desktop/app.log`
 
-## 更新
+## 手动更新
 
-当前没有应用内自动更新。更新步骤：
+应用内更新不可用时，可以手动更新：
 
 1. 退出旧版本（托盘菜单“退出”，不要只关闭窗口）；
 2. 如果通过 Homebrew 安装，执行 `brew upgrade --cask devecocode-desktop` 或

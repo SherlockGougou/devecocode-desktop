@@ -15,7 +15,7 @@
 | `labeler.yml` | pull request | 按改动路径添加 `frontend`、`rust`、`docs`、`ci` 标签 | PR #15 自动添加 `ci` |
 | `dependabot-automerge.yml` | Dependabot pull request | patch/minor 在 7 项必需检查通过后启用 squash auto-merge；major 和未知类型跳过 | 待下一次 Dependabot PR 验证 |
 | `update-homebrew.yml` | Release 成功、手动 | 从已发布 Release 读取 `SHA256SUMS.txt`，更新独立 tap 的两个 cask | v0.2.2 手动验证通过；run `42492068139` 推送了 tap commit `7493e76` |
-| `release.yml` | push `v*` 标签、手动 | 构建 arm64/x64 普通版与 Offline 版，生成校验和、attestation、双语正文，draft-first 发布 | v0.2.1、v0.2.2 通过；v0.2.2 run `42483989177` |
+| `release.yml` | push `v*` 标签、手动 | 构建 arm64/x64 普通版与 Offline 版，生成更新包与签名、两套 updater 清单、校验和、attestation、双语正文，draft-first 发布 | v0.2.1、v0.2.2 通过；v0.2.2 run `42483989177` |
 | `pages.yml` | `website/**` 变更、手动 | 校验静态官网并部署到 GitHub Pages | 提交 `31f9675` 通过 |
 
 ## 仓库设置
@@ -83,8 +83,9 @@ git tag -a v0.2.3 -m "DevEco Code Desktop v0.2.3"
 git push origin v0.2.3
 ```
 
-`release-check` 通过后再打标签。标签推送后观察 `Release` workflow：draft 创建、四个 DMG
-和两个 Offline zip 上传、`SHA256SUMS.txt`、双语正文、publish 和 immutable 检查都应成功。
+`release-check` 通过后再打标签。标签推送后观察 `Release` workflow：draft 创建、四个 DMG、
+两个 Offline zip、四个 `.app.tar.gz` 与 `.sig`、`SHA256SUMS.txt`、`latest.json`、
+`latest-offline.json`、双语正文、publish 和 immutable 检查都应成功。
 Release 成功后 `update-homebrew.yml` 会自动更新 tap；如果只看 Release 成功而 tap 失败，
 按上面的 `workflow_dispatch` 重跑，不要重新打标签或重建 Release。
 

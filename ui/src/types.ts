@@ -192,7 +192,8 @@ export type SettingsPage =
   | "extensions"
   | "cli"
   | "notifications"
-  | "diagnostics";
+  | "diagnostics"
+  | "about";
 
 export interface NotificationSettings {
   enabled: boolean;
@@ -222,12 +223,18 @@ export interface MenuBarSettings {
   always_visible: boolean;
 }
 
+export interface UpdateSettings {
+  /** 启动后静默检查桌面端更新 */
+  auto_check: boolean;
+}
+
 export interface AppConfig {
   cli_path: string | null;
   use_bundled_cli: boolean;
   notifications: NotificationSettings;
   server: ServerSettings;
   menu_bar: MenuBarSettings;
+  updates: UpdateSettings;
 }
 
 export interface TrayContext {

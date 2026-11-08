@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { onAppEvent } from "../appEvents";
 import { useApp } from "../store";
+import { configureAutoCheck } from "../update";
 import type {
   AppConfig,
   CliConfigScope,
@@ -15,6 +16,7 @@ import { Icon, type IconName } from "./Icon";
 import AccountModelsPage from "./settings/AccountModelsPage";
 import AgentPermissionsPage from "./settings/AgentPermissionsPage";
 import AppearancePage from "./settings/AppearancePage";
+import AboutPage from "./settings/AboutPage";
 import CliServicePage from "./settings/CliServicePage";
 import CliConfigPage from "./settings/CliConfigPage";
 import ExtensionsPage from "./settings/ExtensionsPage";
@@ -38,6 +40,7 @@ const PAGES: Array<{ id: SettingsPage; label: string; icon: IconName }> = [
   { id: "cli", label: "CLI 与服务", icon: "terminal" },
   { id: "notifications", label: "通知", icon: "bell" },
   { id: "diagnostics", label: "诊断", icon: "activity" },
+  { id: "about", label: "关于与更新", icon: "download" },
 ];
 
 const CONFIG_PAGES = new Set<SettingsPage>(["account", "agent", "extensions", "cli"]);
@@ -214,6 +217,7 @@ export default function Settings() {
       setOriginal(result.config);
       setDraft(result.config);
       setRestartRequired(result.restartRequired);
+      configureAutoCheck(result.config.updates.auto_check);
       setStatus({ kind: "saved" });
     } catch (err) {
       setStatus({ kind: "error", message: String(err) });
@@ -464,6 +468,16 @@ export default function Settings() {
               {upgradeResult && <p className="settings-note">{upgradeResult}</p>}
             </section>
           </>
+        );
+      case "about":
+        return (
+          <AboutPage
+            runtime={runtime}
+            autoCheck={draft.updates.auto_check}
+            onAutoCheckChange={(auto_check) =>
+              setDraft({ ...draft, updates: { ...draft.updates, auto_check } })
+            }
+          />
         );
       default:
         return null;

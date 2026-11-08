@@ -62,6 +62,8 @@ npm --prefix ui install
 | `DEVECO_DESKTOP_NOTIFY_TEST` | 设置任意值后，在首次就绪时投递一条通知通道测试 |
 | `HDC` | 显式指定 hdc 可执行文件；未设置时由应用自动探测并注入 serve |
 | `RUST_LOG` | Rust 日志级别，默认 `info` |
+| `TAURI_SIGNING_PRIVATE_KEY` | 打更新包时使用的 Ed25519 私钥内容或路径；只放在本机或 GitHub Actions secret |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 私钥口令；无口令时留空 |
 
 本机服务口令由设置页的 `secure` 开关控制。开启后应用生成随机口令并写入应用配置；
 测试时不要把它写进仓库或日志。
@@ -110,6 +112,28 @@ npm run check:selftest
 `website/assets/screenshots/`；设备截图只保留公开可展示的机型、系统版本和系统页面，
 不能包含通知、账号或聊天内容。素材清单和生成约定见
 [截图素材](assets/screenshots/README.md)。
+
+### 更新包本地验证
+
+应用内更新的真实替换需要两个版本和同一把签名密钥。测试时不要改提交里的版本号，使用
+`.agent-temp/` 下的临时 Tauri 配置覆盖 `version`、`plugins.updater.endpoints` 和
+`dangerousInsecureTransportProtocol`，构建较低/较高两个测试 `.app`，再用本地 HTTP
+服务提供 `latest.json`。安装较低版本、触发检查、下载、替换和重启，确认更新机制生效；
+如果要同时验证界面显示的版本号，临时用 `npm run release:prepare` 同步四处版本文件，
+测试后逐个还原。测试配置不能进入发布包；正式发布只使用 `src-tauri/tauri.updater.conf.json` 和
+`TAURI_SIGNING_PRIVATE_KEY`。
+
+清单脚本可以独立验证：
+
+```bash
+node scripts/updater/prepare-fixtures.mjs --out /tmp/updater-fixture-assets
+node scripts/render-updater-manifests.mjs \
+  --tag v0.2.3 \
+  --repo example/repo \
+  --assets /tmp/updater-fixture-assets \
+  --out /tmp/updater-manifests \
+  --pub-date 2026-11-08T00:00:00Z
+```
 
 验证设备 skill：
 
@@ -199,12 +223,16 @@ force push。规则里的 `bypass_actors` 只允许仓库所有者绕过。
 1. 校验 tag 与 `package.json`、`ui/package.json`、`src-tauri/Cargo.toml`、
    `src-tauri/tauri.conf.json` 中的版本一致；
 2. 分别构建 `aarch64-apple-darwin` 和 `x86_64-apple-darwin`；
-3. 通过 `tauri-action` 把普通版 `.app` / `.dmg` 写入 **draft** Release 和 Actions artifacts；
+3. 通过 `tauri-action` 把普通版 `.app` / `.dmg`、`.app.tar.gz` 和 `.sig` 写入 **draft**
+   Release 和 Actions artifacts；构建时额外传入 `src-tauri/tauri.updater.conf.json`，
+   由 CI secret `TAURI_SIGNING_PRIVATE_KEY` 签名；
 4. `offline` job 构建离线包并继续写入同一 draft；
 5. `build` 和 `offline` job 分别用 `actions/attest` 为 DMG/zip 生成 build provenance；
-6. `checksums` job 下载 draft 资产，生成 `SHA256SUMS.txt` 并上传；
+6. `checksums` job 下载 draft 资产，生成 `SHA256SUMS.txt`，再由
+   `scripts/render-updater-manifests.mjs` 生成 `latest.json` 和 `latest-offline.json` 并上传；
 7. `release-notes` job 更新双语正文；
-8. `publish` job 校验资产数量、`SHA256SUMS.txt` 和双语正文后执行 `gh release edit --draft=false`。
+8. `publish` job 校验资产数量、`SHA256SUMS.txt`、两套 updater 清单和双语正文后执行
+   `gh release edit --draft=false`。
 
 发布流程刻意保持 draft-first。不要把 `releaseDraft` 或 `softprops` 的 `draft` 改回
 `false`：启用 release immutability 后，已发布 Release 不能再追加资产，Offline 包会上传失败。
@@ -216,13 +244,13 @@ force push。规则里的 `bypass_actors` 只允许仓库所有者绕过。
 准备新版本时，先用脚本同步四处版本号：
 
 ```bash
-npm run release:prepare -- 0.2.2
+npm run release:prepare -- 0.2.3
 ```
 
-然后编写 `docs/releases/v0.2.2.md`、更新 CHANGELOG 和官网页脚。推送前在 Actions 中手动
-运行 `Release readiness`，输入 `v0.2.2`；它会校验版本一致性、双语正文和占位符。
+然后编写 `docs/releases/v0.2.3.md`、更新 CHANGELOG 和官网页脚。推送前在 Actions 中手动
+运行 `Release readiness`，输入 `v0.2.3`；它会校验版本一致性、双语正文和占位符。
 
-手动发布时，在 Actions 中选择 `Release`，填写与项目版本一致的 tag（例如 `v0.2.2`）。
+手动发布时，在 Actions 中选择 `Release`，填写与项目版本一致的 tag（例如 `v0.2.3`）。
 同一 workflow 的 `offline` job 还会构建包含固定 CLI 的离线版；其资源准备、体积和验收见
 [离线版打包](offline-packaging.md)。
 
@@ -231,7 +259,7 @@ Release 正文读取 `docs/releases/vX.Y.Z.md`，必须同时包含中英文段�
 
 Release 成功后，`update-homebrew.yml` 会用 `HOMEBREW_TAP_TOKEN` 把两个 cask 更新到
 `SherlockGougou/homebrew-tap`；失败时用 `workflow_dispatch` 输入同一个 tag 重跑。可以用
-`npm run homebrew:render -- --version v0.2.2 --sums SHA256SUMS.txt --out-dir /tmp/casks`
+`npm run homebrew:render -- --version v0.2.3 --sums SHA256SUMS.txt --out-dir /tmp/casks`
 在本地预览生成结果，再运行 `brew style`。
 
 官网由 `.github/workflows/pages.yml` 部署到 GitHub Pages；本地预览方式见

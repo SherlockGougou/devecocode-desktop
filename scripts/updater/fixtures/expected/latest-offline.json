@@ -1,0 +1,23 @@
+{
+  "version": "0.2.3",
+  "notes": "https://github.com/example/repo/releases/tag/v0.2.3",
+  "pub_date": "2026-11-08T00:00:00.000Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "untrusted comment: signature from tauri secret key\nU1RVMS1GSVhUVVJFLUFFUk02NA==\ntrusted comment: timestamp:1762560000 file:DevEco.Code.Offline_0.2.3_aarch64.app.tar.gz version:0.2.3\nU1RVMS1GSVhUVVJFLVNJR05BVFVSRTY0",
+      "url": "https://github.com/example/repo/releases/download/v0.2.3/DevEco.Code.Offline_0.2.3_aarch64.app.tar.gz"
+    },
+    "darwin-aarch64-app": {
+      "signature": "untrusted comment: signature from tauri secret key\nU1RVMS1GSVhUVVJFLUFFUk02NA==\ntrusted comment: timestamp:1762560000 file:DevEco.Code.Offline_0.2.3_aarch64.app.tar.gz version:0.2.3\nU1RVMS1GSVhUVVJFLVNJR05BVFVSRTY0",
+      "url": "https://github.com/example/repo/releases/download/v0.2.3/DevEco.Code.Offline_0.2.3_aarch64.app.tar.gz"
+    },
+    "darwin-x86_64": {
+      "signature": "untrusted comment: signature from tauri secret key\nU1RVMS1GSVhUVVJFLUFFUk02NA==\ntrusted comment: timestamp:1762560000 file:DevEco.Code.Offline_0.2.3_x64.app.tar.gz version:0.2.3\nU1RVMS1GSVhUVVJFLVNJR05BVFVSRTY0",
+      "url": "https://github.com/example/repo/releases/download/v0.2.3/DevEco.Code.Offline_0.2.3_x64.app.tar.gz"
+    },
+    "darwin-x86_64-app": {
+      "signature": "untrusted comment: signature from tauri secret key\nU1RVMS1GSVhUVVJFLUFFUk02NA==\ntrusted comment: timestamp:1762560000 file:DevEco.Code.Offline_0.2.3_x64.app.tar.gz version:0.2.3\nU1RVMS1GSVhUVVJFLVNJR05BVFVSRTY0",
+      "url": "https://github.com/example/repo/releases/download/v0.2.3/DevEco.Code.Offline_0.2.3_x64.app.tar.gz"
+    }
+  }
+}

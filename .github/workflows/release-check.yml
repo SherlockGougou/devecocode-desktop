@@ -37,6 +37,36 @@ jobs:
       - name: Verify version and release notes
         run: |
           node scripts/check-release-version.mjs "$RELEASE_TAG"
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          const config = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8"));
+          const updater = config.plugins?.updater;
+          if (!updater?.pubkey || updater.pubkey.includes("REPLACE")) {
+            throw new Error("tauri.conf.json 缺少 updater 公钥");
+          }
+          if (!Array.isArray(updater.endpoints) || updater.endpoints.length === 0) {
+            throw new Error("tauri.conf.json 缺少 updater 端点");
+          }
+          if (updater.requireSignedVersion !== true) {
+            throw new Error("updater 必须启用 requireSignedVersion");
+          }
+          for (const endpoint of updater.endpoints) {
+            if (!endpoint.startsWith("https://")) {
+              throw new Error(`updater 端点必须使用 HTTPS：${endpoint}`);
+            }
+          }
+          const offline = JSON.parse(
+            readFileSync("src-tauri/tauri.offline.conf.json", "utf8"),
+          );
+          const offlineEndpoints = offline.plugins?.updater?.endpoints;
+          if (!Array.isArray(offlineEndpoints) || offlineEndpoints.length === 0) {
+            throw new Error("Offline 配置缺少独立 updater 端点");
+          }
+          if (!offlineEndpoints.every((endpoint) => endpoint.startsWith("https://"))) {
+            throw new Error("Offline updater 端点必须使用 HTTPS");
+          }
+          JSON.parse(readFileSync("src-tauri/tauri.updater.conf.json", "utf8"));
+          NODE
           node scripts/render-release-notes.mjs "$RELEASE_TAG" .release-notes.md
           test -s .release-notes.md
           if grep -q "{{" .release-notes.md; then

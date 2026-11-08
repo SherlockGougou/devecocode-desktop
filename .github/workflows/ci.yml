@@ -52,7 +52,38 @@ jobs:
           node --check scripts/stage-offline-cli.mjs
           node --check scripts/build-offline.mjs
           node --check scripts/render-release-notes.mjs
+          node --check scripts/render-updater-manifests.mjs
+          node --check scripts/updater/prepare-fixtures.mjs
           node -e "JSON.parse(require('fs').readFileSync('src-tauri/tauri.offline.conf.json'))"
+          node -e "JSON.parse(require('fs').readFileSync('src-tauri/tauri.updater.conf.json'))"
+          node scripts/updater/prepare-fixtures.mjs --out "$RUNNER_TEMP/updater-fixture-assets"
+          node scripts/render-updater-manifests.mjs \
+            --tag v0.2.3 \
+            --repo example/repo \
+            --assets "$RUNNER_TEMP/updater-fixture-assets" \
+            --out "$RUNNER_TEMP/updater-manifests" \
+            --pub-date 2026-11-08T00:00:00Z
+          diff -u scripts/updater/fixtures/expected/latest.json "$RUNNER_TEMP/updater-manifests/latest.json"
+          diff -u scripts/updater/fixtures/expected/latest-offline.json "$RUNNER_TEMP/updater-manifests/latest-offline.json"
+          if node scripts/render-updater-manifests.mjs \
+            --tag v0.2.4 \
+            --repo example/repo \
+            --assets "$RUNNER_TEMP/updater-fixture-assets" \
+            --out "$RUNNER_TEMP/updater-bad-version"; then
+            echo "版本不匹配的清单不应生成成功"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/updater-missing-signature"
+          cp "$RUNNER_TEMP/updater-fixture-assets/"* "$RUNNER_TEMP/updater-missing-signature/"
+          rm "$RUNNER_TEMP/updater-missing-signature/DevEco.Code_0.2.3_aarch64.app.tar.gz.sig"
+          if node scripts/render-updater-manifests.mjs \
+            --tag v0.2.3 \
+            --repo example/repo \
+            --assets "$RUNNER_TEMP/updater-missing-signature" \
+            --out "$RUNNER_TEMP/updater-missing-signature-out"; then
+            echo "缺少签名时不应生成清单"
+            exit 1
+          fi
           node scripts/render-homebrew-casks.mjs \
             --version v0.0.0 \
             --sums scripts/homebrew/SHA256SUMS.fixture \

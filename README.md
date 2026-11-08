@@ -66,6 +66,8 @@ HarmonyOS 定制分支）的 HTTP + SSE 契约，提供自研三栏界面、系�
 - CLI 配置中心：全局或当前工作区作用域，覆盖模型、Provider、MCP、Agent、Command、
   权限、Skills、Plugins、运行参数和高级 JSONC；保存后重载 CLI，失败自动回滚。
 - 任务概览：分支、ahead/behind、文件统计、Token/费用，以及显式提交和推送。
+- 应用内更新：启动后自动检查 GitHub Releases，发现新版本后由用户确认下载安装；
+  普通版与 Offline 版各自使用独立更新清单，Offline 版更新会同时替换内置 CLI。
 - macOS 集成：菜单栏常驻、原生菜单、系统通知、窗口状态恢复和全局右键菜单。
 - 可靠性：实时后端监管、崩溃自愈、进程组回收、代理健康检查和 `/global/event` 订阅。
 
@@ -161,10 +163,12 @@ npm run check:selftest
 - `.github/workflows/dependabot-automerge.yml` 对 patch/minor 更新在 7 项必需检查通过后
   自动 squash 合并；major 和未知类型继续人工处理。
 - `.github/workflows/release-check.yml` 手动检查版本一致性、双语 Release notes 和占位符；
-  `npm run release:prepare -- 0.2.2` 同步四个版本文件。
+  `npm run release:prepare -- 0.2.3` 同步四个版本文件。
 - `.github/workflows/release.yml` 在推送 `v*` 标签或手动触发时构建 Apple Silicon 与 Intel
   两种 DMG，并额外构建包含固定 CLI 的 Offline 版本。发布使用 draft-first：普通版、
-  Offline 版、双语 notes 和 `SHA256SUMS.txt` 全部完成后才公开。
+  Offline 版、双语 notes、`SHA256SUMS.txt` 和两套 updater 清单全部完成后才公开。
+- 更新包使用自建 Ed25519 签名，由 `TAURI_SIGNING_PRIVATE_KEY` 在 CI 中签名；公钥固定在
+  应用内。Release 额外提供 `latest.json`、`latest-offline.json`、`.app.tar.gz` 和 `.sig`。
 - 发布资产生成 `SHA256SUMS.txt` 和 GitHub artifact attestation；仓库设置应启用
   Release immutability，使已发布的 tag 和资产不可再修改。
 - `main` 与 `v*` 的 ruleset 已配置：主分支要求 PR、CI、CodeQL 和 Dependency Review；
@@ -231,7 +235,8 @@ CLI 自己的配置与会话数据位于 `~/.config/deveco/` 与 `~/.local/share
 
 ## 已知限制
 
-- 仅验证 macOS，尚无 Universal 二进制、正式签名、公证和自动更新。
+- 仅验证 macOS，尚无 Universal 二进制、正式签名和公证；应用内更新使用自建 Ed25519
+  签名，不等于 Apple Developer ID。
 - 锁屏时 CLI 可能阻塞；通知点击只能聚焦窗口。
 - 权限卡片需要 CLI 侧 `permission: ask`；设备面板和 Agent 设备 skill 需要开发者模式、
   调试授权和 `hdc`。

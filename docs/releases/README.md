@@ -3,7 +3,7 @@
 每个发布标签对应一份 Markdown 文件：
 
 ```text
-docs/releases/v0.2.2.md
+docs/releases/v0.2.3.md
 ```
 
 发布 workflow 在普通版和 Offline 版产物都上传完成后，读取与标签同版本的文件并更新
@@ -20,6 +20,8 @@ GitHub Release 正文。文件必须同时包含以下二级标题：
 - Apple Silicon / Intel 的 DMG 文件名；
 - CLI 是否内置、是否需要单独安装；
 - 未签名、未公证的首次打开流程；
+- 应用内更新的适用范围；首个带更新功能的版本要说明更早版本需手动安装一次；
+- `latest.json`、`latest-offline.json`、`.app.tar.gz` 和 `.sig` 的作用；
 - `SHA256SUMS.txt` 与 artifact attestation 的校验入口；
 - 已知限制和完整安装文档链接。
 

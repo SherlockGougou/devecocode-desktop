@@ -3,14 +3,22 @@
 版本说明按发布标签维护在 [`docs/releases/`](docs/releases/README.md)。Release workflow
 会读取对应版本的 Markdown 文件，生成 GitHub Release 正文。
 
-## Unreleased
+## 0.2.3 - 2026-11-08
 
+- 新增应用内更新：普通版与 Offline 版分别检查 `latest.json` / `latest-offline.json`；
+  设置页提供自动检查开关、下载/安装进度和发布说明，菜单栏与应用菜单可直接检查更新。
+- Release 构建增加 Ed25519 更新包签名、`.app.tar.gz` / `.sig` 资产和两套 updater 清单；
+  更新包使用前端固定的公钥和 `requireSignedVersion` 校验。
+- 修复桌面端设置保存只更新内存、不写入 `config.json` 的问题；后端自愈时也不再覆盖
+  启动后保存的配置。
 - 新增完整英文 README，中文仍为默认入口，并在两份 README 顶部互相切换。
 - Dependabot 的 patch/minor 更新在 7 项必需检查通过后自动 squash 合并；major 继续人工处理。
 - 新增独立 Homebrew tap `SherlockGougou/homebrew-tap`，提供普通版与 Offline 版 cask，
   按 arm64/x64 校验 DMG。
 - Release 成功后自动更新 tap cask；更新失败可用同一 tag 手动重跑。
 - 新增 Homebrew Cask 渲染脚本、cask 模板和 tap CI。
+
+完整说明：[v0.2.3](docs/releases/v0.2.3.md)
 
 ## 0.2.2 - 2026-11-08
 

@@ -11,7 +11,14 @@
 - **没有 Developer ID 签名和公证。** 发布包使用 ad-hoc 签名（`signingIdentity: "-"`），
   不是 Apple 可验证身份；其他 Mac 首次打开仍可能触发 Gatekeeper 提示。安装说明见
   [macOS 安装与使用](installation.md)。
-- **没有自动更新。** 版本升级需要重新构建或下载新的 `.app`，Tauri updater 尚未接入。
+- **应用内更新依赖 GitHub Releases。** 普通版与 Offline 版分别读取两套静态清单；更新包
+  使用自建 Ed25519 签名，不是 Apple Developer ID。首个带更新功能的版本发布前，0.2.2 及
+  更早版本仍需手动安装一次。
+- **更新后可能需要重新授权。** 发布包仍是 ad-hoc 签名，替换应用后 macOS 的文件夹授权
+  可能失效，需要在系统提示中重新允许。
+- **只读位置无法替换应用。** 从 DMG 直接运行、App Translocation 或没有写入权限时，更新
+  会失败；需要先把应用拖入“应用程序”。Homebrew cask 的版本记录不会随应用内更新同步，
+  但可以继续用 `brew upgrade --cask` 重装。
 - **普通版不打包 CLI。** 用户必须先安装并登录 `@deveco/deveco-code`；Offline 版使用内置
   固定版本 CLI。
 - **不支持多 Tab。** 这是明确的产品决策，不是待实现功能。

@@ -52,6 +52,7 @@ fn main() {
             focus_main(app);
         }))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // 记住窗口大小/位置，下次启动恢复
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
@@ -111,6 +112,7 @@ fn main() {
                 "shortcuts",
                 "open_logs",
                 "reload_ui",
+                "check_updates",
             ];
             let id = event.id().0.as_str();
             if APP_MENU_ACTIONS.contains(&id) {
@@ -167,6 +169,16 @@ async fn run_backend(app: AppHandle) {
         Some(path) => Config::load(path),
         None => Config::default(),
     };
+    // 前端可能在 CLI 就绪前读取设置；先把磁盘配置放进共享状态，避免拿到默认值。
+    {
+        let settings = app.state::<ipc::SettingsState>();
+        if let Ok(mut current) = settings.config.lock() {
+            *current = loaded.clone();
+        };
+        if let Ok(mut current) = settings.config_path.lock() {
+            *current = config_path.clone();
+        };
+    }
     if let (Ok(resource_dir), Some(data_dir)) = (app.path().resource_dir(), ipc::data_dir()) {
         emit_status(
             &app,
@@ -226,13 +238,7 @@ async fn run_backend(app: AppHandle) {
             continue;
         }
 
-        apply_backend(
-            &app,
-            &supervisor,
-            &loaded,
-            config_path.as_ref(),
-            &mut ready_once,
-        );
+        apply_backend(&app, &supervisor, config_path.as_ref(), &mut ready_once);
 
         let Some(url) = supervisor.global_event_url() else {
             attempt = attempt.saturating_add(1);
@@ -287,7 +293,6 @@ async fn run_backend(app: AppHandle) {
 fn apply_backend(
     app: &AppHandle,
     supervisor: &Supervisor,
-    loaded: &Config,
     config_path: Option<&std::path::PathBuf>,
     ready_once: &mut bool,
 ) {
@@ -315,20 +320,7 @@ fn apply_backend(
             runtime.config_path = config_path.map(|path| path.to_string_lossy().to_string());
             runtime.log_dir = ipc::logs_dir().map(|path| path.to_string_lossy().to_string());
             runtime.data_dir = ipc::data_dir().map(|path| path.to_string_lossy().to_string());
-        }
-        // 先把 Arc 与 guard 绑定成变量：if let 里的临时借用活不过 settings 的作用域
-        let config_handle = settings.config.clone();
-        let config_guard = config_handle.lock();
-        if let Ok(mut current) = config_guard {
-            // 用磁盘上加载的配置覆盖初始默认值：否则设置页读到的是默认值，
-            // 首次保存还会把用户自己的配置（CLI 路径、通知开关）冲掉。
-            *current = loaded.clone();
-            if let Some(path) = config_path {
-                if let Err(err) = current.save(path) {
-                    log::warn!("保存配置失败：{err}");
-                }
-            }
-        }
+        };
     }
 
     publish_phase(app, Phase::Ready);
@@ -679,6 +671,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
 
     let app_menu = SubmenuBuilder::new(app, "DevEco Code")
         .item(&PredefinedMenuItem::about(app, None, None)?)
+        .item(&MenuItemBuilder::with_id("check_updates", "检查更新…").build(app)?)
         .separator()
         .item(
             &MenuItemBuilder::with_id("settings", "设置…")

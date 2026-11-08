@@ -17,6 +17,7 @@ pub struct Config {
     pub notifications: Notifications,
     pub server: ServerCfg,
     pub menu_bar: MenuBarCfg,
+    pub updates: Updates,
     /// 有内置 CLI 时是否优先使用它；没有内置资源时仍会回退系统 CLI。
     #[serde(default = "default_true")]
     pub use_bundled_cli: bool,
@@ -69,6 +70,13 @@ pub struct MenuBarCfg {
     pub always_visible: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Updates {
+    /// 启动后是否静默检查桌面端更新
+    pub auto_check: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MenuBarIconStyle {
@@ -96,6 +104,7 @@ impl Default for Config {
             notifications: Notifications::default(),
             server: ServerCfg::default(),
             menu_bar: MenuBarCfg::default(),
+            updates: Updates::default(),
             use_bundled_cli: true,
             bundled_cli: None,
         }
@@ -128,6 +137,12 @@ impl Default for MenuBarCfg {
             icon_style: MenuBarIconStyle::Monochrome,
             always_visible: true,
         }
+    }
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Self { auto_check: true }
     }
 }
 
@@ -221,6 +236,7 @@ mod tests {
         assert_eq!(cfg.server.preferred_port, 0);
         assert_eq!(cfg.menu_bar.icon_style, MenuBarIconStyle::Monochrome);
         assert!(cfg.menu_bar.always_visible);
+        assert!(cfg.updates.auto_check);
         assert!(cfg.use_bundled_cli);
     }
 
@@ -242,6 +258,7 @@ mod tests {
                 icon_style: MenuBarIconStyle::Color,
                 always_visible: false,
             },
+            updates: Updates { auto_check: false },
             ..Default::default()
         };
         cfg.save(&path).unwrap();
@@ -262,6 +279,7 @@ mod tests {
         let value = serde_json::to_value(&cfg).unwrap();
         assert_eq!(value["menu_bar"]["icon_style"], "color");
         assert_eq!(value["menu_bar"]["always_visible"], false);
+        assert_eq!(value["updates"]["auto_check"], true);
     }
 
     #[test]
@@ -289,6 +307,20 @@ mod tests {
         assert!(cfg.use_bundled_cli);
         assert_eq!(cfg.menu_bar.icon_style, MenuBarIconStyle::Monochrome);
         assert!(cfg.menu_bar.always_visible);
+        assert!(cfg.updates.auto_check);
+    }
+
+    #[test]
+    fn 更新检查可显式关闭并往返读写() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, br#"{"updates": {"auto_check": false}}"#).unwrap();
+        let cfg = Config::load(&path);
+        assert!(!cfg.updates.auto_check);
+
+        cfg.save(&path).unwrap();
+        let loaded = Config::load(&path);
+        assert!(!loaded.updates.auto_check);
     }
 
     #[test]

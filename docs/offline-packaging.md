@@ -61,7 +61,8 @@ npm run stage:offline-cli -- --target aarch64-apple-darwin
 
 - 从 npm 下载固定版本 CLI；
 - 用 `npm pack` 取出目标架构平台包，避免在 arm runner 上安装 x64 包；
-- 生成离线 DMG 和 `.app.zip`，上传到同一个 GitHub Release；
+- 生成离线 DMG、`.app.zip`、`.app.tar.gz` 和 `.sig`，上传到同一个 GitHub Release；
+- 应用内更新使用 `latest-offline.json`，替换 `.app` 时会同时替换内置 CLI；
 - 普通版和离线版资产都由 `checksums` job 汇总到 `SHA256SUMS.txt`，并在各自构建 job
   生成 build provenance attestation；
 - 发布流程先写 draft，待离线包、双语 notes 和校验和齐全后再 publish；
@@ -75,5 +76,7 @@ npm run stage:offline-cli -- --target aarch64-apple-darwin
 4. arm64 和 x64 各自的 DMG 可安装；
 5. 断网时应用能打开并给出可读错误；
 6. CLI 许可证和第三方 notices 随 DMG 分发。
-7. `SHA256SUMS.txt` 覆盖离线 DMG 和 `.app.zip`，且 build provenance attestation 可用
+7. `.app.tar.gz`、`.sig` 和 `latest-offline.json` 存在，应用内更新后内置 CLI 仍可用；
+8. `SHA256SUMS.txt` 覆盖离线 DMG、`.app.zip`、`.app.tar.gz` 和 `.sig`，且 build
+   provenance attestation 可用
    `gh attestation verify` 验证。

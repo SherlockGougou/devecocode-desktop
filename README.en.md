@@ -84,6 +84,9 @@ paths.
   JSONC. Saving reloads the CLI and rolls back on failure.
 - **Task overview:** branch, ahead/behind, file stats, tokens/cost, and explicit commit
   and push actions.
+- **In-app updates:** checks GitHub Releases after launch and lets the user confirm the
+  download and install. The Standard and Offline builds use separate manifests; updating
+  the Offline build also replaces its bundled CLI.
 - **macOS integration:** menu bar residency, native menus, notifications, window state
   restoration, and a global context menu.
 - **Reliability:** live backend supervision, crash recovery, process-group cleanup, proxy
@@ -187,12 +190,15 @@ Read [Development](docs/development.md) (Chinese) before publishing or opening a
 - `.github/workflows/dependabot-automerge.yml` enables squash auto-merge for patch/minor
   updates after the 7 required checks pass. Major and unknown update types stay manual.
 - `.github/workflows/release-check.yml` manually validates version consistency, bilingual
-  release notes, and placeholders. `npm run release:prepare -- 0.2.2` updates all four
+  release notes, and placeholders. `npm run release:prepare -- 0.2.3` updates all four
   version files.
 - `.github/workflows/release.yml` builds Apple Silicon and Intel DMGs plus the Offline
   build on a `v*` tag or manual run. Publishing is draft-first: the Standard build, Offline
-  build, bilingual notes, and `SHA256SUMS.txt` must all exist before the release becomes
-  public.
+  build, bilingual notes, `SHA256SUMS.txt`, and both updater manifests must all exist
+  before the release becomes public.
+- Update bundles use a self-managed Ed25519 key supplied by
+  `TAURI_SIGNING_PRIVATE_KEY` in CI, with the public key pinned in the app. Releases also
+  include `latest.json`, `latest-offline.json`, `.app.tar.gz`, and `.sig` assets.
 - Release assets include `SHA256SUMS.txt` and GitHub artifact attestations. Release
   immutability keeps published tags and assets unchanged.
 - The `main` and `v*` rulesets require PRs, CI, CodeQL, and Dependency Review for `main`;
@@ -267,8 +273,8 @@ Commit, push, and device screenshots are explicit user actions. See
 
 ## Known limitations
 
-- macOS only for now; there is no Universal binary, Developer ID signature, notarization,
-  or auto-update.
+- macOS only for now; there is no Universal binary, Developer ID signature, or
+  notarization. In-app updates use a self-managed Ed25519 key, not an Apple identity.
 - The CLI may block while the screen is locked; notification clicks only focus the window.
 - Permission cards require `permission: ask` on the CLI side. The device panel and agent
   device skill require developer mode, debugging authorization, and `hdc`.

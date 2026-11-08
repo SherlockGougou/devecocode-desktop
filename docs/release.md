@@ -21,7 +21,8 @@
 - [x] `main` 与 `v*` ruleset 的可审查 JSON（`.github/rulesets/`）；
 - [x] tag 触发的 CD：arm64/x86_64 构建、GitHub Release 与 workflow artifacts；
 - [x] 含内置 CLI 的 Offline 构建任务，固定 CLI 版本并随 Release 发布；
-- [x] Release 使用 draft-first：普通版、Offline 版、双语 notes 和 SHA256SUMS 全部完成后才发布；
+- [x] Release 使用 draft-first：普通版、Offline 版、双语 notes、SHA256SUMS 和两套 updater
+  清单全部完成后才发布；
 - [x] 发布资产生成 `SHA256SUMS.txt`，并通过 `actions/attest` 生成 build provenance；
 - [x] 静态官网与 GitHub Pages 部署 workflow；
 - [x] README、官网和安装页使用真实应用截图，素材维护约定见
@@ -77,6 +78,16 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
   squash 合并，major 仍需人工处理。
 - 为 tap 自动更新创建 `HOMEBREW_TAP_TOKEN`：fine-grained PAT，只授权
   `SherlockGougou/homebrew-tap` 的 `Contents: Read and write`。
+- 为更新包签名创建 `TAURI_SIGNING_PRIVATE_KEY` secret，内容是 Ed25519 私钥文件文本；
+  如果私钥设置了口令，再创建 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。公钥必须与
+  `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey` 一致。私钥不要放入仓库，
+  并离线备份：丢失或更换后，已安装版本将无法验证后续更新。
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY \
+  --repo SherlockGougou/devecocode-desktop \
+  < ~/.tauri/deveco-desktop.key
+```
 - 为 `main` 配置分支保护：要求 CI 通过、禁止 force push、合并后删除分支。
 - `main` ruleset 需要 `Frontend and Rust checks`、两个 `Offline resources ...`、
   `Dependency Review` 和三个 `Analyze (...)` 检查；`v*` ruleset 限制标签更新、删除和
@@ -93,13 +104,16 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
   若未来改为 Universal，需要单独验证合并后的包。
 - Offline 版额外包含固定 CLI；发布前需要确认 CLI 版本、许可证、内置数据隔离和两个架构的
   DMG 都在 Release 中。详细验收见[离线版打包](offline-packaging.md)。
-- `publish` job 会校验 4 个 DMG、2 个 Offline `.app.zip`、`SHA256SUMS.txt` 和双语正文，
-  全部存在后才把 draft 发布。
+- `publish` job 会校验 4 个 DMG、2 个 Offline `.app.zip`、4 个 `.app.tar.gz`、4 个 `.sig`、
+  `SHA256SUMS.txt`、`latest.json`、`latest-offline.json` 和双语正文，全部存在后才把
+  draft 发布。清单由 `scripts/render-updater-manifests.mjs` 从资产生成，并校验签名中的
+  版本与 tag 一致。
 - 确认版本号在 `package.json`、`ui/package.json`、`src-tauri/Cargo.toml` 和
   `src-tauri/tauri.conf.json` 中一致，可运行 `npm run check:version`。升级版本时优先用
   `npm run release:prepare -- X.Y.Z`，脚本会先检查四处版本是否一致。
 - 每个版本维护 `docs/releases/vX.Y.Z.md`，必须同时包含 `## 中文` 和 `## English`；
   Release workflow 会在 draft 中更新正文，最后统一 publish。不要只写自动生成的历史提交摘要。
+  首个带更新功能的版本要写明：更早版本仍需手动安装一次，之后才能收到应用内更新。
 - 打标签前手动运行 `Release readiness` workflow（输入 `vX.Y.Z`），它会再次校验版本、
   双语 notes 和占位符；失败时不要继续发布。
 - Release notes 附已知限制和安装说明；不要附带未脱敏截图。发布 workflow 会生成
@@ -110,13 +124,14 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
 
 ## 下载校验
 
-`SHA256SUMS.txt` 覆盖全部 Release 资产。下载全部资产后，用户可以用以下方式验证：
+`SHA256SUMS.txt` 覆盖 DMG、Offline zip、更新包和签名等构建资产。下载全部资产后，用户可以
+用以下方式验证：
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
 grep 'DevEco.Code_.*aarch64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
-gh release verify v0.2.2 -R SherlockGougou/devecocode-desktop
-gh attestation verify "DevEco.Code_0.2.2_aarch64.dmg" -R SherlockGougou/devecocode-desktop
+gh release verify v0.2.3 -R SherlockGougou/devecocode-desktop
+gh attestation verify "DevEco.Code_0.2.3_aarch64.dmg" -R SherlockGougou/devecocode-desktop
 brew trust sherlockgougou/tap
 brew info --cask sherlockgougou/tap/devecocode-desktop
 brew fetch --cask sherlockgougou/tap/devecocode-desktop
@@ -134,5 +149,5 @@ Gatekeeper 提示仍可能发生。
   不要尝试覆盖旧 Release。
 - 对 CLI 上游契约变化建立回归检查；当前 CI 不安装真实 CLI，因此不替代本地
   `npm run check:selftest`。
-- 记录最低 macOS 版本、CLI 建议版本和已知未验证场景；不要承诺自动更新、Windows 支持或
+- 记录最低 macOS 版本、CLI 建议版本和已知未验证场景；不要承诺 Windows 支持或
   Gatekeeper 无提示安装。
