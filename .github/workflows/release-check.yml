@@ -49,4 +49,5 @@ jobs:
         with:
           name: release-notes-preview
           path: .release-notes.md
+          include-hidden-files: true
           if-no-files-found: error
