@@ -106,6 +106,10 @@ npm run check:selftest
 - 亮色和暗色主题（改动 CSS 时）。
 
 测试数据请使用临时工作区或脱敏样例，不要提交真实会话标题、路径、设备截图和通知内容。
+准备 README 或官网素材时，截图统一放在 `docs/assets/screenshots/` 并复制到
+`website/assets/screenshots/`；设备截图只保留公开可展示的机型、系统版本和系统页面，
+不能包含通知、账号或聊天内容。素材清单和生成约定见
+[截图素材](assets/screenshots/README.md)。
 
 验证设备 skill：
 

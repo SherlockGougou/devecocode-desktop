@@ -15,6 +15,11 @@ HarmonyOS 定制分支）的 HTTP + SSE 契约，提供自研三栏界面、系�
 [开源发布检查](docs/release.md) · [更新记录](CHANGELOG.md) ·
 [实现记录](docs/archive/implementation-log.md)
 
+![DevEco Code Desktop 主界面：左侧工作区与会话，中间 Agent 审查回复，右侧变更文件](docs/assets/screenshots/overview.jpg)
+
+截图来自真实构建与本机 CLI。演示工作区为本地 `harmony-notes` 项目，不包含私有仓库、
+真实会话数据或用户路径。
+
 ## 项目定位
 
 - **桌面增强层，不是新的 Agent。** 模型、工具执行、权限、MCP、Skills 和会话数据都由
@@ -52,6 +57,18 @@ HarmonyOS 定制分支）的 HTTP + SSE 契约，提供自研三栏界面、系�
 - 可靠性：实时后端监管、崩溃自愈、进程组回收、代理健康检查和 `/global/event` 订阅。
 
 详细行为见[功能说明](docs/features.md)。
+
+## 界面一览
+
+| 变更与 diff | 任务概览 |
+| --- | --- |
+| ![变更面板：工作区文件筛选与 Index.ets 统一 diff](docs/assets/screenshots/changes.jpg) | ![任务概览：分支、改动统计、Token 与提交](docs/assets/screenshots/task-overview.jpg) |
+| 工作区/会话双来源 diff、文件筛选与统一 diff 查看器 | 分支、改动统计、Token/费用，以及显式提交和推送 |
+
+| 设备面板 | 底部终端 |
+| --- | --- |
+| ![设备面板：nova 14 的 HarmonyOS 系统更新页面](docs/assets/screenshots/device.jpg) | ![底部终端：当前工作区的 git status 与目录输出](docs/assets/screenshots/terminal.jpg) |
+| HDC 发现设备，刷新、复制、保存截图或附加到对话 | 当前工作区本地 Shell，PTY 与 WebSocket 都由 Rust 管理 |
 
 ## 快速开始
 

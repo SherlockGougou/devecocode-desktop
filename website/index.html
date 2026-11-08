@@ -14,7 +14,11 @@
       content="把 HarmonyOS Agent 工作流带到 macOS。工作区、会话、文件、任务与设备，在一个桌面窗口里完成。"
     />
     <meta property="og:type" content="website" />
-    <meta property="og:image" content="assets/app-icon.png" />
+    <meta
+      property="og:image"
+      content="https://sherlockgougou.github.io/devecocode-desktop/assets/screenshots/overview.jpg"
+    />
+    <meta property="og:image:alt" content="DevEco Code Desktop 主界面截图" />
     <link rel="icon" href="assets/app-icon.png" />
     <title>DevEco Code Desktop · macOS Agent 工作区</title>
     <link rel="stylesheet" href="styles.css" />
@@ -31,6 +35,7 @@
         </a>
         <div class="nav-links">
           <a href="#features">功能</a>
+          <a href="#screenshots">界面</a>
           <a href="#workflow">工作流</a>
           <a href="#install">安装</a>
           <a href="install.html">使用说明</a>
@@ -70,57 +75,20 @@
           </ul>
         </div>
 
-        <div class="hero-visual" role="img" aria-label="DevEco Code Desktop 界面预览">
+        <div class="hero-visual">
           <div class="visual-glow"></div>
           <div class="app-window">
-            <div class="window-bar">
-              <div class="traffic-lights" aria-hidden="true">
-                <span></span><span></span><span></span>
-              </div>
-              <span class="window-title">DevEco Code Desktop</span>
-              <span class="window-status"><i></i> 本机 CLI 已连接</span>
-            </div>
-            <div class="window-body">
-              <div class="window-sidebar">
-                <div class="window-label">工作区 <span>+</span></div>
-                <div class="workspace current"><span class="folder">▱</span> harmony-app</div>
-                <div class="session current"><i></i> 新建登录页动效 <b>2m</b></div>
-                <div class="workspace"><span class="folder">▱</span> starter-kit</div>
-                <div class="workspace"><span class="folder">▱</span> device-tools</div>
-                <div class="window-sidebar-foot"><i></i> 本机 CLI <span>⌘</span></div>
-              </div>
-              <div class="window-main">
-                <div class="window-main-head">
-                  <span>新建登录页动效</span>
-                  <span class="pill">进行中</span>
-                </div>
-                <div class="message user">把登录页的进入动效做得更轻盈一点，保留品牌绿色。</div>
-                <div class="thinking">思考 1.2s <span>›</span></div>
-                <div class="message assistant">
-                  我会先检查现有动效和颜色变量，再调整入场曲线，避免影响表单的可用性。
-                </div>
-                <div class="tool-row">
-                  <span class="check">✓</span> read <b>src/pages/Login.ets</b>
-                </div>
-                <div class="tool-row">
-                  <span class="check">✓</span> edit <b>src/styles/motion.ets</b>
-                </div>
-                <div class="composer">
-                  <span>继续描述你的想法…</span>
-                  <div class="composer-tools"><span>@ 引用文件</span><span>● build</span><span>发送 ↑</span></div>
-                </div>
-              </div>
-              <div class="window-panel">
-                <div class="panel-tabs"><b>变更 4</b><span>文件</span><span>任务</span><span>设备</span></div>
-                <div class="change-row"><span>Login.ets</span><em>+32</em></div>
-                <div class="change-row"><span>motion.ets</span><em>+18</em></div>
-                <div class="change-row"><span>colors.ets</span><em>+4</em></div>
-                <div class="panel-note">工作区全部改动<br /><b>main</b> · 未暂存</div>
-              </div>
-            </div>
+            <img
+              class="app-shot"
+              src="assets/screenshots/overview.jpg"
+              alt="DevEco Code Desktop 主界面：左侧工作区与会话，中间 Agent 审查回复，右侧变更文件"
+              width="1800"
+              height="1069"
+              fetchpriority="high"
+            />
           </div>
           <div class="floating-note note-top"><span>⌘</span> 全局快捷键</div>
-          <div class="floating-note note-bottom"><span>●</span> 设备已连接</div>
+          <div class="floating-note note-bottom"><span>●</span> nova 14 已连接</div>
         </div>
       </section>
 
@@ -198,6 +166,91 @@
         </div>
       </section>
 
+      <section id="screenshots" class="section shell">
+        <div class="section-heading compact">
+          <p class="eyebrow">REAL SCREENS</p>
+          <h2>这不是效果图。</h2>
+          <p>以下画面来自真实构建和本机 CLI，演示工作区为公开的 harmony-notes 项目。</p>
+        </div>
+        <div class="shot-grid">
+          <figure class="shot-card shot-wide">
+            <a href="assets/screenshots/overview.jpg" target="_blank" rel="noreferrer">
+              <img
+                src="assets/screenshots/overview.jpg"
+                alt="主界面：工作区、会话、工具调用、审查回复与变更列表"
+                width="1800"
+                height="1069"
+                loading="lazy"
+              />
+            </a>
+            <figcaption>
+              <b>主界面</b>
+              <span>工作区、会话、工具调用和变更列表在同一扇窗口里。</span>
+            </figcaption>
+          </figure>
+          <figure class="shot-card">
+            <a href="assets/screenshots/changes.jpg" target="_blank" rel="noreferrer">
+              <img
+                src="assets/screenshots/changes.jpg"
+                alt="变更面板：工作区文件筛选与 Index.ets 统一 diff"
+                width="1800"
+                height="1069"
+                loading="lazy"
+              />
+            </a>
+            <figcaption>
+              <b>变更与 diff</b>
+              <span>双来源 diff、目录分组、文件筛选和统一查看器。</span>
+            </figcaption>
+          </figure>
+          <figure class="shot-card">
+            <a href="assets/screenshots/task-overview.jpg" target="_blank" rel="noreferrer">
+              <img
+                src="assets/screenshots/task-overview.jpg"
+                alt="任务概览：分支、改动统计、Token 与提交入口"
+                width="1800"
+                height="1069"
+                loading="lazy"
+              />
+            </a>
+            <figcaption>
+              <b>任务概览</b>
+              <span>分支、改动统计、Token/费用，以及显式提交和推送。</span>
+            </figcaption>
+          </figure>
+          <figure class="shot-card">
+            <a href="assets/screenshots/device.jpg" target="_blank" rel="noreferrer">
+              <img
+                src="assets/screenshots/device.jpg"
+                alt="设备面板：nova 14 的 HarmonyOS 系统更新页面"
+                width="1800"
+                height="1069"
+                loading="lazy"
+              />
+            </a>
+            <figcaption>
+              <b>设备面板</b>
+              <span>HDC 发现设备，刷新、复制、保存截图或附加到对话。</span>
+            </figcaption>
+          </figure>
+          <figure class="shot-card">
+            <a href="assets/screenshots/terminal.jpg" target="_blank" rel="noreferrer">
+              <img
+                src="assets/screenshots/terminal.jpg"
+                alt="底部终端：当前工作区的 git status 与目录输出"
+                width="1800"
+                height="1069"
+                loading="lazy"
+              />
+            </a>
+            <figcaption>
+              <b>底部终端</b>
+              <span>当前工作区启动本地 Shell，PTY 与 WebSocket 都由 Rust 管理。</span>
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
       <section id="workflow" class="section flow-section">
         <div class="shell">
           <div class="section-heading compact">
@@ -221,7 +274,7 @@
             <div class="flow-step">
               <span class="step-number">03</span>
               <h3>把结果带回项目</h3>
-              <p>检查变更、导出会话、显式提交或推送。每一步都看得见，也停得下来。</p>
+              <p>检查变更、审阅 diff、显式提交或推送。每一步都看得见，也停得下来。</p>
             </div>
           </div>
         </div>

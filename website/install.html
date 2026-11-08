@@ -24,6 +24,7 @@
         </a>
         <div class="nav-links">
           <a href="index.html#features">功能</a>
+          <a href="index.html#screenshots">界面</a>
           <a href="index.html#workflow">工作流</a>
           <a href="index.html#install">安装</a>
           <a href="install.html" aria-current="page">使用说明</a>
@@ -131,6 +132,18 @@ deveco --version</code></pre>
               关闭主窗口会隐藏到菜单栏，托盘菜单可以重新显示或退出应用。首次读取工作区时，
               macOS 可能请求文稿目录访问权限。
             </p>
+            <figure class="page-shot">
+              <a href="assets/screenshots/overview.jpg" target="_blank" rel="noreferrer">
+                <img
+                  src="assets/screenshots/overview.jpg"
+                  alt="DevEco Code Desktop 主界面：工作区、Agent 回复和变更列表"
+                  width="1800"
+                  height="1069"
+                  loading="lazy"
+                />
+              </a>
+              <figcaption>真实应用截图：工作区、会话、变更和终端在同一个窗口里。</figcaption>
+            </figure>
           </section>
 
           <section>
@@ -138,7 +151,7 @@ deveco --version</code></pre>
             <p>目前没有自动更新。更新时退出旧版本，下载新的 DMG 并覆盖“应用程序”中的旧应用。</p>
             <p>
               卸载时先完全退出应用，再删除 <code>DevEco Code.app</code> 或 <code>DevEco Code Offline.app</code>。如确认不再需要本地配置、
-              导出和日志，可以手动删除：
+              缓存和日志，可以手动删除：
             </p>
             <pre><code>rm -rf "$HOME/Library/Application Support/DevEco Code Desktop"
 rm -rf "$HOME/Library/Logs/DevEco Code Desktop"</code></pre>

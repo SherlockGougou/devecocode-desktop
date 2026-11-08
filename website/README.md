@@ -58,6 +58,7 @@ const REPO_URL = "https://github.com/SherlockGougou/devecocode-desktop";
 - `SHA256SUMS.txt`、artifact attestation 和首次放行说明必须与 `docs/installation.md` 一致；
 - 页面同时描述普通版和 Offline 版，不要把 Offline 版写成必须另装 CLI；
 - 版本升级时同步更新 `index.html` 和 `install.html` 页脚的版本号；
-- 页面不包含真实工作区、消息、设备截图或用户路径；
+- 截图必须来自真实构建和演示工作区，不包含私有仓库、真实会话、凭据、用户路径或通知内容；
+- 首页与安装页的设备截图只展示公开可描述的机型、系统版本和系统页面；
 - 新增外链使用 `rel="noreferrer"`，静态资源使用相对路径；
 - 修改导航、按钮或安装步骤后，用桌面和窄屏视口各检查一次。
