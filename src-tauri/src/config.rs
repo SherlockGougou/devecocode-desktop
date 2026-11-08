@@ -7,7 +7,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+use crate::bundled_cli::BundledCli;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// 用户手选的 `deveco` 可执行文件路径（最高优先级，覆盖自动探测）
@@ -15,6 +17,12 @@ pub struct Config {
     pub notifications: Notifications,
     pub server: ServerCfg,
     pub menu_bar: MenuBarCfg,
+    /// 有内置 CLI 时是否优先使用它；没有内置资源时仍会回退系统 CLI。
+    #[serde(default = "default_true")]
+    pub use_bundled_cli: bool,
+    /// 离线版启动时由主进程注入；不写入配置文件，也不显示在设置 JSON 中。
+    #[serde(skip)]
+    pub bundled_cli: Option<BundledCli>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,6 +50,14 @@ pub struct ServerCfg {
     pub secure: bool,
     /// `secure = true` 时使用的口令；为空则启动阶段随机生成并写回配置
     pub password: Option<String>,
+    /// 传给 `deveco serve --log-level` 的值。
+    pub log_level: String,
+    /// 不加载外部插件。
+    pub pure: bool,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    /// 额外的 CORS 域名。
+    pub cors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,6 +89,23 @@ impl Default for Notifications {
     }
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            cli_path: None,
+            notifications: Notifications::default(),
+            server: ServerCfg::default(),
+            menu_bar: MenuBarCfg::default(),
+            use_bundled_cli: true,
+            bundled_cli: None,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
 impl Default for ServerCfg {
     fn default() -> Self {
         Self {
@@ -80,6 +113,11 @@ impl Default for ServerCfg {
             preferred_port: 0,
             secure: false,
             password: None,
+            log_level: "INFO".to_string(),
+            pure: false,
+            mdns: false,
+            mdns_domain: "deveco.local".to_string(),
+            cors: Vec::new(),
         }
     }
 }
@@ -183,6 +221,7 @@ mod tests {
         assert_eq!(cfg.server.preferred_port, 0);
         assert_eq!(cfg.menu_bar.icon_style, MenuBarIconStyle::Monochrome);
         assert!(cfg.menu_bar.always_visible);
+        assert!(cfg.use_bundled_cli);
     }
 
     #[test]
@@ -203,6 +242,7 @@ mod tests {
                 icon_style: MenuBarIconStyle::Color,
                 always_visible: false,
             },
+            ..Default::default()
         };
         cfg.save(&path).unwrap();
 
@@ -246,6 +286,7 @@ mod tests {
         assert_eq!(cfg.server.preferred_port, 5000);
         assert_eq!(cfg.server.hostname, "127.0.0.1");
         assert!(cfg.notifications.enabled);
+        assert!(cfg.use_bundled_cli);
         assert_eq!(cfg.menu_bar.icon_style, MenuBarIconStyle::Monochrome);
         assert!(cfg.menu_bar.always_visible);
     }

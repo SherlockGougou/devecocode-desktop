@@ -4,7 +4,7 @@
 //! 1. WebView 不直连 `127.0.0.1:<port>`，绕开 CORS 与 ATS；
 //! 2. 连接信息（base_url / 口令）只存在于 Rust 侧，前端拿不到也用不着。
 
-use deveco_desktop::{device, http};
+use deveco_desktop::{cli_config, device, http};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -81,6 +81,124 @@ pub async fn server_request(
         started.elapsed().as_millis()
     );
     result
+}
+
+#[tauri::command]
+pub async fn cli_config_read(
+    conn: tauri::State<'_, ServerConn>,
+    scope: cli_config::Scope,
+    directory: Option<String>,
+    reveal_secrets: Option<bool>,
+) -> Result<cli_config::ConfigSnapshot, String> {
+    let base = conn.base().ok_or("后端尚未就绪")?;
+    let auth = conn.auth();
+    cli_config::read(
+        &base,
+        auth.as_deref(),
+        scope,
+        directory.as_deref(),
+        reveal_secrets.unwrap_or(false),
+    )
+    .await
+    .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn cli_config_sources(
+    conn: tauri::State<'_, ServerConn>,
+    directory: Option<String>,
+) -> Result<cli_config::ConfigSources, String> {
+    let base = conn.base().ok_or("后端尚未就绪")?;
+    let auth = conn.auth();
+    cli_config::sources(&base, auth.as_deref(), directory.as_deref())
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn cli_config_save(
+    conn: tauri::State<'_, ServerConn>,
+    request: cli_config::SaveRequest,
+) -> Result<cli_config::SaveResult, String> {
+    let base = conn.base().ok_or("后端尚未就绪")?;
+    let auth = conn.auth();
+    cli_config::save(&base, auth.as_deref(), request)
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn cli_config_reveal_secret(
+    conn: tauri::State<'_, ServerConn>,
+    scope: cli_config::Scope,
+    directory: Option<String>,
+    path: Vec<cli_config::PathSegment>,
+) -> Result<Option<String>, String> {
+    let base = conn.base().ok_or("后端尚未就绪")?;
+    let auth = conn.auth();
+    cli_config::reveal_secret(&base, auth.as_deref(), scope, directory.as_deref(), &path)
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn cli_config_backups(
+    conn: tauri::State<'_, ServerConn>,
+    scope: cli_config::Scope,
+    directory: Option<String>,
+) -> Result<Vec<cli_config::BackupInfo>, String> {
+    let base = conn.base().ok_or("后端尚未就绪")?;
+    let auth = conn.auth();
+    cli_config::list_backups(&base, auth.as_deref(), scope, directory.as_deref())
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn cli_config_restore(
+    conn: tauri::State<'_, ServerConn>,
+    request: cli_config::BackupRestoreRequest,
+) -> Result<cli_config::ConfigSnapshot, String> {
+    let base = conn.base().ok_or("后端尚未就绪")?;
+    let auth = conn.auth();
+    cli_config::restore_backup(&base, auth.as_deref(), request)
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err("只允许打开 http/https 链接".to_string());
+    }
+    if trimmed.contains('\0') {
+        return Err("链接不合法".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|err| format!("打开链接失败：{err}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", trimmed])
+            .spawn()
+            .map_err(|err| format!("打开链接失败：{err}"))?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|err| format!("打开链接失败：{err}"))?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +475,8 @@ pub struct RuntimeInfo {
     pub base_url: Option<String>,
     pub cli_path: Option<String>,
     pub cli_version: Option<String>,
+    #[serde(skip)]
+    pub cli_env: Vec<(String, String)>,
     pub config_path: Option<String>,
     pub log_dir: Option<String>,
     pub data_dir: Option<String>,
@@ -402,7 +522,7 @@ pub fn save_settings(
     state: tauri::State<'_, SettingsState>,
     config: Value,
 ) -> Result<Value, String> {
-    let incoming: Config =
+    let mut incoming: Config =
         serde_json::from_value(config).map_err(|err| format!("配置格式不正确：{err}"))?;
     let (previous, path) = {
         let config = state.config.lock().map_err(|_| "配置锁中毒")?;
@@ -411,9 +531,11 @@ pub fn save_settings(
             state.config_path.lock().map_err(|_| "路径锁中毒")?.clone(),
         )
     };
+    incoming.bundled_cli = previous.bundled_cli.clone();
 
-    let restart_required =
-        previous.cli_path != incoming.cli_path || previous.server != incoming.server;
+    let restart_required = previous.cli_path != incoming.cli_path
+        || previous.use_bundled_cli != incoming.use_bundled_cli
+        || previous.server != incoming.server;
 
     if let Some(path) = &path {
         incoming
@@ -651,67 +773,4 @@ mod tests {
             Some(false)
         );
     }
-}
-
-/// 导出当前会话为 JSON（调用 `deveco export <id>`），写盘后在 Finder 里定位。
-#[tauri::command]
-pub async fn export_session(
-    state: tauri::State<'_, SettingsState>,
-    directory: String,
-    session_id: String,
-) -> Result<String, String> {
-    use std::process::Stdio;
-
-    let cli_path = state
-        .runtime
-        .lock()
-        .map_err(|_| "运行信息锁中毒")?
-        .cli_path
-        .clone();
-    let bin = match cli_path {
-        Some(path) => std::path::PathBuf::from(path),
-        None => cli::discover(None).map_err(|err| err.to_string())?.path,
-    };
-
-    let output = tokio::process::Command::new(&bin)
-        .arg("export")
-        .arg(&session_id)
-        .current_dir(&directory)
-        .stdin(Stdio::null())
-        .output()
-        .await
-        .map_err(|err| format!("调用 deveco export 失败：{err}"))?;
-
-    if !output.status.success() {
-        let detail: String = String::from_utf8_lossy(&output.stderr)
-            .chars()
-            .take(300)
-            .collect();
-        return Err(format!("导出失败（{}）：{detail}", output.status));
-    }
-
-    let body = String::from_utf8_lossy(&output.stdout).to_string();
-    if body.trim().is_empty() {
-        return Err("导出结果为空".to_string());
-    }
-
-    let dir = data_dir()
-        .map(|base| base.join("exports"))
-        .ok_or("拿不到数据目录")?;
-    std::fs::create_dir_all(&dir).map_err(|err| format!("创建目录失败：{err}"))?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let file = dir.join(format!("{session_id}-{stamp}.json"));
-    std::fs::write(&file, body.as_bytes()).map_err(|err| format!("写文件失败：{err}"))?;
-
-    // 在 Finder 中定位到导出的文件
-    let _ = std::process::Command::new("open")
-        .arg("-R")
-        .arg(&file)
-        .status();
-
-    log::info!("会话已导出：{}", file.display());
-    Ok(file.to_string_lossy().to_string())
 }

@@ -4,9 +4,12 @@
 //! 逻辑，自检覆盖的代码就是线上真正跑的代码。
 
 pub mod backend;
+pub mod bundled_cli;
 pub mod cli;
+pub mod cli_config;
 pub mod config;
 pub mod device;
+pub mod device_skill;
 pub mod events;
 pub mod fonts;
 pub mod git;

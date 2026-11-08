@@ -55,6 +55,7 @@ const REPO_URL = "https://github.com/example/deveco-code-desktop";
 ## 内容维护
 
 - 下载版本、架构名称和发布提示必须与 `docs/installation.md` 保持一致；
+- 页面同时描述普通版和 Offline 版，不要把 Offline 版写成必须另装 CLI；
 - 版本升级时同步更新 `index.html` 和 `install.html` 页脚的版本号；
 - 页面不包含真实工作区、消息、设备截图或用户路径；
 - 新增外链使用 `rel="noreferrer"`，静态资源使用相对路径；

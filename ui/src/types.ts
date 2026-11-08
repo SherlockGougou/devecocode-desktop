@@ -8,6 +8,8 @@ export interface Project {
 }
 
 export interface Tokens {
+  /** CLI 已聚合的总量（未缓存输入 + 输出 + 推理 + 缓存读写）；旧数据可能缺失 */
+  total?: number;
   input: number;
   output: number;
   reasoning: number;
@@ -38,6 +40,7 @@ export interface Part {
   tool?: string;
   callID?: string;
   state?: ToolState;
+  time?: { start?: number; end?: number };
   /* 其余字段按需透传 */
   [key: string]: unknown;
 }
@@ -57,6 +60,8 @@ export interface MessageInfo {
   sessionID: string;
   role: "user" | "assistant";
   agent?: string;
+  providerID?: string;
+  modelID?: string;
   model?: { providerID: string; modelID: string };
   time?: { created: number; completed?: number };
   cost?: number;
@@ -84,6 +89,18 @@ export interface FileDiff {
   additions?: number;
   deletions?: number;
   status?: string;
+}
+
+export interface VcsInfo {
+  branch: string | null;
+  default_branch?: string | null;
+}
+
+export interface VcsFileStatus {
+  file: string;
+  additions: number;
+  deletions: number;
+  status: "added" | "deleted" | "modified";
 }
 
 export type GitFileStatusKind =
@@ -132,6 +149,7 @@ export interface ModelInfo {
   status?: "alpha" | "beta" | "deprecated" | "active";
   enabled?: boolean;
   variants?: Array<{ id: string }>;
+  limit?: { context?: number | null; output?: number | null };
 }
 
 export interface AgentInfo {
@@ -178,6 +196,12 @@ export interface ServerSettings {
   hostname: string;
   preferred_port: number;
   secure: boolean;
+  /** CLI serve 启动参数；旧配置缺省时由 Rust 侧补默认值 */
+  log_level?: "DEBUG" | "INFO" | "WARN" | "ERROR";
+  pure?: boolean;
+  mdns?: boolean;
+  mdns_domain?: string;
+  cors?: string[];
   /** 口令等其余字段原样保留，前端不解释 */
   [key: string]: unknown;
 }
@@ -189,6 +213,7 @@ export interface MenuBarSettings {
 
 export interface AppConfig {
   cli_path: string | null;
+  use_bundled_cli: boolean;
   notifications: NotificationSettings;
   server: ServerSettings;
   menu_bar: MenuBarSettings;
@@ -244,6 +269,99 @@ export interface CliConfigSummary {
   permission: PermissionSummary;
   agents: CliAgentSummary[];
   uiVerificationModel?: string;
+}
+
+export type CliConfigScope = "global" | "project";
+export type CliConfigPath = Array<string | number>;
+
+export interface CliSecretInfo {
+  path: CliConfigPath;
+  label: string;
+  configured: boolean;
+}
+
+export interface CliConfigSnapshot {
+  scope: CliConfigScope;
+  path: string;
+  exists: boolean;
+  hash: string;
+  text: string;
+  value: Record<string, unknown>;
+  secrets: CliSecretInfo[];
+  parse_error: string | null;
+  redacted: boolean;
+  updated_at: number | null;
+}
+
+export interface CliConfigSources {
+  config_dir: string;
+  global_path: string;
+  project_config_dir: string | null;
+  project_path: string | null;
+  worktree: string | null;
+}
+
+export interface CliConfigSaveRequest {
+  scope: CliConfigScope;
+  directory: string | null;
+  base_hash: string;
+  text: string;
+  reveal_secrets: boolean;
+}
+
+export interface CliConfigSaveResult {
+  snapshot: CliConfigSnapshot;
+  warnings: string[];
+}
+
+export interface CliBackupInfo {
+  name: string;
+  path: string;
+  updated_at: number;
+  size: number;
+}
+
+export interface ProviderAuthPromptOption {
+  label: string;
+  value: string;
+  hint?: string;
+}
+
+export interface ProviderAuthPrompt {
+  type: "text" | "select";
+  key: string;
+  message: string;
+  placeholder?: string;
+  options?: ProviderAuthPromptOption[];
+  when?: { key: string; op: "eq" | "neq"; value: string };
+}
+
+export interface ProviderAuthMethod {
+  type: "oauth" | "api";
+  label: string;
+  prompts?: ProviderAuthPrompt[];
+}
+
+export type ProviderAuthMethods = Record<string, ProviderAuthMethod[]>;
+
+export interface ProviderAuthAuthorization {
+  url: string;
+  method: "auto" | "code";
+  instructions: string;
+}
+
+export interface ProductAgreement {
+  version: string;
+  termsUrl: string;
+  privacyUrl: string;
+  accepted: boolean;
+  acceptedAt?: number | string | null;
+  upload?: {
+    state?: string;
+    revision?: string;
+    lastAttemptAt?: number | string | null;
+    uploadedAt?: number | string | null;
+  };
 }
 
 export interface AuthEntry {
@@ -327,6 +445,22 @@ export interface ShellInfo {
   name: string;
   acceptable: boolean;
 }
+
+export interface PtySession {
+  id: string;
+  title: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  status: "running" | "exited";
+  pid: number;
+  exitCode?: number;
+}
+
+export type TerminalEventPayload =
+  | { kind: "data"; id: string; data: string }
+  | { kind: "exit"; id: string; message: string }
+  | { kind: "error"; id: string; message: string };
 
 export interface FileNode {
   name: string;

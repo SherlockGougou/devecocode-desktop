@@ -7,6 +7,7 @@
 use deveco_desktop::{
     cli,
     config::Config,
+    device,
     events::{classify, render, unwrap_global as events_unwrap, Notice},
     http,
     notify::{should_notify, Debouncer, DEBOUNCE_WINDOW},
@@ -102,6 +103,22 @@ async fn main() {
         server::health(&base, None).await,
         base.clone(),
     );
+    match check_device_skill(&base).await {
+        Ok(detail) => report.pass("CLI 已加载内嵌设备 skill", detail),
+        Err(err) => report.fail("CLI 已加载内嵌设备 skill", err),
+    }
+    if let Ok(hdc) = device::locate_hdc() {
+        let injected = supervisor
+            .backend()
+            .map(|backend| backend.cli_env.iter().any(|(key, _)| key == "HDC"))
+            .unwrap_or(false)
+            || std::env::var_os("HDC").is_some();
+        report.check(
+            "设备 HDC 已传给 serve",
+            injected,
+            hdc.to_string_lossy().to_string(),
+        );
+    }
     match check_btw_route(&base).await {
         Ok(detail) => report.pass("OpenAPI 包含 Agent 提交信息接口", detail),
         Err(err) => report.fail("OpenAPI 包含 Agent 提交信息接口", err),
@@ -313,6 +330,37 @@ async fn check_btw_route(base: &str) -> Result<String, String> {
         return Err("当前 CLI 未暴露 POST /session/{sessionID}/btw".into());
     }
     Ok("POST /session/{sessionID}/btw".into())
+}
+
+async fn check_device_skill(base: &str) -> Result<String, String> {
+    let directory = std::env::current_dir()
+        .map_err(|err| err.to_string())?
+        .to_string_lossy()
+        .to_string();
+    let query = vec![("directory".to_string(), directory)];
+    let value = http::send(base, None, "GET", "/skill/status", &query, None)
+        .await
+        .map_err(|err| format!("读取 skill 状态失败：{err:#}"))?;
+    let items = value.as_array().ok_or("skill 状态没有返回数组")?;
+    let skill = items
+        .iter()
+        .find(|item| {
+            item.get("name").and_then(serde_json::Value::as_str) == Some("deveco-desktop-device")
+        })
+        .ok_or("未在 /skill/status 中找到 deveco-desktop-device")?;
+    let enabled = skill
+        .get("enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let location = skill
+        .get("location")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("位置未知");
+    Ok(format!(
+        "{}{}",
+        location,
+        if enabled { "" } else { "（当前已停用）" }
+    ))
 }
 
 async fn wait_for_connected(url: &str) -> Result<Duration, String> {

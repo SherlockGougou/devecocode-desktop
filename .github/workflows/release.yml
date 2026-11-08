@@ -74,26 +74,150 @@ jobs:
         with:
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: "DevEco Code Desktop ${{ env.RELEASE_TAG }}"
-          releaseBody: |
-            > **这是未使用 Apple Developer ID 签名、未公证的社区构建。**
-            > 首次打开如果被 macOS 拦截，请右键应用图标选择“打开”，或到
-            > “系统设置 → 隐私与安全性”点击“仍要打开”。只从本项目的
-            > Releases 页面下载，不要使用来源不明的镜像。
-
-            ## 安装
-
-            1. 根据 Mac 架构下载对应的 DMG：Apple Silicon 使用 `aarch64`，Intel 使用 `x64`。
-            2. 打开 DMG，把 `DevEco Code` 拖入“应用程序”。
-            3. 安装并登录本机 `deveco` CLI：
-               `npm i -g @deveco/deveco-code`，然后运行 `deveco providers`。
-            4. 首次启动按提示允许文稿目录和通知权限。
-
-            完整说明见仓库的 `docs/installation.md`。
+          releaseBody: "Release notes will be added after all macOS assets are built."
           releaseDraft: false
           prerelease: false
-          generateReleaseNotes: true
+          generateReleaseNotes: false
           retryAttempts: 2
           tauriScript: "npm run tauri"
           args: "--target ${{ matrix.target }}"
           uploadWorkflowArtifacts: true
           workflowArtifactNamePattern: "DevEco-Code-Desktop-[arch]-[bundle]"
+
+  offline:
+    name: Offline ${{ matrix.target }}
+    needs: build
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    env:
+      TARGET: ${{ matrix.target }}
+      CLI_PLATFORM: ${{ matrix.target == 'aarch64-apple-darwin' && 'darwin-arm64' || 'darwin-x64' }}
+      CLI_VERSION: 0.2.5
+      CLI_COMMON_VERSION: 1.3.4
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix ui ci
+
+      - name: Install pinned CLI packages
+        run: |
+          npm install --ignore-scripts --omit=optional \
+            --prefix "$RUNNER_TEMP/offline-cli" \
+            "@deveco/deveco-code@$CLI_VERSION" \
+            "@deveco/deveco-cli@1.3.4" \
+            "@deveco/deveco-cli-common@$CLI_COMMON_VERSION"
+
+      - name: Pack target-specific CLI binary
+        run: |
+          mkdir -p "$RUNNER_TEMP/offline-cli-platform"
+          npm pack --pack-destination "$RUNNER_TEMP/offline-cli-platform" \
+            "@deveco/deveco-code-${CLI_PLATFORM}@$CLI_VERSION"
+          tar -xzf "$RUNNER_TEMP/offline-cli-platform/"*.tgz \
+            -C "$RUNNER_TEMP/offline-cli-platform"
+
+      - name: Stage bundled CLI
+        run: |
+          node scripts/stage-offline-cli.mjs \
+            --target "$TARGET" \
+            --source "$RUNNER_TEMP/offline-cli/node_modules/@deveco/deveco-code" \
+            --node-modules "$RUNNER_TEMP/offline-cli/node_modules" \
+            --platform-source "$RUNNER_TEMP/offline-cli-platform/package"
+
+      - name: Verify version matches tag
+        run: node scripts/check-release-version.mjs "$RELEASE_TAG"
+
+      - name: Build offline bundle
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: |
+          npx tauri build \
+            --config src-tauri/tauri.offline.conf.json \
+            --target "$TARGET"
+
+      - name: Verify bundled resources
+        run: |
+          APP="src-tauri/target/$TARGET/release/bundle/macos/DevEco Code Offline.app"
+          test -f "$APP/Contents/Resources/bundled-cli/manifest.json"
+          test -x "$APP/Contents/Resources/bundled-cli/bin/deveco"
+          codesign --verify --deep --strict "$APP"
+
+      - name: Package release assets
+        run: |
+          mkdir -p .artifacts
+          APP="src-tauri/target/$TARGET/release/bundle/macos/DevEco Code Offline.app"
+          DMG=$(find "src-tauri/target/$TARGET/release/bundle/dmg" -maxdepth 1 -name 'DevEco Code Offline_*.dmg' -print -quit)
+          test -n "$DMG"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" ".artifacts/DevEco-Code-Offline_${RELEASE_TAG}_${CLI_PLATFORM}.app.zip"
+          cp "$DMG" .artifacts/
+          ls -lh .artifacts
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-${{ matrix.target }}
+          path: .artifacts/*
+          if-no-files-found: error
+
+      - name: Upload offline assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: .artifacts/*
+
+  release-notes:
+    name: Publish bilingual release notes
+    needs: [build, offline]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Render bilingual release notes
+        run: node scripts/render-release-notes.mjs "$RELEASE_TAG" .release-notes.md
+
+      - name: Update GitHub Release body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$RELEASE_TAG" --notes-file .release-notes.md

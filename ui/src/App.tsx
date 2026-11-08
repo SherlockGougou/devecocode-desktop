@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { api } from "./api";
 import {
   clampRightPanelWidth,
+  clampTerminalHeight,
   RIGHT_PANEL_MIN_WIDTH,
   useApp,
 } from "./store";
@@ -16,6 +17,7 @@ import RightPanel from "./components/RightPanel";
 import Settings from "./components/Settings";
 import Shortcuts from "./components/Shortcuts";
 import TaskOverview from "./components/TaskOverview";
+import TerminalPanel from "./components/TerminalPanel";
 import { Icon } from "./components/Icon";
 import { AppIcon } from "./components/AppIcon";
 
@@ -34,6 +36,7 @@ export default function App() {
   const sidebarOpen = useApp((s) => s.sidebarOpen);
   const setSidebarWidth = useApp((s) => s.setSidebarWidth);
   const setRightWidth = useApp((s) => s.setRightWidth);
+  const setTerminalHeight = useApp((s) => s.setTerminalHeight);
   const dismissError = useApp((s) => s.dismissError);
   const boot = useApp((s) => s.boot);
   const onSse = useApp((s) => s.onSse);
@@ -74,9 +77,6 @@ export default function App() {
         case "toggle_right":
           state.toggleRight();
           break;
-        case "export_session":
-          void state.exportCurrentSession();
-          break;
         case "shortcuts":
           state.openShortcuts();
           break;
@@ -109,6 +109,10 @@ export default function App() {
         if (state.shortcutsOpen) state.closeShortcuts();
         else state.openShortcuts();
       }
+      if (event.metaKey && event.key.toLowerCase() === "j") {
+        event.preventDefault();
+        useApp.getState().toggleTerminal();
+      }
     };
     window.addEventListener("keydown", onKey);
 
@@ -135,10 +139,13 @@ export default function App() {
       if (clampRightPanelWidth(state.rightWidth) !== state.rightWidth) {
         setRightWidth(state.rightWidth);
       }
+      if (clampTerminalHeight(state.terminalHeight) !== state.terminalHeight) {
+        setTerminalHeight(state.terminalHeight);
+      }
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [setRightWidth]);
+  }, [setRightWidth, setTerminalHeight]);
 
   // 窗口标题跟随会话
   const sessions = useApp((s) => s.sessions);
@@ -228,6 +235,7 @@ export default function App() {
         <BackendBanner />
         <ChatView />
         <Composer />
+        <TerminalPanel />
         <StatusBar />
       </main>
       <RightPanel />
@@ -351,6 +359,9 @@ function toggleMaximize() {
   });
 }
 
+/** 顶栏左侧固定占用：88px 红黄绿灯留白 + 32px 侧栏按钮 + 两处 8px 间距 */
+const TITLEBAR_WORKSPACE_INSET = 136;
+
 function TitleBar({
   sessionTitle,
   project,
@@ -361,13 +372,14 @@ function TitleBar({
   streaming: boolean;
 }) {
   const sidebarOpen = useApp((s) => s.sidebarOpen);
+  const sidebarWidth = useApp((s) => s.sidebarWidth);
   const toggleSidebar = useApp((s) => s.toggleSidebar);
   const rightOpen = useApp((s) => s.rightOpen);
   const toggleRight = useApp((s) => s.toggleRight);
+  const terminalOpen = useApp((s) => s.terminalOpen);
+  const toggleTerminal = useApp((s) => s.toggleTerminal);
   const overviewOpen = useApp((s) => s.overviewOpen);
   const toggleOverview = useApp((s) => s.toggleOverview);
-  const sessionID = useApp((s) => s.sessionID);
-  const exportCurrentSession = useApp((s) => s.exportCurrentSession);
   const handleRef = useRef<HTMLDivElement>(null);
   useTitleBarDrag(handleRef);
   const fullTitle = [sessionTitle || "DevEco Code", project].filter(Boolean).join(" · ");
@@ -392,8 +404,15 @@ function TitleBar({
         >
           <Icon name="panel-left" size={18} />
         </button>
+        {sidebarOpen && (
+          <div
+            className="titlebar-workspace-gap"
+            style={{ width: Math.max(0, sidebarWidth - TITLEBAR_WORKSPACE_INSET) }}
+            aria-hidden
+          />
+        )}
         <div className="titlebar-title" title={fullTitle}>
-          <AppIcon size={16} className="titlebar-icon" />
+          <Icon name="folder" size={16} className="titlebar-icon" />
           <span className="titlebar-title-text">{sessionTitle || "DevEco Code"}</span>
           {!sessionTitle && <span className="brand-ver">v0.2</span>}
           {streaming && <span className="titlebar-streaming">· 执行中</span>}
@@ -401,15 +420,6 @@ function TitleBar({
         <div className="titlebar-drag" />
       </div>
       <div className="titlebar-actions">
-        <button
-          className="icon-btn"
-          onClick={() => void exportCurrentSession()}
-          disabled={!sessionID}
-          title="导出当前会话 (⌘E)"
-          aria-label="导出当前会话"
-        >
-          <Icon name="download" size={17} />
-        </button>
         <button
           className={`icon-btn ${overviewOpen ? "active" : ""}`}
           data-overview-toggle
@@ -420,6 +430,16 @@ function TitleBar({
           aria-controls="task-overview"
         >
           <Icon name="list" size={18} />
+        </button>
+        <button
+          className={`icon-btn ${terminalOpen ? "active" : ""}`}
+          onClick={toggleTerminal}
+          title={terminalOpen ? "收起终端 (⌘J)" : "展开终端 (⌘J)"}
+          aria-label={terminalOpen ? "收起终端" : "展开终端"}
+          aria-expanded={terminalOpen}
+          aria-controls="terminal-panel"
+        >
+          <Icon name="terminal" size={18} />
         </button>
         <button
           className={`icon-btn ${rightOpen ? "active" : ""}`}

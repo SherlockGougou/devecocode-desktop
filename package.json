@@ -8,6 +8,8 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "build:debug": "tauri build --debug",
+    "build:offline": "node scripts/build-offline.mjs",
+    "stage:offline-cli": "node scripts/stage-offline-cli.mjs",
     "icon": "tauri icon src-tauri/icons/source.png",
     "tauri": "tauri",
     "selftest": "cargo run --manifest-path src-tauri/Cargo.toml --features selftest --bin deveco-selftest",

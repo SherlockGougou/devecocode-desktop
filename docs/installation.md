@@ -4,11 +4,16 @@
 签名，也不做公证**；发布包使用 Tauri 的 ad-hoc 签名（`-`），它只用于满足 macOS 的基本
 签名结构要求，不代表可验证的开发者身份。因此首次打开时仍可能触发 Gatekeeper 提示。
 
+发布页提供两种 macOS 包：
+
+- **普通版**：体积小，需要另行安装 Node 和 DevEco Code CLI；
+- **Offline 版**：内置固定版本 CLI，适合不想在机器上安装 CLI 的用户；仍需网络登录和调用模型。
+
 ## 系统要求
 
 - macOS 12 或更高版本；
 - Apple Silicon 或 Intel Mac；
-- 已安装并登录 DevEco Code CLI：
+- 普通版需要已安装并登录 DevEco Code CLI；Offline 版无需单独安装 CLI：
 
 ```bash
 npm i -g @deveco/deveco-code
@@ -16,11 +21,12 @@ deveco providers   # 或 deveco auth
 deveco --version
 ```
 
-CLI 不随桌面应用打包。没有 CLI 时应用可以打开，但无法连接模型或读取会话。
+普通版不随桌面应用打包 CLI；没有 CLI 时应用可以打开，但无法连接模型或读取会话。
 
 ## 下载
 
-在项目的 **Releases** 页面下载与你的 Mac 架构对应的 DMG：
+在项目的 **Releases** 页面下载与你的 Mac 架构对应的 DMG。如果不想另装 CLI，选择文件名以
+`DevEco Code Offline` 开头的 Offline 版：
 
 - Apple Silicon（M1/M2/M3/M4）：选择文件名带 `aarch64` 或 `arm64` 的 DMG；
 - Intel：选择文件名带 `x64` 或 `x86_64` 的 DMG。
@@ -30,14 +36,14 @@ CLI 不随桌面应用打包。没有 CLI 时应用可以打开，但无法连�
 ## 安装
 
 1. 双击 DMG 打开磁盘映像。
-2. 将 `DevEco Code` 拖入“应用程序”目录。
+2. 将 `DevEco Code` 或 `DevEco Code Offline` 拖入“应用程序”目录。
 3. 在 Finder 中推出 DMG。
 
 ### 首次打开
 
 因为应用没有 Developer ID 签名和公证，直接双击可能被 macOS 拦截：
 
-1. 在 Finder 中右键 `DevEco Code.app`，选择“打开”；
+1. 在 Finder 中右键 `DevEco Code.app` 或 `DevEco Code Offline.app`，选择“打开”；
 2. 在确认对话框再次选择“打开”。
 
 如果系统仍提示无法验证开发者：
@@ -50,8 +56,10 @@ macOS 可能提示应用“已损坏”。如果确认安装包来自本项目�
 过应用包，可以移除 quarantine 属性后再打开：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/DevEco Code.app"
+xattr -dr com.apple.quarantine "/Applications/DevEco Code Offline.app"
 ```
+
+普通版把路径中的 `DevEco Code Offline.app` 换成 `DevEco Code.app`。
 
 这会绕过 Gatekeeper 的隔离检查，只应对你自己信任、且来源明确的安装包使用；不要用它运行
 来源不明的软件。应用没有 Apple 可验证的签名和公证，系统不会替你验证发布者。
@@ -60,8 +68,9 @@ xattr -dr com.apple.quarantine "/Applications/DevEco Code.app"
 
 ### 连接 CLI
 
-应用会按“设置中的路径 → `DEVECO_BIN_PATH` → 常见安装路径 → login shell → PATH”查找
-`deveco`。如果左栏底部显示 CLI 不可用：
+普通版会按“设置中的路径 → `DEVECO_BIN_PATH` → 常见安装路径 → login shell → PATH”查找
+`deveco`；Offline 版优先使用应用内 CLI，并把数据放在应用自己的目录。如果普通版左栏底部
+显示 CLI 不可用：
 
 1. 在终端执行 `which deveco`，确认真实路径；
 2. 打开应用“设置 → CLI 与服务”；
@@ -73,8 +82,9 @@ xattr -dr com.apple.quarantine "/Applications/DevEco Code.app"
 首次读取工作区时，macOS 可能请求“文稿”文件夹访问权限。拒绝后可以到
 “系统设置 → 隐私与安全性 → 文件与文件夹”恢复。通知权限可以在系统设置中重新开启。
 
-应用本身不会读取 `~/.local/share/deveco/*.db`，也不会改写
-`~/.config/deveco/deveco.jsonc`；这些数据由 CLI 管理。
+应用本身不会读取 `~/.local/share/deveco/*.db`；设置页可以按用户操作改写
+`~/.config/deveco/deveco.jsonc`，写入前会备份并校验文件 hash。Offline 版使用的是隔离后
+的应用内 CLI 数据目录。
 
 ## 基本使用
 
@@ -85,12 +95,15 @@ xattr -dr com.apple.quarantine "/Applications/DevEco Code.app"
 5. 右侧面板查看变更、文件、任务和 HarmonyOS 设备截图；
 6. 关闭主窗口会隐藏到菜单栏，托盘菜单可退出应用或重启本地服务。
 
-常用快捷键：`⌘N` 新建会话、`⌘E` 导出、`⌘,` 设置、`⌘⇧B` 切换右栏、`⌘/` 查看快捷键。
+常用快捷键：`⌘N` 新建会话、`⌘,` 设置、`⌘⇧B` 切换右栏、`⌘/` 查看快捷键。
 
-应用配置、导出和截图位置：
+应用启动时还会安装内嵌的 `deveco-desktop-device` skill，让 Agent 能通过 HDC 使用设备
+截图、布局检查、点击/滑动/输入和日志能力。它不修改 `deveco.jsonc`；路径为
+`~/.config/deveco/skills/deveco-desktop-device/`。
+
+应用配置和截图位置：
 
 - `~/Library/Application Support/DevEco Code Desktop/config.json`
-- `~/Library/Application Support/DevEco Code Desktop/exports/`
 - `~/Library/Application Support/DevEco Code Desktop/device-shots/`
 - 日志：`~/Library/Logs/DevEco Code Desktop/app.log`
 
@@ -108,7 +121,7 @@ CLI 升级与应用更新相互独立；升级 CLI 后重启应用即可重新�
 
 1. 从托盘菜单完全退出应用；
 2. 从“应用程序”删除 `DevEco Code.app`；
-3. 如确认不再需要本地配置、导出和日志，可手动删除：
+3. 如确认不再需要本地配置和日志，可手动删除：
 
 ```bash
 rm -rf "$HOME/Library/Application Support/DevEco Code Desktop"
@@ -142,6 +155,7 @@ CLI 在锁屏或休眠时可能阻塞，解锁后恢复。不要反复重启应�
 **设备页没有截图**
 
 确认手机已开启开发者模式和 USB 调试，`hdc` 可执行文件在 PATH 或 SDK 中，并在手机上授权
-本机调试。当前只支持单帧截图，不提供实时投屏。
+本机调试。桌面端设备面板只支持单帧截图，不提供实时投屏；Agent 设备 skill 也使用同一套
+HDC 授权。若刚更新应用或 skill，请在托盘菜单重启本地服务后重试。
 
 更完整的平台限制见[已知限制](limitations.md)，发布者流程见[开源发布检查](release.md)。

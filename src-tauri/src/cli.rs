@@ -143,12 +143,17 @@ fn from_path_env() -> Option<PathBuf> {
 }
 
 pub fn read_version(path: &Path) -> Result<Version, CliError> {
+    read_version_with_env(path, &[])
+}
+
+pub fn read_version_with_env(path: &Path, env: &[(String, String)]) -> Result<Version, CliError> {
     let mut command = Command::new(path);
     command
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .envs(env.iter().map(|(key, value)| (key, value)));
     // 独立进程组：`deveco` 是 node launcher，超时只杀 launcher 会留下 161MB 的
     // 原生二进制继续占着 CLI 数据库（实测会让下一次探测直接卡死）。
     #[cfg(unix)]
@@ -191,6 +196,13 @@ pub fn read_version(path: &Path) -> Result<Version, CliError> {
 
 /// 按优先级解析 CLI。`explicit` 来自用户配置。
 pub fn discover(explicit: Option<&Path>) -> Result<CliInfo, CliError> {
+    discover_with_env(explicit, &[])
+}
+
+pub fn discover_with_env(
+    explicit: Option<&Path>,
+    env: &[(String, String)],
+) -> Result<CliInfo, CliError> {
     let mut tried: Vec<PathBuf> = Vec::new();
 
     let mut ordered: Vec<PathBuf> = Vec::new();
@@ -202,7 +214,7 @@ pub fn discover(explicit: Option<&Path>) -> Result<CliInfo, CliError> {
     for candidate in ordered {
         tried.push(candidate.clone());
         if is_runnable(&candidate) {
-            let version = read_version(&candidate).ok();
+            let version = read_version_with_env(&candidate, env).ok();
             return Ok(CliInfo {
                 path: candidate,
                 version,
@@ -213,7 +225,7 @@ pub fn discover(explicit: Option<&Path>) -> Result<CliInfo, CliError> {
     for candidate in [from_login_shell(), from_path_env()].into_iter().flatten() {
         tried.push(candidate.clone());
         if is_runnable(&candidate) {
-            let version = read_version(&candidate).ok();
+            let version = read_version_with_env(&candidate, env).ok();
             return Ok(CliInfo {
                 path: candidate,
                 version,

@@ -3,6 +3,7 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/
+src-tauri/resources/cli/
 coverage/
 
 # 系统、编辑器与临时文件
@@ -14,6 +15,7 @@ Thumbs.db
 *.swo
 *.log
 .agent-temp/
+.artifacts/
 tmp/
 
 # 本地配置、凭据与导出

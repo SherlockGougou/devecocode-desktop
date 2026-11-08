@@ -55,22 +55,22 @@
             <ul>
               <li>macOS 12 或更高版本；</li>
               <li>Apple Silicon 或 Intel Mac；</li>
-              <li>Node.js 与 npm，用于安装 DevEco Code CLI；</li>
-              <li>一个已登录的 DevEco Code CLI。</li>
+              <li>普通版需要 Node.js、npm 和一个已登录的 DevEco Code CLI；</li>
+              <li>Offline 版已包含 CLI，不需要另行安装。</li>
             </ul>
-            <p>桌面端不内置 CLI。应用可以启动，但没有 CLI 时无法连接模型或读取会话。</p>
+            <p>普通版不内置 CLI，应用可以启动但没有 CLI 时无法连接模型或读取会话；Offline 版已解决这一点。</p>
           </section>
 
           <section id="download">
             <h2>下载和安装</h2>
             <ol>
-              <li>在 <a data-release-link href="https://github.com/">Releases</a> 页面选择适合你的 DMG：</li>
+              <li>在 <a data-release-link href="https://github.com/">Releases</a> 页面选择适合你的 DMG；如果不想另装 CLI，选择以 <code>DevEco Code Offline</code> 开头的 Offline 版：</li>
             </ol>
             <ul>
               <li>Apple Silicon：文件名带 <code>aarch64</code> 或 <code>arm64</code>；</li>
               <li>Intel：文件名带 <code>x64</code> 或 <code>x86_64</code>。</li>
             </ul>
-            <p>双击 DMG，将 <strong>DevEco Code</strong> 拖入“应用程序”，然后推出磁盘映像。</p>
+            <p>双击 DMG，将 <strong>DevEco Code</strong> 或 <strong>DevEco Code Offline</strong> 拖入“应用程序”，然后推出磁盘映像。</p>
           </section>
 
           <section>
@@ -80,7 +80,7 @@
               这是未签名社区构建的预期行为。
             </p>
             <ol>
-              <li>在 Finder 中右键 <code>DevEco Code.app</code>，选择“打开”；</li>
+              <li>在 Finder 中右键 <code>DevEco Code.app</code> 或 <code>DevEco Code Offline.app</code>，选择“打开”；</li>
               <li>在确认对话框中再次选择“打开”；</li>
               <li>如果仍被阻止，打开“系统设置 → 隐私与安全性”，点击“仍要打开”。</li>
             </ol>
@@ -88,7 +88,8 @@
               如果系统提示应用“已损坏”，并且你确认安装包来自本项目 Releases，可以移除
               quarantine 属性：
             </p>
-            <pre><code>xattr -dr com.apple.quarantine "/Applications/DevEco Code.app"</code></pre>
+            <pre><code>xattr -dr com.apple.quarantine "/Applications/DevEco Code Offline.app"</code></pre>
+            <p>普通版把路径中的 <code>DevEco Code Offline.app</code> 换成 <code>DevEco Code.app</code>。</p>
             <p>
               这会绕过 macOS 的隔离检查，只应对你信任且来源明确的安装包使用。不要用它运行
               来源不明的软件。
@@ -97,7 +98,7 @@
 
           <section>
             <h2>连接本机 CLI</h2>
-            <p>在终端安装并登录 DevEco Code CLI：</p>
+            <p>普通版在终端安装并登录 DevEco Code CLI；Offline 版直接使用应用内置 CLI：</p>
             <pre><code>npm i -g @deveco/deveco-code
 deveco providers   # 或 deveco auth
 deveco --version</code></pre>
@@ -131,7 +132,7 @@ deveco --version</code></pre>
             <h2>更新与卸载</h2>
             <p>目前没有自动更新。更新时退出旧版本，下载新的 DMG 并覆盖“应用程序”中的旧应用。</p>
             <p>
-              卸载时先完全退出应用，再删除 <code>DevEco Code.app</code>。如确认不再需要本地配置、
+              卸载时先完全退出应用，再删除 <code>DevEco Code.app</code> 或 <code>DevEco Code Offline.app</code>。如确认不再需要本地配置、
               导出和日志，可以手动删除：
             </p>
             <pre><code>rm -rf "$HOME/Library/Application Support/DevEco Code Desktop"

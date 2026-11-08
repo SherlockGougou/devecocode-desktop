@@ -8,7 +8,8 @@ DevEco Code Desktop 是 macOS 上的桌面客户端，不是新的 Agent 实现�
   权限、MCP、Skills 与数据持久化；
 - 桌面端负责三栏 UI、工作区与会话管理、输入体验、文件/任务/设备面板、系统通知和
   macOS 集成；
-- CLI 不随应用打包。应用始终驱动用户本机安装的那一份，并通过 HTTP + SSE 契约交互；
+- 普通版不打包 CLI；Offline 版内置固定版本 CLI，并从应用数据目录启动。两者都通过
+  HTTP + SSE 契约交互；
 - 官方 Web UI 不再作为产品入口，也不再保留“经典界面”窗口。
 
 这个边界决定了最重要的维护原则：**不复制 Agent 能力，只适配 CLI 契约。** 上游新增
@@ -22,6 +23,7 @@ graph LR
   UI -- "Tauri events" --> MAIN["Rust 主进程<br/>后端监管 + SSE 中继"]
   IPC -- "HTTP" --> CLI["deveco serve<br/>127.0.0.1:随机端口"]
   MAIN -- "SSE /global/event" --> CLI
+  MAIN -- "WebSocket /pty" --> CLI
   MAIN -- "系统通知" --> N["macOS 通知中心"]
   CLI <--> DATA["CLI 配置与会话数据<br/>~/.config/deveco<br/>~/.local/share/deveco"]
 ```
@@ -41,6 +43,8 @@ graph LR
 .
 ├── ui/                 React + TypeScript + Vite 前端
 ├── src-tauri/          Tauri 2 / Rust 桌面壳
+│   ├── resources/cli/  离线版构建时生成的 CLI 资源（不入库）
+│   └── skills/         随二进制内嵌的 Agent skill
 ├── docs/               当前文档与历史实现记录
 ├── website/            无构建依赖的静态官网
 ├── scripts/            发布辅助脚本
@@ -57,23 +61,27 @@ graph LR
 | `src/lib.rs` | 共享库导出，供主进程与无头自检复用 |
 | `src/cli.rs` | 按“配置 → 环境变量 → 常见路径 → login shell → PATH”定位 CLI |
 | `src/backend.rs` | 启动编排：定位 CLI、复用或拉起 serve、健康检查、读取项目目录 |
+| `src/bundled_cli.rs` | Offline 版资源提取、CLI 数据目录隔离与 `devecocli` 入口 |
 | `src/server.rs` | serve 子进程、端口选择、listening 行解析、健康检查与进程组回收 |
 | `src/supervise.rs` | 后端自愈状态机与指数退避 |
 | `src/http.rs` | 访问本机 CLI 的 HTTP 客户端，主进程与自检共用 |
 | `src/sse.rs` | `text/event-stream` 解析与订阅 |
 | `src/events.rs` | 授权、完成、失败、阶段事件分类，全局事件解包与通知文案 |
 | `src/notify.rs` | 通知策略与按会话去抖 |
-| `src/ipc.rs` | 前端与 CLI/系统之间的命令桥：代理、设置、导出、设备、字体与窗口标题 |
+| `src/ipc.rs` | 前端与 CLI/系统之间的命令桥：代理、设置、设备、字体与窗口标题 |
+| `src/terminal.rs` | 底部终端：调用 `/pty` 创建/调整/关闭会话，维持 WebSocket，把输出转成 Tauri 事件 |
+| `src/cli_config.rs` | CLI 全局/项目配置路径解析、JSONC 校验、密钥脱敏、备份、原子写入与重载 |
 | `src/menubar.rs` | macOS 菜单栏状态项、动态图标与菜单动作 |
 | `src/windrag.rs` | 自绘标题栏的窗口拖动 |
 | `src/git.rs` | 当前工作区 Git 状态、显式提交与推送 |
 | `src/device.rs` | HarmonyOS 设备发现、HDC 截图与充电亮屏锁 |
+| `src/device_skill.rs` | 内嵌 `deveco-desktop-device` skill 的安装、管理标记与 CLI 配置目录解析 |
 | `src/preview.rs` | macOS Quick Look 缩略图生成 |
 | `src/fonts.rs` | 系统字体枚举 |
 | `src/config.rs` | 应用配置：CLI 路径、通知、菜单栏、端口与可选本地口令 |
 | `src/bin/selftest.rs` | 不打开窗口的端到端自检；由 `selftest` feature 启用，默认不进入应用包 |
 
-`main.rs` 只声明 `ipc`、`menubar`、`windrag` 三个主进程模块；其余模块位于库层，
+`main.rs` 只声明 `ipc`、`menubar`、`terminal`、`windrag` 四个主进程模块；其余模块位于库层，
 由主进程和 `deveco-selftest` 共用。
 
 ### React 前端
@@ -82,12 +90,14 @@ graph LR
 |---|---|
 | 应用骨架 | `ui/src/App.tsx`、`ui/src/main.tsx`、`ui/src/styles.css` |
 | 状态与数据 | `ui/src/store.ts`、`ui/src/api.ts`、`ui/src/types.ts`、`ui/src/appEvents.ts` |
+| 配置编辑 | `ui/src/cliConfig.ts`、`components/settings/CliConfigPage.tsx`、`components/settings/useCliConfigEditor.ts` |
 | 对话体验 | `components/ChatView.tsx`、`components/Composer.tsx`、`components/Markdown.tsx` |
 | 导航与工作区 | `components/Sidebar.tsx`、`components/StatusBar.tsx` |
-| 右栏 | `components/RightPanel.tsx`、`components/FilePreview.tsx`、`components/TasksPanel.tsx`、`components/DevicePanel.tsx` |
+| 底部终端 | `components/TerminalPanel.tsx` |
+| 右栏 | `components/RightPanel.tsx`、`components/ChangesPanel.tsx`、`components/FilesPanel.tsx`、`components/DiffView.tsx`、`components/FilePreview.tsx`、`components/TasksPanel.tsx`、`components/DevicePanel.tsx` |
 | 概览与设置 | `components/TaskOverview.tsx`、`components/Settings.tsx`、`components/settings/*` |
 | 交互基础 | `contextMenu.tsx`、`components/Shortcuts.tsx`、`components/Icon.tsx` |
-| 纯逻辑工具 | `attachments.ts`、`clipboard.ts`、`filePreview.ts`、`mentions.ts`、`models.ts`、`paths.ts`、`tasks.ts`、`theme.ts`、`uiPrefs.ts` |
+| 纯逻辑工具 | `attachments.ts`、`changes.ts`、`diff.ts`、`fileTree.ts`、`clipboard.ts`、`filePreview.ts`、`mentions.ts`、`messageStats.ts`、`models.ts`、`paths.ts`、`tasks.ts`、`theme.ts`、`uiPrefs.ts` |
 
 所有请求集中在 `ui/src/api.ts`，所有共享状态集中在 `ui/src/store.ts`。组件可以调用
 `api.ts` 或读取 store，但不直接创建 HTTP 连接。
@@ -96,13 +106,18 @@ graph LR
 
 1. 应用读取 `~/Library/Application Support/DevEco Code Desktop/config.json`。
 2. `cli.rs` 定位 `deveco` 并执行 `deveco --version`。
-3. `backend.rs` 决定复用固定端口上的实例，或在应用侧先找空闲端口后拉起
-   `deveco serve --hostname 127.0.0.1 --port <port>`。
+3. `backend.rs` 定位 `hdc` 并注入 `HDC`，再把内嵌设备 skill 写入 CLI 的全局 skills 目录；
+   随后决定复用固定端口上的实例，或在应用侧先找空闲端口后拉起
+   `deveco serve --hostname 127.0.0.1 --port <port>`。serve 固定以
+   `~/Library/Application Support/DevEco Code Desktop/server-cwd` 为工作目录；不能继承
+   Finder 启动时的 `/`，否则 CLI 会把整个根目录当作默认工作区并建立文件监听。
 4. `server.rs` 解析 stdout 的 `deveco server listening on http://...`，轮询
    `/api/health`，成功后把 `base_url` 和可选口令写入 IPC 状态。
 5. 主进程订阅 `/global/event`，把事件通过 `deveco://sse` 转发给前端，同时做通知分类。
 6. 前端通过 `server_request` 读取工作区、会话、消息、文件、diff、待办与设备状态。
-7. 退出或崩溃时按进程组停止 serve；异常断开进入自愈状态机。
+7. 底部终端由 `terminal.rs` 调用 `/pty` 创建会话，用一次性 ticket 建立 WebSocket；
+   输出经 `deveco://terminal` 事件交给 xterm，前端按键再由 Rust 写回同一条连接。
+8. 退出或崩溃时按进程组停止 serve；异常断开进入自愈状态机。
 
 ## 后端自愈
 
@@ -139,7 +154,9 @@ stateDiagram-v2
    `worktree` 去重。
 6. **`/find/file` 必须带 `query`。** 空字符串合法并返回工作区文件列表；代理只过滤
    `null`，不能丢掉空串。目录浏览用 `/file?path=`，内容读取用 `/file/content?path=`。
-7. **变更面板先查 `/session/{id}/diff`，为空再回退 `/vcs/diff?mode=git`。**
+7. **变更面板按来源分别读取，不做自动回退。** 工作区用 `/vcs/diff?mode=git`，
+   本次会话用 `/session/{id}/diff`；`/vcs` 的 `branch=null` 用于区分非 Git 工作区。
+   文件状态徽标读取 `/vcs/status`，与 diff 来源相互独立。
 8. **归档是元数据操作。** 使用 `PATCH time.archived`，会话列表不会自动过滤，由前端处理。
 9. **消息统一走 `prompt_async`。** 同步 `/message` 会等待整个 Agent loop，长任务容易撞上
    代理超时；进度依赖 `/global/event`。
@@ -147,26 +164,70 @@ stateDiagram-v2
     客户端不内联文件内容；附件仍使用 data URL。
 11. **权限事件兼容 v1/v2 字段。** 至少兼容 `permission.asked/replied` 与
     `permission.v2.asked/replied`，未知事件忽略。
+12. **内嵌 skill 不能改写 CLI 配置。** 设备 skill 只写入 CLI 的 `skills/<name>/SKILL.md`，
+    用 `.deveco-desktop-managed` 标记所有权；不修改 `deveco.jsonc`，不覆盖无标记同名目录。
+    CLI 只在启动时扫描 skill，复用已有 serve 实例时不会热加载。
+13. **PTY 连接不能交给 WebView。** `/pty/{id}/connect-token` 要求内部请求头，返回的一次性
+    ticket 只用于 Rust 侧建立 WebSocket；输出是字符串帧，首帧可能是 `0x00 + {"cursor":...}`
+    的二进制控制帧，xterm 只接收普通输出。关闭面板时先断开连接，再调用 `DELETE /pty/{id}`
+    回收 shell。
 
 ## 数据与配置
 
 | 路径 | 所有权 | 用途 |
 |---|---|---|
-| `~/.config/deveco/` | CLI | CLI 配置、AGENTS.md、Skills；桌面端通过 CLI API 读取，不直接改写 |
+| `~/.config/deveco/` | CLI | CLI 配置、AGENTS.md、Skills；桌面端可经确认写入 `deveco.jsonc`，并安装带管理标记的 `deveco-desktop-device` |
 | `~/.local/share/deveco/` | CLI | 会话数据库与认证信息；桌面端不解析 SQLite |
+| `<workspace>/.deveco/deveco.jsonc` | 项目 | 项目级 CLI 配置；首次保存时由桌面端创建，项目规则覆盖全局 |
 | `~/Library/Application Support/DevEco Code Desktop/config.json` | 桌面端 | CLI 路径、通知、菜单栏、端口与可选本地口令 |
-| `~/Library/Application Support/DevEco Code Desktop/exports/` | 桌面端 | `deveco export` 生成的会话 JSON |
+| `~/Library/Application Support/DevEco Code Desktop/cli-config-backups/` | 桌面端 | CLI 配置写入前备份，按配置文件路径隔离并保留最近 10 份，权限 `0600` |
+| `~/Library/Application Support/DevEco Code Desktop/server-cwd/` | 桌面端 | serve 的中性工作目录，避免 CLI 扫描根目录或用户主目录 |
 | `~/Library/Application Support/DevEco Code Desktop/device-shots/` | 桌面端 | HDC 设备截图 |
 | `~/Library/Logs/DevEco Code Desktop/app.log` | 桌面端 | 运行日志 |
 | WebView `localStorage` | 桌面端 | 主题、字体、侧栏宽度、模型可见性、隐藏工作区等纯 UI 偏好 |
+
+### CLI 配置写入链路
+
+```mermaid
+sequenceDiagram
+  participant UI as 设置页
+  participant Rust as cli_config
+  participant FS as deveco.jsonc
+  participant CLI as deveco serve
+
+  UI->>Rust: 读取快照（作用域 + directory）
+  Rust->>CLI: GET /path、GET /config
+  Rust->>FS: 读取并脱敏
+  Rust-->>UI: 文本 / 解析值 / hash / secrets
+  UI->>Rust: 保存（base hash + 文本）
+  Rust->>FS: 备份旧文件 → 临时文件 → rename
+  Rust->>CLI: POST /instance/dispose 或 /global/dispose
+  Rust->>CLI: 重新读取配置验证
+  alt 重载或解析失败
+    Rust->>FS: 恢复备份
+  end
+  Rust-->>UI: 新快照 / 警告
+```
 
 ## 安全边界
 
 - 默认只连接本机回环地址，不打包或代理远程服务。
 - `secure = true` 时会生成本地 Basic Auth 口令，注入 serve 并只由 Rust 代理携带；
   口令保存在应用配置文件中，不是系统钥匙串。
-- 提交、推送、设备截图、文件导出等操作由用户显式触发；Git 命令限制在当前工作区，
+- CLI 配置写入只接受 `global` 或带 `directory` 的 `project` 作用域；项目路径限定为
+  `.deveco/deveco.jsonc` 或已有根 `deveco.jsonc`，不会写项目根 `config.json`，也不会把
+  `server-cwd` 当成用户工作区。
+- 配置保存前校验 base hash，旧文件备份到应用数据目录（`0600`，每个配置目标最近 10 份），
+  临时文件原子替换；重载失败或 CLI 无法解析时恢复备份。
+- Provider `options.apiKey`、MCP `headers`、MCP `environment` 中的敏感键和 MCP
+  `oauth.clientSecret` 默认脱敏为稳定哨兵；保存未修改的字段时由 Rust 还原，日志与前端
+  共享状态不保存明文。
+- 提交、推送、设备截图等操作由用户显式触发；Git 命令限制在当前工作区，
   不经过 shell 拼接。
+- 终端 PTY 由本机 CLI 创建，命令拥有当前用户权限；桌面端只转发键盘输入与尺寸，不执行
+  额外 shell 拼接。连接票据、端口和可选口令不会进入 WebView。
+- 设备 skill 只提供 HDC 命令说明和临时文件清理规则；安装、卸载、重启等修改设备的操作
+  必须由用户明确请求，skill 不提高 CLI 的权限。
 - 前端不加载远程页面。Markdown 使用 `react-markdown` 默认渲染，不执行原始 HTML。
 - `tauri.conf.json` 当前未设置 CSP。发布前如需加载任何远程内容或引入新的 HTML 注入点，
   必须先收紧 CSP，并重新审查 Tauri capabilities。

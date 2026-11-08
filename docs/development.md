@@ -13,8 +13,9 @@ deveco providers   # 或 deveco auth
 deveco --version
 ```
 
-设备面板额外需要 `hdc` 与开启开发者模式的 HarmonyOS 设备。`hdc` 会从 DevEco Studio、
-OpenHarmony SDK、`HDC` 环境变量或 PATH 中查找。
+设备面板和 Agent 设备 skill 额外需要 `hdc` 与开启开发者模式的 HarmonyOS 设备。`hdc` 会从
+DevEco Studio、OpenHarmony SDK、`HDC` 环境变量或 PATH 中查找。应用在启动 serve 前定位
+一次 `hdc`，并把结果注入 CLI 环境；仍找不到时 skill 会给出 SDK 路径兜底。
 
 ## 首次安装
 
@@ -34,6 +35,8 @@ npm --prefix ui install
 | `npm --prefix ui run build` | TypeScript 类型检查 + 前端生产构建 |
 | `npm run build:debug` | 生成 debug `.app`，最快验证桌面集成 |
 | `npm run build` | 生成 release `.app` / `.dmg` |
+| `npm run build:offline` | 生成包含固定 CLI 的离线 `.app` / `.dmg` |
+| `npm run stage:offline-cli` | 只准备内置 CLI 资源，不打包应用 |
 | `npm run check` | 前端构建 + 全部 Rust 单测 |
 | `npm run check:selftest` | 启动真实 serve 的端到端自检 |
 | `npm run test` | 只跑 Rust 单测 |
@@ -47,6 +50,9 @@ npm --prefix ui install
 打包后必须退出旧进程再重新打开，托盘“退出”是干净退出路径。源码构建不会热更新已运行
 的 `.app`。
 
+离线版默认构建当前架构；跨架构时查看[离线版打包](offline-packaging.md)的
+`--platform-source` 说明。
+
 ## 环境变量
 
 | 变量 | 作用 |
@@ -54,6 +60,7 @@ npm --prefix ui install
 | `DEVECO_BIN_PATH` | 显式指定 `deveco` 可执行文件，优先于自动探测 |
 | `DEVECO_DESKTOP_DIR` | 启动时优先打开指定工作区 |
 | `DEVECO_DESKTOP_NOTIFY_TEST` | 设置任意值后，在首次就绪时投递一条通知通道测试 |
+| `HDC` | 显式指定 hdc 可执行文件；未设置时由应用自动探测并注入 serve |
 | `RUST_LOG` | Rust 日志级别，默认 `info` |
 
 本机服务口令由设置页的 `secure` 开关控制。开启后应用生成随机口令并写入应用配置；
@@ -82,6 +89,7 @@ npm run check:selftest
 - 代理建会话、写入、读取与删除；
 - `/global/event` 订阅与事件分类；
 - 通知策略与去抖；
+- 内嵌 `deveco-desktop-device` skill 写入后能被 CLI 的 `/skill/status` 发现；
 - `SIGKILL` 后端自愈与退出进程组回收。
 
 它不调用模型，不消耗 token，但需要已登录的 CLI 和解锁的桌面会话。锁屏或文件夹权限弹窗
@@ -94,9 +102,42 @@ npm run check:selftest
 - 成功路径；
 - 空态和失败态；
 - 窄窗口与右栏展开/收起；
+- 底部终端展开、输入命令、拖高、重开和关闭后 PTY 回收；
 - 亮色和暗色主题（改动 CSS 时）。
 
 测试数据请使用临时工作区或脱敏样例，不要提交真实会话标题、路径、设备截图和通知内容。
+
+验证设备 skill：
+
+```bash
+deveco debug skill | rg 'deveco-desktop-device'
+```
+
+首次启动应用或运行 `deveco-selftest` 会把 skill 安装到 CLI 的全局 skills 目录：
+`~/.config/deveco/skills/deveco-desktop-device/`。Offline 版写入隔离的 CLI 配置目录。
+该目录带 `.deveco-desktop-managed` 标记，应用只更新自己管理的内容；不要手动修改这个目录，
+也不要把它当成 `deveco.jsonc` 的一部分。
+
+## CLI 配置读写
+
+设置页的配置编辑由 `src-tauri/src/cli_config.rs` 和前端
+`ui/src/cliConfig.ts`、`components/settings/CliConfigPage.tsx` 共同完成：
+
+- 全局路径来自 `/path` 的 `config` 目录，按 `deveco.jsonc` → `deveco.json` → `config.json`
+  选择；项目路径按 `.deveco/deveco.jsonc` → 工作区根 `deveco.jsonc` 选择，首次保存创建
+  `.deveco/deveco.jsonc`，不写项目根 `config.json`。
+- 项目作用域必须带 `directory`；`server-cwd` 只用于启动 CLI，不能当作项目配置写入目标。
+- 前端用 `jsonc-parser` 的 `modify`/`applyEdits` 保留注释和缩进；后端用
+  `jsonc-parser` 校验、脱敏和还原密钥哨兵。
+- 保存前比较 base hash，旧文件备份到应用数据目录（`0600`，每个配置目标最近 10 份）；写入使用
+  临时文件 + rename，随后调用 `/instance/dispose` 或 `/global/dispose` 并重新读取验证。
+- 重载失败时恢复备份，并把原始错误返回设置页；运行中的任务可能被中断，保存前会二次确认。
+
+需要真实 CLI 的配置集成测试默认 `#[ignore]`，确认本机已安装 CLI 后运行：
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml -- --ignored
+```
 
 ## 格式与静态检查
 
@@ -120,6 +161,8 @@ CI 会以 `-D warnings` 运行 Clippy。本地出现告警时先确认是否由�
 6. Rust 单测。
 
 CI 不运行 `deveco-selftest`，因为 runner 没有用户登录的 CLI；这项检查由贡献者在本地完成。
+CI 还会并行运行 `offline-resources` job，分别下载 arm64/x64 的固定 CLI 包并验证离线
+资源生成；它不构建 Tauri 应用，实际离线应用由 Release workflow 构建。
 
 自检程序是开发用二进制，默认不参与应用打包；手动运行
 `cargo run --bin deveco-selftest` 时需要加 `--features selftest`。
@@ -138,6 +181,11 @@ CI 不运行 `deveco-selftest`，因为 runner 没有用户登录的 CLI；这�
 分发策略，应在 release workflow 中单独加入签名、公证和密钥管理，不要把凭据放进仓库。
 
 手动发布时，在 Actions 中选择 `Release`，填写与项目版本一致的 tag（例如 `v0.2.0`）。
+同一 workflow 的 `offline` job 还会构建包含固定 CLI 的离线版；其资源准备、体积和验收见
+[离线版打包](offline-packaging.md)。
+
+Release 正文读取 `docs/releases/vX.Y.Z.md`，必须同时包含中英文段落。新增版本时先创建对应
+文件，再推送 `vX.Y.Z` 标签；发布流程最后会更新 GitHub Release 的正文。
 
 官网由 `.github/workflows/pages.yml` 部署到 GitHub Pages；本地预览方式见
 [website/README.md](../website/README.md)。
@@ -160,6 +208,10 @@ deveco serve --hostname 127.0.0.1 --port 4096 --print-logs
 
 不要在应用侧使用 `--port 0`。如果端口被占用，让应用重新选择空闲端口，而不是杀掉
 不属于本应用的 serve 进程。
+
+serve 固定从 `~/Library/Application Support/DevEco Code Desktop/server-cwd` 启动。不要改回
+继承 Finder 的工作目录：从 Finder 启动时 cwd 是 `/`，CLI 会把整个根目录当作工作区并建立
+文件监听，导致异常 CPU 和内存占用。真正的用户工作区始终通过请求的 `directory` 参数传入。
 
 ### 锁屏后无响应
 

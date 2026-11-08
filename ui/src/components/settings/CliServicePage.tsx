@@ -10,8 +10,11 @@ import type {
 import {
   EmptyState,
   Row,
+  SelectField,
   SettingsSection,
+  StringListEditor,
   Tag,
+  TextField,
   Toggle,
   compactPath,
 } from "./SettingsPrimitives";
@@ -23,6 +26,7 @@ export default function CliServicePage({
   directory,
   detecting,
   onCliPathChange,
+  onBundledCliChange,
   onServerChange,
   onDetect,
 }: {
@@ -32,6 +36,7 @@ export default function CliServicePage({
   directory: string | null;
   detecting: boolean;
   onCliPathChange: (value: string | null) => void;
+  onBundledCliChange: (value: boolean) => void;
   onServerChange: (patch: Partial<AppConfig["server"]>) => void;
   onDetect: () => void;
 }) {
@@ -64,8 +69,14 @@ export default function CliServicePage({
     <>
       <SettingsSection
         title="CLI"
-        hint="桌面端只保存可执行文件路径；其他配置以 deveco 的有效配置为准。"
+        hint="桌面端只保存可执行文件路径和内置 CLI 偏好；其他配置以 deveco 的有效配置为准。"
       >
+        <Toggle
+          label="优先使用内置 CLI"
+          hint="离线版默认使用应用内置 CLI；关闭或未内置时使用手动路径和系统探测"
+          checked={Boolean(draft.use_bundled_cli)}
+          onChange={onBundledCliChange}
+        />
         <div className="settings-row">
           <div className="settings-label">
             <span>可执行文件路径</span>
@@ -123,28 +134,36 @@ export default function CliServicePage({
               mono
               title={paths.config}
             />
-            <Row
-              label="项目配置目录"
-              value={compactPath(paths.projectConfig, paths.home)}
-              mono
-              title={paths.projectConfig}
-            />
+            {directory && (
+              <Row
+                label="项目配置目录"
+                value={compactPath(paths.projectConfig, paths.home)}
+                mono
+                title={paths.projectConfig}
+              />
+            )}
             <Row
               label="当前工作区"
-              value={compactPath(paths.worktree, paths.home)}
+              value={
+                directory
+                  ? compactPath(paths.worktree, paths.home)
+                  : "未选择工作区"
+              }
               mono
-              title={paths.worktree}
+              title={directory ? paths.worktree : ""}
             />
             <div className="settings-actions">
               <button className="ghost-btn" onClick={() => void api.openPath(paths.config)}>
                 打开全局配置目录
               </button>
-              <button
-                className="ghost-btn"
-                onClick={() => void api.openPath(paths.projectConfig)}
-              >
-                打开项目配置目录
-              </button>
+              {directory && (
+                <button
+                  className="ghost-btn"
+                  onClick={() => void api.openPath(paths.projectConfig)}
+                >
+                  打开项目配置目录
+                </button>
+              )}
             </div>
             <p className="settings-note">
               配置读取顺序：<code>.deveco/deveco.jsonc</code> →{' '}
@@ -182,6 +201,13 @@ export default function CliServicePage({
       </SettingsSection>
 
       <SettingsSection title="本机服务" hint="这些选项属于桌面端启动参数，不写入 deveco 配置。">
+        <TextField
+          label="监听地址"
+          hint="默认只监听本机回环地址"
+          value={draft.server.hostname}
+          mono
+          onChange={(hostname) => onServerChange({ hostname })}
+        />
         <div className="settings-row">
           <div className="settings-label">
             <span>端口偏好</span>
@@ -202,6 +228,41 @@ export default function CliServicePage({
             />
           </div>
         </div>
+        <SelectField
+          label="CLI 日志级别"
+          value={draft.server.log_level ?? "INFO"}
+          options={["DEBUG", "INFO", "WARN", "ERROR"].map((level) => ({
+            label: level,
+            value: level,
+          }))}
+          onChange={(value) =>
+            onServerChange({ log_level: value as AppConfig["server"]["log_level"] })
+          }
+        />
+        <Toggle
+          label="不加载外部插件"
+          hint="传给 serve 的 --pure；排查插件问题时使用"
+          checked={Boolean(draft.server.pure)}
+          onChange={(pure) => onServerChange({ pure })}
+        />
+        <Toggle
+          label="启用 mDNS"
+          hint="开启后 serve 会在局域网广播服务"
+          checked={Boolean(draft.server.mdns)}
+          onChange={(mdns) => onServerChange({ mdns })}
+        />
+        <TextField
+          label="mDNS 域名"
+          value={draft.server.mdns_domain ?? "deveco.local"}
+          onChange={(mdns_domain) => onServerChange({ mdns_domain })}
+        />
+        <StringListEditor
+          label="额外 CORS 域名"
+          hint="每个域名一条；仅在需要浏览器或其他客户端接入时添加"
+          items={draft.server.cors ?? []}
+          placeholder="https://example.com"
+          onChange={(cors) => onServerChange({ cors })}
+        />
         <Toggle
           label="本地服务口令"
           hint="开启后 Rust 侧会生成随机口令保护 127.0.0.1 端口；需要重启生效"

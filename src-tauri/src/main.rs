@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use deveco_desktop::{
+    bundled_cli,
     config::Config,
     events::{classify, render, Notice},
     notify::{should_notify, Debouncer, DEBOUNCE_WINDOW},
@@ -20,6 +21,7 @@ use tauri_plugin_notification::NotificationExt;
 
 mod ipc;
 mod menubar;
+mod terminal;
 mod windrag;
 
 #[derive(Clone, Serialize)]
@@ -43,6 +45,7 @@ fn main() {
         .manage(ipc::SettingsState::default())
         .manage(ipc::BackendCtl::default())
         .manage(ipc::DeviceAwakeState::default())
+        .manage(terminal::TerminalManager::default())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -53,6 +56,13 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             ipc::server_request,
+            ipc::cli_config_read,
+            ipc::cli_config_sources,
+            ipc::cli_config_save,
+            ipc::cli_config_reveal_secret,
+            ipc::cli_config_backups,
+            ipc::cli_config_restore,
+            ipc::open_url,
             ipc::startup_directory,
             ipc::path_exists,
             ipc::pick_workspace_folder,
@@ -64,7 +74,10 @@ fn main() {
             ipc::reveal_path,
             ipc::quick_look_thumbnail,
             ipc::restart_app,
-            ipc::export_session,
+            terminal::terminal_open,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_close,
             ipc::device_probe,
             ipc::device_capture,
             ipc::device_awake_status,
@@ -93,7 +106,6 @@ fn main() {
             // 菜单动作交给前端执行（前端才掌握会话状态）
             const APP_MENU_ACTIONS: &[&str] = &[
                 "new_session",
-                "export_session",
                 "settings",
                 "toggle_right",
                 "shortcuts",
@@ -126,6 +138,7 @@ fn main() {
         if let tauri::RunEvent::Exit = event {
             SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
             handle.state::<ipc::DeviceAwakeState>().shutdown_blocking();
+            handle.state::<terminal::TerminalManager>().shutdown_all();
             shutdown_server(handle);
         }
     });
@@ -150,10 +163,43 @@ fn shutting_down() -> bool {
 
 async fn run_backend(app: AppHandle) {
     let config_path = Config::default_path();
-    let loaded = match &config_path {
+    let mut loaded = match &config_path {
         Some(path) => Config::load(path),
         None => Config::default(),
     };
+    if let (Ok(resource_dir), Some(data_dir)) = (app.path().resource_dir(), ipc::data_dir()) {
+        emit_status(
+            &app,
+            "正在准备应用内置 CLI…".to_string(),
+            Some("首次启动会复制 CLI 运行资源，之后直接复用。".to_string()),
+            false,
+        );
+        match tauri::async_runtime::spawn_blocking(move || {
+            bundled_cli::prepare(&resource_dir, &data_dir)
+        })
+        .await
+        {
+            Ok(Ok(Some(cli))) => {
+                log::info!("启用内置 CLI：{}（{}）", cli.binary.display(), cli.version);
+                loaded.bundled_cli = Some(cli);
+            }
+            Ok(Ok(None)) => {
+                log::info!("未发现内置 CLI 资源，使用系统 CLI");
+            }
+            Ok(Err(err)) => {
+                log::error!("准备内置 CLI 失败，回退系统 CLI：{err:#}");
+                emit_status(
+                    &app,
+                    "内置 CLI 准备失败，将尝试系统 CLI".to_string(),
+                    Some(format!("{err:#}")),
+                    true,
+                );
+            }
+            Err(err) => {
+                log::error!("内置 CLI 准备任务失败，回退系统 CLI：{err}");
+            }
+        }
+    }
     let ctl = app.state::<ipc::BackendCtl>().clone();
     let mut supervisor = Supervisor::new(loaded.clone());
     let mut attempt: u32 = 0;
@@ -265,6 +311,7 @@ fn apply_backend(
             runtime.base_url = Some(backend.server.base_url.clone());
             runtime.cli_path = Some(backend.cli.path.to_string_lossy().to_string());
             runtime.cli_version = backend.cli.version.map(|version| version.to_string());
+            runtime.cli_env = backend.cli_env.clone();
             runtime.config_path = config_path.map(|path| path.to_string_lossy().to_string());
             runtime.log_dir = ipc::logs_dir().map(|path| path.to_string_lossy().to_string());
             runtime.data_dir = ipc::data_dir().map(|path| path.to_string_lossy().to_string());
@@ -649,11 +696,6 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .item(
             &MenuItemBuilder::with_id("new_session", "新建会话")
                 .accelerator("CmdOrCtrl+N")
-                .build(app)?,
-        )
-        .item(
-            &MenuItemBuilder::with_id("export_session", "导出当前会话…")
-                .accelerator("CmdOrCtrl+E")
                 .build(app)?,
         )
         .separator()

@@ -54,7 +54,6 @@ function ChatRow({
   const renameSession = useApp((s) => s.renameSession);
   const archiveSession = useApp((s) => s.archiveSession);
   const deleteSession = useApp((s) => s.deleteSession);
-  const exportSession = useApp((s) => s.exportSession);
   const [editing, setEditing] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const title = session.title || "未命名会话";
@@ -93,12 +92,6 @@ function ChatRow({
               onSelect: () => archiveSession(directory, session.id, !archived),
             },
             { type: "separator" },
-            {
-              type: "item",
-              label: "导出会话",
-              icon: "download",
-              onSelect: () => exportSession(directory, session.id),
-            },
             copyItem("复制会话标题", title, "会话标题已复制"),
             copyItem("复制会话 ID", session.id, "会话 ID 已复制"),
             { type: "separator" },
@@ -565,7 +558,7 @@ export default function Sidebar() {
             aria-expanded={isOpen}
           >
             <span className="ws-icon">
-              <Icon name="workspace" size={19} strokeWidth={1.9} />
+              <Icon name="folder" size={19} strokeWidth={1.9} />
             </span>
             <span className="ws-name">{basename(dir)}</span>
           </div>
@@ -774,7 +767,7 @@ export default function Sidebar() {
                 >
                   <div className="ws-main" title={dir}>
                     <span className="ws-icon">
-                      <Icon name="workspace" size={19} strokeWidth={1.9} />
+                      <Icon name="folder" size={19} strokeWidth={1.9} />
                     </span>
                     <span className="ws-name">{basename(dir)}</span>
                   </div>
@@ -840,7 +833,7 @@ export default function Sidebar() {
           <div className="workspace-empty">
             <div className="empty-line">还没有工作区</div>
             <button className="ghost-btn" onClick={() => void pickWorkspaceFolder()}>
-              <Icon name="workspace" size={14} />
+              <Icon name="folder" size={14} />
               选择文件夹…
             </button>
           </div>

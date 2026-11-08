@@ -254,7 +254,7 @@ pub fn set_keep_on_blocking(serial: &str, keep_on: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn locate_hdc() -> Result<PathBuf, String> {
+pub fn locate_hdc() -> Result<PathBuf, String> {
     for candidate in hdc_candidates() {
         if candidate.is_file() {
             return Ok(candidate);

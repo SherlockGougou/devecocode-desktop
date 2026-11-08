@@ -44,6 +44,13 @@ jobs:
       - name: Check version consistency
         run: npm run check:version
 
+      - name: Check offline build scripts
+        run: |
+          node --check scripts/stage-offline-cli.mjs
+          node --check scripts/build-offline.mjs
+          node --check scripts/render-release-notes.mjs
+          node -e "JSON.parse(require('fs').readFileSync('src-tauri/tauri.offline.conf.json'))"
+
       - name: Check formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
@@ -55,3 +62,55 @@ jobs:
 
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  offline-resources:
+    name: Offline resources ${{ matrix.target }}
+    runs-on: macos-14
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    env:
+      TARGET: ${{ matrix.target }}
+      CLI_PLATFORM: ${{ matrix.target == 'aarch64-apple-darwin' && 'darwin-arm64' || 'darwin-x64' }}
+      CLI_VERSION: 0.2.5
+      CLI_COMMON_VERSION: 1.3.4
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pinned CLI packages
+        run: |
+          npm install --ignore-scripts --omit=optional \
+            --prefix "$RUNNER_TEMP/offline-cli" \
+            "@deveco/deveco-code@$CLI_VERSION" \
+            "@deveco/deveco-cli@1.3.4" \
+            "@deveco/deveco-cli-common@$CLI_COMMON_VERSION"
+
+      - name: Pack target CLI binary
+        run: |
+          mkdir -p "$RUNNER_TEMP/offline-cli-platform"
+          npm pack --pack-destination "$RUNNER_TEMP/offline-cli-platform" \
+            "@deveco/deveco-code-${CLI_PLATFORM}@$CLI_VERSION"
+          tar -xzf "$RUNNER_TEMP/offline-cli-platform/"*.tgz \
+            -C "$RUNNER_TEMP/offline-cli-platform"
+
+      - name: Stage offline resources
+        run: |
+          node scripts/stage-offline-cli.mjs \
+            --target "$TARGET" \
+            --source "$RUNNER_TEMP/offline-cli/node_modules/@deveco/deveco-code" \
+            --node-modules "$RUNNER_TEMP/offline-cli/node_modules" \
+            --platform-source "$RUNNER_TEMP/offline-cli-platform/package"
+          test -f src-tauri/resources/cli/manifest.json
+          test -x src-tauri/resources/cli/bin/deveco
+          node -e "const m=require('./src-tauri/resources/cli/manifest.json'); if(m.target!=='$TARGET') process.exit(1)"

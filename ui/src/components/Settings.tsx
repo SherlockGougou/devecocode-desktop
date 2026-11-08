@@ -4,17 +4,25 @@ import { onAppEvent } from "../appEvents";
 import { useApp } from "../store";
 import type {
   AppConfig,
+  CliConfigScope,
+  CliConfigSources,
   CliConfigSummary,
   RuntimeInfo,
   SettingsPage,
+  ShellInfo,
 } from "../types";
 import { Icon, type IconName } from "./Icon";
 import AccountModelsPage from "./settings/AccountModelsPage";
 import AgentPermissionsPage from "./settings/AgentPermissionsPage";
 import AppearancePage from "./settings/AppearancePage";
 import CliServicePage from "./settings/CliServicePage";
+import CliConfigPage from "./settings/CliConfigPage";
 import ExtensionsPage from "./settings/ExtensionsPage";
 import { Row, Toggle } from "./settings/SettingsPrimitives";
+import {
+  useCliConfigEditor,
+  type CliConfigEditor,
+} from "./settings/useCliConfigEditor";
 
 type Status =
   | { kind: "idle" }
@@ -32,6 +40,8 @@ const PAGES: Array<{ id: SettingsPage; label: string; icon: IconName }> = [
   { id: "diagnostics", label: "诊断", icon: "activity" },
 ];
 
+const CONFIG_PAGES = new Set<SettingsPage>(["account", "agent", "extensions", "cli"]);
+
 export default function Settings() {
   const close = useApp((s) => s.closeSettings);
   const activePage = useApp((s) => s.settingsPage);
@@ -39,17 +49,34 @@ export default function Settings() {
   const directory = useApp((s) => s.directory);
   const agents = useApp((s) => s.agents);
   const selectedAgent = useApp((s) => s.selectedAgent);
+  const loadMeta = useApp((s) => s.loadMeta);
+  const loadModels = useApp((s) => s.loadModels);
   const backendState = useApp((s) => s.backend.state);
+  const streaming = useApp((s) => s.streaming);
   const [draft, setDraft] = useState<AppConfig | null>(null);
   const [original, setOriginal] = useState<AppConfig | null>(null);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [cliConfig, setCliConfig] = useState<CliConfigSummary | null>(null);
+  const [sources, setSources] = useState<CliConfigSources | null>(null);
+  const [shells, setShells] = useState<ShellInfo[]>([]);
+  const [cliScope, setCliScope] = useState<CliConfigScope>("global");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [restartRequired, setRestartRequired] = useState(false);
   const [detecting, setDetecting] = useState(false);
+  const [upgradeTarget, setUpgradeTarget] = useState("");
+  const [upgrading, setUpgrading] = useState(false);
+  const [upgradeResult, setUpgradeResult] = useState<string | null>(null);
   const saveFromMenu = useRef<() => void>(() => undefined);
   const pageRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const isConfigPage = CONFIG_PAGES.has(activePage);
+  const cliEditor = useCliConfigEditor({
+    backendState,
+    directory,
+    scope: cliScope,
+    enabled: isConfigPage,
+    streaming,
+  });
 
   useEffect(() => {
     void api
@@ -66,7 +93,7 @@ export default function Settings() {
     if (backendState !== "ready") return;
     let cancelled = false;
     void api
-      .cliConfig()
+      .cliConfig(directory ?? undefined)
       .then((config) => {
         if (!cancelled) setCliConfig(config);
       })
@@ -77,6 +104,30 @@ export default function Settings() {
       cancelled = true;
     };
   }, [backendState, directory]);
+
+  useEffect(() => {
+    if (backendState !== "ready" || !isConfigPage) return;
+    let cancelled = false;
+    void api
+      .cliConfigSources(directory)
+      .then((next) => {
+        if (!cancelled) setSources(next);
+      })
+      .catch(() => {
+        if (!cancelled) setSources(null);
+      });
+    void api
+      .shells(directory ?? undefined)
+      .then((next) => {
+        if (!cancelled) setShells(next);
+      })
+      .catch(() => {
+        if (!cancelled) setShells([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [backendState, directory, isConfigPage]);
 
   useEffect(
     () => onAppEvent("settings-save", () => saveFromMenu.current()),
@@ -91,13 +142,14 @@ export default function Settings() {
   // 切换分类时从详情顶部开始，避免沿用上一页的滚动位置
   useEffect(() => {
     pageRef.current?.scrollTo({ top: 0 });
-  }, [activePage]);
+    cliEditor.clearNotice();
+  }, [activePage, cliEditor.clearNotice]);
 
   // Esc 关闭、⌘S 保存、Tab 在面板内循环
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        close();
+        requestClose();
         return;
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
@@ -144,13 +196,14 @@ export default function Settings() {
   const dirty = JSON.stringify(draft) !== JSON.stringify(original);
   const page = PAGES.find((item) => item.id === activePage) ?? PAGES[0];
   const notify = draft.notifications;
-  const showSave =
-    activePage === "cli" || activePage === "notifications" || dirty;
+  const showSave = activePage === "notifications" || dirty;
 
   const patchNotifications = (patch: Partial<AppConfig["notifications"]>) =>
     setDraft({ ...draft, notifications: { ...notify, ...patch } });
   const patchServer = (patch: Partial<AppConfig["server"]>) =>
     setDraft({ ...draft, server: { ...draft.server, ...patch } });
+  const patchBundledCli = (use_bundled_cli: boolean) =>
+    setDraft({ ...draft, use_bundled_cli });
   const patchMenuBar = (patch: Partial<AppConfig["menu_bar"]>) =>
     setDraft({ ...draft, menu_bar: { ...draft.menu_bar, ...patch } });
 
@@ -180,7 +233,70 @@ export default function Settings() {
     }
   };
 
+  const requestClose = () => {
+    if (cliEditor.dirty && !window.confirm("CLI 配置还有未保存修改，确定关闭设置？")) return;
+    close();
+  };
+
+  const changeScope = (next: CliConfigScope) => {
+    if (next === cliScope) return;
+    if (cliEditor.dirty && !window.confirm("切换配置范围会放弃当前未保存修改，继续？")) return;
+    setCliScope(next);
+  };
+
+  const changePage = (next: SettingsPage) => {
+    if (next === activePage) return;
+    // 离开 CLI 配置页会卸载编辑器；有未保存改动时先明确确认。
+    if (!CONFIG_PAGES.has(next) && cliEditor.dirty) {
+      if (!window.confirm("CLI 配置还有未保存修改，切换分类会丢弃这些修改。继续？")) {
+        return;
+      }
+    }
+    setActivePage(next);
+  };
+
+  const saveCli = async () => {
+    const ok = await cliEditor.save();
+    if (ok) {
+      setStatus({ kind: "saved" });
+      await refreshCliDerived();
+    }
+  };
+
+  const refreshCliDerived = async () => {
+    const [config, nextSources] = await Promise.all([
+      api.cliConfig(directory ?? undefined).catch(() => null),
+      api.cliConfigSources(directory).catch(() => null),
+    ]);
+    setCliConfig(config);
+    setSources(nextSources);
+    await Promise.allSettled([cliEditor.reload(), loadMeta(), loadModels(true)]);
+  };
+
+  const upgradeCli = async () => {
+    if (upgrading) return;
+    if (!window.confirm("升级会替换本机 CLI，正在运行的会话可能中断。继续？")) return;
+    setUpgrading(true);
+    setUpgradeResult(null);
+    try {
+      const result = await api.upgradeCli(upgradeTarget.trim() || undefined);
+      setUpgradeResult(
+        result.success
+          ? `已升级到 ${result.version ?? "新版本"}，请重启应用加载新 CLI。`
+          : `升级失败：${result.error ?? "未知错误"}`,
+      );
+    } catch (err) {
+      setUpgradeResult(String(err));
+    } finally {
+      setUpgrading(false);
+    }
+  };
+
   saveFromMenu.current = () => {
+    if (isConfigPage && cliEditor.dirty) {
+      void saveCli();
+      return;
+    }
     if (dirty) void save();
   };
 
@@ -194,29 +310,56 @@ export default function Settings() {
           />
         );
       case "account":
-        return <AccountModelsPage directory={directory} config={cliConfig} />;
+        return (
+          <AccountModelsPage
+            directory={directory}
+            config={cliConfig}
+            editor={cliEditor}
+            onRefreshConfig={refreshCliDerived}
+          />
+        );
       case "agent":
         return (
           <AgentPermissionsPage
             config={cliConfig}
             agents={agents}
             selectedAgent={selectedAgent}
+            editor={cliEditor}
+            directory={directory}
+            onRefreshConfig={refreshCliDerived}
           />
         );
       case "extensions":
-        return <ExtensionsPage directory={directory} config={cliConfig} />;
+        return (
+          <ExtensionsPage
+            directory={directory}
+            config={cliConfig}
+            editor={cliEditor}
+            onRefreshConfig={refreshCliDerived}
+          />
+        );
       case "cli":
         return (
-          <CliServicePage
-            draft={draft}
-            runtime={runtime}
-            config={cliConfig}
-            directory={directory}
-            detecting={detecting}
-            onCliPathChange={(cli_path) => setDraft({ ...draft, cli_path })}
-            onServerChange={patchServer}
-            onDetect={() => void detect()}
-          />
+          <>
+            <CliConfigPage
+              editor={cliEditor}
+              sources={sources}
+              shells={shells}
+              agents={agents}
+              onOpenPath={(path) => void api.revealPath(path)}
+            />
+            <CliServicePage
+              draft={draft}
+              runtime={runtime}
+              config={cliConfig}
+              directory={directory}
+              detecting={detecting}
+              onCliPathChange={(cli_path) => setDraft({ ...draft, cli_path })}
+              onBundledCliChange={patchBundledCli}
+              onServerChange={patchServer}
+              onDetect={() => void detect()}
+            />
+          </>
         );
       case "notifications":
         return (
@@ -301,8 +444,24 @@ export default function Settings() {
                 </button>
               </div>
               <p className="settings-note">
-                CLI 升级请运行 <code>deveco upgrade</code>，完成后重启应用。
+                升级完成后需要重启应用，新的 serve 进程才会使用新 CLI。
               </p>
+              <div className="settings-inline-form">
+                <input
+                  className="settings-input wide mono"
+                  value={upgradeTarget}
+                  placeholder="目标版本，留空升级到 latest"
+                  onChange={(event) => setUpgradeTarget(event.target.value)}
+                />
+                <button
+                  className="ghost-btn"
+                  onClick={() => void upgradeCli()}
+                  disabled={upgrading}
+                >
+                  {upgrading ? "升级中…" : "升级 CLI"}
+                </button>
+              </div>
+              {upgradeResult && <p className="settings-note">{upgradeResult}</p>}
             </section>
           </>
         );
@@ -312,7 +471,7 @@ export default function Settings() {
   };
 
   return (
-    <div className="settings-overlay" onClick={close}>
+    <div className="settings-overlay" onClick={requestClose}>
       <div
         className="settings-panel"
         ref={panelRef}
@@ -326,7 +485,7 @@ export default function Settings() {
           <span id="settings-title">设置</span>
           <button
             className="settings-close"
-            onClick={close}
+            onClick={requestClose}
             title="关闭 (Esc)"
             aria-label="关闭"
           >
@@ -340,7 +499,7 @@ export default function Settings() {
               <button
                 key={item.id}
                 className={`settings-nav-btn ${activePage === item.id ? "active" : ""}`}
-                onClick={() => setActivePage(item.id)}
+                onClick={() => changePage(item.id)}
                 aria-current={activePage === item.id ? "page" : undefined}
               >
                 <Icon name={item.icon} size={17} />
@@ -359,6 +518,33 @@ export default function Settings() {
               <header className="settings-page-head">
                 <h2 id="settings-page-title">{page.label}</h2>
               </header>
+              {isConfigPage && (
+                <div className="settings-scope-bar">
+                  <div className="settings-scope-copy">
+                    <strong>配置范围</strong>
+                    <small>
+                      {cliScope === "project"
+                        ? directory ?? "未选择工作区"
+                        : sources?.global_path ?? "全局 deveco.jsonc"}
+                    </small>
+                  </div>
+                  <div className="seg">
+                    <button
+                      className={`seg-btn ${cliScope === "global" ? "on" : ""}`}
+                      onClick={() => changeScope("global")}
+                    >
+                      全局
+                    </button>
+                    <button
+                      className={`seg-btn ${cliScope === "project" ? "on" : ""}`}
+                      onClick={() => changeScope("project")}
+                      disabled={!directory}
+                    >
+                      当前工作区
+                    </button>
+                  </div>
+                </div>
+              )}
               {renderContent()}
             </div>
           </div>
@@ -367,6 +553,8 @@ export default function Settings() {
         <footer className="settings-foot">
           <span className="settings-status">
             {status.kind === "error" && <span className="err">{status.message}</span>}
+            {cliEditor.error && <span className="err">{cliEditor.error}</span>}
+            {cliEditor.notice && <span className="ok">{cliEditor.notice}</span>}
             {status.kind === "saved" && !restartRequired && (
               <span className="ok">已保存</span>
             )}
@@ -375,16 +563,32 @@ export default function Settings() {
             )}
           </span>
           <div className="settings-buttons">
-            <button className="ghost-btn" onClick={close}>
+            <button className="ghost-btn" onClick={requestClose}>
               关闭
             </button>
-            {showSave && (
+            {isConfigPage && cliEditor.dirty && (
               <button
                 className="primary-btn"
+                onClick={() => void saveCli()}
+                disabled={
+                  cliEditor.saving ||
+                  cliEditor.parseErrors.length > 0
+                }
+              >
+                {cliEditor.saving ? "保存中…" : "保存 CLI 配置"}
+              </button>
+            )}
+            {showSave && (
+              <button
+                className={`primary-btn ${isConfigPage && cliEditor.dirty ? "secondary" : ""}`}
                 onClick={() => void save()}
                 disabled={!dirty || status.kind === "saving"}
               >
-                {status.kind === "saving" ? "保存中…" : "保存"}
+                {status.kind === "saving"
+                  ? "保存中…"
+                  : isConfigPage
+                    ? "保存桌面端设置"
+                    : "保存"}
               </button>
             )}
           </div>

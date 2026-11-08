@@ -5,7 +5,7 @@
 //! `deveco server listening on http://127.0.0.1:<port>`，不假设固定端口。
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
@@ -19,6 +19,31 @@ pub const GLOBAL_EVENT_PATH: &str = "/global/event";
 
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const TERM_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// CLI 的启动目录。
+///
+/// 从 Finder 启动的 macOS 应用，工作目录是 `/`。`deveco serve` 会把启动
+/// 目录当成默认工作区，并为它建立文件监听；直接继承 `/` 会扫描整个磁盘，
+/// 造成异常高的 CPU 和内存占用。这里固定使用应用数据目录下的空目录，
+/// 真正的用户工作区仍由每个请求的 `directory` 参数指定。
+pub fn launch_cwd() -> Option<PathBuf> {
+    let dir = dirs::data_dir()?
+        .join("DevEco Code Desktop")
+        .join("server-cwd");
+    match prepare_launch_cwd(&dir) {
+        Ok(path) => Some(path),
+        Err(err) => {
+            log::warn!("准备 CLI 启动目录失败：{err}");
+            None
+        }
+    }
+}
+
+fn prepare_launch_cwd(dir: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("创建 CLI 启动目录失败：{}", dir.display()))?;
+    Ok(dir.to_path_buf())
+}
 
 /// 选取一个空闲端口。
 ///
@@ -71,8 +96,14 @@ pub struct LaunchSpec {
     pub bin: PathBuf,
     pub hostname: String,
     pub port: u16,
+    pub log_level: String,
+    pub pure: bool,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    pub cors: Vec<String>,
     pub auth: Option<String>,
     pub cwd: Option<PathBuf>,
+    pub env: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,13 +186,29 @@ impl DevEcoServer {
             .arg(&spec.hostname)
             .arg("--port")
             .arg(spec.port.to_string())
+            .arg("--log-level")
+            .arg(&spec.log_level)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             // 应用被强杀时尽量带走子进程
             .kill_on_drop(true);
+        if spec.pure {
+            cmd.arg("--pure");
+        }
+        if spec.mdns {
+            cmd.arg("--mdns")
+                .arg("--mdns-domain")
+                .arg(&spec.mdns_domain);
+        }
+        for domain in &spec.cors {
+            cmd.arg("--cors").arg(domain);
+        }
         if let Some(auth) = &spec.auth {
             cmd.env("DEVECO_SERVER_PASSWORD", auth);
+        }
+        for (key, value) in &spec.env {
+            cmd.env(key, value);
         }
         if let Some(cwd) = &spec.cwd {
             cmd.current_dir(cwd);
@@ -420,5 +467,14 @@ mod tests {
             None
         );
         assert_eq!(parse_listening_url("listening on 4096"), None);
+    }
+
+    #[test]
+    fn 准备独立的_cli_启动目录() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("server-cwd");
+
+        assert_eq!(prepare_launch_cwd(&dir).unwrap(), dir);
+        assert!(dir.is_dir());
     }
 }

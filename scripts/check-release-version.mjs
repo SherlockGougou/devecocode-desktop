@@ -42,4 +42,17 @@ if (expected && expected !== version) {
   throw new Error(`发布标签 v${expected} 与项目版本 ${version} 不一致`);
 }
 
+const releaseNotes = `docs/releases/v${version}.md`;
+let notes;
+try {
+  notes = readFileSync(releaseNotes, "utf8");
+} catch {
+  throw new Error(`缺少版本说明：${releaseNotes}`);
+}
+for (const heading of ["## 中文", "## English"]) {
+  if (!notes.includes(heading)) {
+    throw new Error(`${releaseNotes} 缺少 ${heading} 段落`);
+  }
+}
+
 console.log(version);

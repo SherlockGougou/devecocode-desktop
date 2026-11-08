@@ -635,7 +635,6 @@ export default function ChatView() {
   const closeFind = useApp((s) => s.closeFind);
   const setFindQuery = useApp((s) => s.setFindQuery);
   const stepFind = useApp((s) => s.stepFind);
-  const exportCurrentSession = useApp((s) => s.exportCurrentSession);
 
   const title = useMemo(() => {
     if (!directory || !sessionID) return "";
@@ -707,14 +706,6 @@ export default function ChatView() {
               onSelect: async () => {
                 await copyText(title, "会话标题已复制");
               },
-            },
-            {
-              type: "item",
-              label: "导出当前会话",
-              icon: "download",
-              shortcut: "⌘E",
-              disabled: !sessionID,
-              onSelect: () => exportCurrentSession(),
             },
             {
               type: "item",

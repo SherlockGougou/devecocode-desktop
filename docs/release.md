@@ -9,7 +9,9 @@
 - [x] README、功能、架构、开发、限制文档；
 - [x] CONTRIBUTING、SECURITY、issue 与 pull request 模板；
 - [x] 不依赖本机 CLI 的 CI：前端构建、Rust 格式、Clippy、单测；
+- [x] CI 额外校验 arm64/x64 离线 CLI 资源生成；
 - [x] tag 触发的 CD：arm64/x86_64 构建、GitHub Release 与 workflow artifacts；
+- [x] 含内置 CLI 的 Offline 构建任务，固定 CLI 版本并随 Release 发布；
 - [x] 静态官网与 GitHub Pages 部署 workflow；
 - [x] 面向普通用户的 [macOS 安装与使用](installation.md)；
 - [x] 历史实现记录归档，并脱敏个人路径和私有项目名。
@@ -33,7 +35,7 @@ git log --all --name-only --pretty=format: | sort -u
 git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 2>/dev/null || true
 ```
 
-- 检查截图、日志、`.agent-temp/`、导出文件和测试夹具是否包含真实路径、凭据、设备标识或私有会话。
+- 检查截图、日志、`.agent-temp/` 和测试夹具是否包含真实路径、凭据、设备标识或私有会话。
 - 确认没有需要保留但不适合公开的历史分支、标签或远程地址。
 - 如果历史中已经提交过凭据，先轮换凭据，再重写历史；仅删除当前文件不足以消除泄漏。
 
@@ -54,9 +56,13 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
   [macOS 安装与使用](installation.md)链接。不要把它描述成已签名或可无提示安装。
 - `release.yml` 当前分别构建 Apple Silicon 和 Intel 两种 DMG，不需要 Universal 二进制；
   若未来改为 Universal，需要单独验证合并后的包。
+- Offline 版额外包含固定 CLI；发布前需要确认 CLI 版本、许可证、内置数据隔离和两个架构的
+  DMG 都在 Release 中。详细验收见[离线版打包](offline-packaging.md)。
 - 确认版本号在 `package.json`、`ui/package.json`、`src-tauri/Cargo.toml` 和
   `src-tauri/tauri.conf.json` 中一致，可运行 `npm run check:version`。
-- 生成 release notes，附已知限制；不要附带未脱敏截图。若增加校验和，应在 release job
+- 每个版本维护 `docs/releases/vX.Y.Z.md`，必须同时包含 `## 中文` 和 `## English`；
+  Release workflow 会在两类产物上传后更新正文。不要只写自动生成的历史提交摘要。
+- Release notes 附已知限制和安装说明；不要附带未脱敏截图。若增加校验和，应在 release job
   中生成并上传，不能在文档里声称已提供。
 
 ## 发布后

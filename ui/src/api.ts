@@ -4,6 +4,12 @@ import type {
   AppConfig,
   AuthEntry,
   BackendPhase,
+  CliBackupInfo,
+  CliConfigSaveRequest,
+  CliConfigSaveResult,
+  CliConfigScope,
+  CliConfigSnapshot,
+  CliConfigSources,
   CliConfigSummary,
   CliPathInfo,
   CommandInfo,
@@ -17,9 +23,13 @@ import type {
   McpServerInfo,
   Message,
   ModelInfo,
+  ProductAgreement,
   PermissionRequest,
+  ProviderAuthAuthorization,
+  ProviderAuthMethods,
   ProviderOverview,
   Project,
+  PtySession,
   RuntimeInfo,
   Session,
   SessionStatus,
@@ -29,6 +39,8 @@ import type {
   StatsUsage,
   TrayContext,
   TodoItem,
+  VcsFileStatus,
+  VcsInfo,
 } from "./types";
 
 type Query = Record<string, string | number | boolean | undefined>;
@@ -254,6 +266,10 @@ export const api = {
     request<FileDiff[]>("GET", `/session/${sessionID}/diff`, { directory }, undefined, timeoutMs),
   vcsDiff: (directory: string) =>
     request<FileDiff[]>("GET", "/vcs/diff", { directory, mode: "git" }),
+  vcsInfo: (directory: string) =>
+    request<VcsInfo>("GET", "/vcs", { directory }),
+  vcsStatus: (directory: string) =>
+    request<VcsFileStatus[]>("GET", "/vcs/status", { directory }),
   files: (directory: string, query: string) =>
     request<string[]>("GET", "/find/file", { directory, query, limit: 200 }),
   searchFiles: (directory: string, query: string) =>
@@ -265,8 +281,6 @@ export const api = {
   commands: (directory: string) => request<CommandInfo[]>("GET", "/command", { directory }),
   mcp: (directory: string) =>
     request<Record<string, McpServerInfo>>("GET", "/mcp", { directory }),
-  exportSession: (directory: string, sessionID: string) =>
-    invoke<string>("export_session", { directory, sessionId: sessionID }),
   deviceProbe: () => invoke<DeviceProbe>("device_probe"),
   deviceCapture: (serial?: string | null) =>
     invoke<DeviceShot>("device_capture", { serial: serial ?? null }),
@@ -286,14 +300,114 @@ export const api = {
     invoke<void>("sync_tray_context", { context }),
   saveSettings: (config: AppConfig) =>
     invoke<{ ok: boolean; restartRequired: boolean; config: AppConfig }>("save_settings", { config }),
+  cliConfigRead: (
+    scope: CliConfigScope,
+    directory?: string | null,
+    revealSecrets = false,
+  ) =>
+    invoke<CliConfigSnapshot>("cli_config_read", {
+      scope,
+      directory: directory ?? null,
+      revealSecrets,
+    }),
+  cliConfigSources: (directory?: string | null) =>
+    invoke<CliConfigSources>("cli_config_sources", { directory: directory ?? null }),
+  cliConfigSave: (request: CliConfigSaveRequest) =>
+    invoke<CliConfigSaveResult>("cli_config_save", { request }),
+  cliConfigRevealSecret: (
+    scope: CliConfigScope,
+    directory: string | null,
+    path: Array<string | number>,
+  ) =>
+    invoke<string | null>("cli_config_reveal_secret", {
+      scope,
+      directory,
+      path,
+    }),
+  cliConfigBackups: (scope: CliConfigScope, directory?: string | null) =>
+    invoke<CliBackupInfo[]>("cli_config_backups", {
+      scope,
+      directory: directory ?? null,
+    }),
+  cliConfigRestore: (
+    scope: CliConfigScope,
+    directory: string | null,
+    name: string,
+  ) =>
+    invoke<CliConfigSnapshot>("cli_config_restore", {
+      request: { scope, directory, name },
+    }),
+  openUrl: (url: string) => invoke<void>("open_url", { url }),
   probeCli: (explicit: string | null) =>
     invoke<{ path: string; version: string | null }>("probe_cli", { explicit }),
   openPath: (path: string) => invoke<void>("open_path", { path }),
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   restartApp: () => invoke<void>("restart_app"),
-  cliConfig: async () =>
-    summarizeConfig(await request<RawCliConfig>("GET", "/config")),
+  cliConfig: async (directory?: string) =>
+    summarizeConfig(await request<RawCliConfig>("GET", "/config", { directory })),
   authEntries: () => request<AuthEntry[]>("GET", "/auth"),
+  providerAuthMethods: (directory?: string) =>
+    request<ProviderAuthMethods>("GET", "/provider/auth", { directory }),
+  setProviderApiKey: (
+    providerID: string,
+    key: string,
+    metadata?: Record<string, string>,
+  ) =>
+    request<boolean>("PUT", `/auth/${encodeURIComponent(providerID)}`, undefined, {
+      type: "api",
+      key,
+      ...(metadata ? { metadata } : {}),
+    }),
+  removeProviderAuth: (providerID: string) =>
+    request<boolean>("DELETE", `/auth/${encodeURIComponent(providerID)}`),
+  providerOAuthAuthorize: (
+    providerID: string,
+    method: number,
+    inputs: Record<string, string> = {},
+  ) =>
+    request<ProviderAuthAuthorization>(
+      "POST",
+      `/provider/${encodeURIComponent(providerID)}/oauth/authorize`,
+      undefined,
+      { method, inputs },
+      60_000,
+    ),
+  providerOAuthCallback: (
+    providerID: string,
+    method: number,
+    code?: string,
+  ) =>
+    request<boolean>(
+      "POST",
+      `/provider/${encodeURIComponent(providerID)}/oauth/callback`,
+      undefined,
+      code ? { method, code } : { method },
+      60_000,
+    ),
+  deleteProvider: (providerID: string, directory?: string) =>
+    request<boolean>("DELETE", `/provider/${encodeURIComponent(providerID)}`, {
+      directory,
+    }),
+  deleteProviderModel: (providerID: string, modelID: string, directory?: string) =>
+    request<boolean>(
+      "DELETE",
+      `/provider/${encodeURIComponent(providerID)}/models/${encodeURIComponent(modelID)}`,
+      { directory },
+    ),
+  productAgreement: () =>
+    request<ProductAgreement>("GET", "/global/product-agreement"),
+  acceptProductAgreement: () =>
+    request<ProductAgreement>("POST", "/global/product-agreement", undefined, {}),
+  retryAgreementUpload: () =>
+    request<ProductAgreement>("POST", "/global/product-agreement/retry", undefined, {}),
+  upgradeCli: (target?: string) =>
+    request<{ success: boolean; version?: string; error?: string }>(
+      "POST",
+      "/global/upgrade",
+      undefined,
+      target ? { target } : {},
+      10 * 60_000,
+    ),
   providerOverview,
   refreshProviders: async (directory?: string) => {
     await request("POST", "/provider/refresh", { directory });
@@ -312,6 +426,20 @@ export const api = {
     request<boolean>("POST", `/mcp/${encodeURIComponent(name)}/connect`, { directory }),
   mcpDisconnect: (directory: string, name: string) =>
     request<boolean>("POST", `/mcp/${encodeURIComponent(name)}/disconnect`, { directory }),
+  mcpAuthenticate: (directory: string, name: string) =>
+    request<McpServerInfo>(
+      "POST",
+      `/mcp/${encodeURIComponent(name)}/auth/authenticate`,
+      { directory },
+      undefined,
+      10 * 60_000,
+    ),
+  mcpRemoveAuth: (directory: string, name: string) =>
+    request<{ success: boolean }>(
+      "DELETE",
+      `/mcp/${encodeURIComponent(name)}/auth`,
+      { directory },
+    ),
   skills: async (directory: string) => {
     const raw = await request<RawSkillStatus[]>("GET", "/skill/status", { directory });
     return raw.map(({ name, description, location, scope, enabled }) => ({
@@ -351,6 +479,18 @@ export const api = {
     }>("GET", "/file/content", { directory, path }),
   quickLookThumbnail: (path: string) =>
     invoke<ArrayBuffer>("quick_look_thumbnail", { path }),
+  terminalOpen: (directory: string | null, cols: number, rows: number) =>
+    invoke<PtySession>("terminal_open", { directory, cols, rows }),
+  terminalWrite: (id: string, data: string) =>
+    invoke<void>("terminal_write", { id, data }),
+  terminalResize: (
+    id: string,
+    directory: string | null,
+    cols: number,
+    rows: number,
+  ) => invoke<void>("terminal_resize", { id, directory, cols, rows }),
+  terminalClose: (id: string, directory: string | null) =>
+    invoke<void>("terminal_close", { id, directory }),
   gitState: (directory: string) =>
     invoke<GitRepoState>("git_state", { directory }),
   gitCommit: (directory: string, message: string) =>

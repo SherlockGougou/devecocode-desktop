@@ -65,7 +65,7 @@
           <ul class="hero-meta">
             <li>本地优先</li>
             <li>三栏工作区</li>
-            <li>CLI 不打包</li>
+            <li>离线版可选</li>
             <li>MIT 开源</li>
           </ul>
         </div>
@@ -209,7 +209,7 @@
             <div class="flow-step">
               <span class="step-number">01</span>
               <h3>连接本机 CLI</h3>
-              <p>应用自动探测 <code>deveco</code>，也可以手动选择路径。CLI 不随安装包分发。</p>
+              <p>普通版自动探测 <code>deveco</code>，也可以手动选择路径；Offline 版内置固定版本 CLI。</p>
             </div>
             <div class="flow-arrow" aria-hidden="true">→</div>
             <div class="flow-step flow-accent">
@@ -250,7 +250,7 @@
               <span>3</span>
               <div>
                 <h3>安装并登录 CLI</h3>
-                <p>在终端安装 <code>@deveco/deveco-code</code>，登录后回到应用选择工作区。</p>
+                <p>普通版在终端安装 <code>@deveco/deveco-code</code>；Offline 版已包含 CLI，登录后即可使用。</p>
               </div>
             </li>
           </ol>
@@ -291,8 +291,8 @@
             <p>当前只验证 macOS。通知、窗口、菜单栏和 CLI 发现逻辑都针对 macOS 实现。</p>
           </details>
           <details>
-            <summary>为什么安装包这么小？</summary>
-            <p>DevEco Code CLI 不随应用分发。桌面端只包含界面和本机集成层，Agent 能力来自你自己安装的 CLI。</p>
+            <summary>普通版和 Offline 版有什么区别？</summary>
+            <p>普通版不包含 CLI，安装包更小；Offline 版内置固定版本 CLI，适合不想另外安装 CLI 的机器。两者仍需网络登录和调用模型。</p>
           </details>
         </div>
       </section>

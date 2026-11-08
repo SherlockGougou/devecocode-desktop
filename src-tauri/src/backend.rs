@@ -4,6 +4,8 @@
 
 use crate::cli::{self, CliInfo};
 use crate::config::Config;
+use crate::device;
+use crate::device_skill;
 use crate::server::{self, DevEcoServer, LaunchSpec};
 use anyhow::{bail, Result};
 use std::time::Duration;
@@ -15,6 +17,7 @@ pub struct Backend {
     pub server: DevEcoServer,
     pub auth: Option<String>,
     pub project_dir: Option<String>,
+    pub cli_env: Vec<(String, String)>,
 }
 
 impl Backend {
@@ -22,7 +25,40 @@ impl Backend {
     pub async fn boot(cfg: &mut Config, on_status: impl Fn(&str)) -> Result<Self> {
         on_status("正在定位本机 deveco CLI…");
         let explicit = cfg.cli_path.as_ref().map(std::path::PathBuf::from);
-        let cli = cli::discover(explicit.as_deref())?;
+        let (cli, mut cli_env) = if let Some(explicit) = explicit.as_deref() {
+            (cli::discover(Some(explicit))?, Vec::new())
+        } else if cfg.use_bundled_cli {
+            if let Some(bundled) = cfg.bundled_cli.as_ref() {
+                on_status("使用应用内置 CLI…");
+                (
+                    cli::discover_with_env(Some(&bundled.binary), &bundled.env)?,
+                    bundled.env.clone(),
+                )
+            } else {
+                (cli::discover(None)?, Vec::new())
+            }
+        } else {
+            (cli::discover(None)?, Vec::new())
+        };
+        inject_hdc(&mut cli_env);
+        match device_skill::install(&cli_env) {
+            Ok(device_skill::InstallOutcome::Installed(path)) => {
+                log::info!("已安装内嵌设备 skill：{}", path.display());
+            }
+            Ok(device_skill::InstallOutcome::Unchanged(path)) => {
+                log::debug!("内嵌设备 skill 已是最新：{}", path.display());
+            }
+            Ok(device_skill::InstallOutcome::SkippedExisting(path)) => {
+                log::warn!(
+                    "设备 skill 目录已存在但没有桌面端管理标记，保留用户内容：{}",
+                    path.display()
+                );
+            }
+            Err(err) => {
+                // skill 安装失败不应阻塞本地服务，设备面板和 CLI 仍可继续工作。
+                log::warn!("准备内嵌设备 skill 失败：{err}");
+            }
+        }
         if let Some(version) = cli.version {
             if cli::is_below_supported(version) {
                 log::warn!("deveco {version} 低于建议版本 0.2.0，可能缺少部分能力");
@@ -49,6 +85,7 @@ impl Backend {
                     server: existing,
                     auth,
                     project_dir,
+                    cli_env,
                 });
             }
         }
@@ -60,12 +97,22 @@ impl Backend {
         } else {
             cfg.server.preferred_port
         };
+        let cwd = server::launch_cwd();
+        if let Some(path) = &cwd {
+            log::info!("serve 工作目录：{}", path.display());
+        }
         let spec = LaunchSpec {
             bin: cli.path.clone(),
             hostname: cfg.server.hostname.clone(),
             port,
+            log_level: cfg.server.log_level.clone(),
+            pure: cfg.server.pure,
+            mdns: cfg.server.mdns,
+            mdns_domain: cfg.server.mdns_domain.clone(),
+            cors: cfg.server.cors.clone(),
             auth: auth.clone(),
-            cwd: None,
+            cwd,
+            env: cli_env.clone(),
         };
         let spawned = DevEcoServer::spawn(spec).await?;
         let base_url = spawned.base_url.clone();
@@ -81,6 +128,7 @@ impl Backend {
             server: spawned,
             auth,
             project_dir,
+            cli_env,
         })
     }
 
@@ -90,5 +138,22 @@ impl Backend {
             .and_then(|dir| std::path::Path::new(dir).file_name())
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default()
+    }
+}
+
+/// 把应用已定位的 hdc 路径传给 serve，让 Agent 的 shell 可以直接使用 `$HDC`。
+///
+/// 已有 `HDC`（用户环境或内置 CLI 环境）时不覆盖；找不到 hdc 时也让 serve 正常启动，
+/// skill 会给出用户可执行的排障步骤。
+fn inject_hdc(env: &mut Vec<(String, String)>) {
+    if env.iter().any(|(key, _)| key.as_str() == "HDC") || std::env::var_os("HDC").is_some() {
+        return;
+    }
+    match device::locate_hdc() {
+        Ok(path) => {
+            log::info!("注入 HDC 环境变量：{}", path.display());
+            env.push(("HDC".to_string(), path.to_string_lossy().to_string()));
+        }
+        Err(err) => log::debug!("未注入 HDC 环境变量：{err}"),
     }
 }

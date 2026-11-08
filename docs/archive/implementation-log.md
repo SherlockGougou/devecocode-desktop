@@ -2000,3 +2000,206 @@ M0（骨架）与 M1（通知）已完成并自测通过，代码在本仓库。
   只展开 `Greeting` 会话列表，窗口标题、主区内容和底部状态栏均不变；
   随后点击 `Greeting` 才切换到 `SampleWorkspace`。
   证据：`.agent-temp/workspace-click-no-session/expand-sampleworkspace-no-switch.png`。
+
+### 22.53 右栏变更与文件面板重构（2026-11-08）
+
+需求：原右栏只有平铺 diff 和单目录文件列表，路径分组、搜索、刷新与预览切换都不够用。
+
+实现：
+
+- 变更面板拆分为 `ChangesPanel` 与 `DiffView`：工作区/本次会话双来源、目录树、
+  状态徽标、增删统计、路径筛选、全部展开/收起、请求竞态保护和单文件统一 diff。
+- diff 解析集中到 `diff.ts`：隐藏 git 文件头、计算旧/新行号、渲染 hunk/增/删/上下文，
+  二进制和缺失补丁给出说明，超过 4000 行截断但保留完整补丁复制。
+- 文件面板改为懒加载树：根目录与展开目录独立缓存，目录优先排序；搜索 200ms 防抖并
+  支持目录定位；忽略项默认隐藏；`/vcs/status` 状态徽标与目录聚合计数独立加载。
+- `store.ts` 用 `workspaceDiff/sessionDiff/fileTree/expandedDirs/...` 取代旧 `diff/files/filePath`；
+  `session.diff`、`file.watcher.updated`、`file.edited`、`session.idle` 触发防抖刷新，
+  所有异步请求带 token，避免切换工作区/会话后迟到结果覆盖界面。
+- `RightPanel` 只保留标签栏、拖拽排序和面板调度；新增 `changes.ts`、`fileTree.ts`
+  纯逻辑工具和右栏通用样式。
+- 针对 CLI 把整文件放进单个 hunk 的行为，diff 解析改为折叠大段未修改内容，并补上
+  `+/-` 标记、Esc 返回和树形 ARIA；目录展开/搜索定位时刷新缓存，避免外部改动后看到旧内容。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）通过；独立 tsconfig 对右栏入口执行
+  `tsc --noEmit` 也通过。
+- mock IPC harness 加载本次生产构建，验证变更树、双来源切换、筛选、收起全部、单文件 diff、
+  文件树懒加载、目录搜索定位、忽略项开关、Markdown 预览与返回状态。
+  证据：`.agent-temp/right-panel-redesign/changes-list.png`、
+  `.agent-temp/right-panel-redesign/diff.png`、`.agent-temp/right-panel-redesign/files.png`；
+  暗色主题证据：`.agent-temp/right-panel-redesign/dark-changes.png`、
+  `.agent-temp/right-panel-redesign/dark-diff.png`。
+- 最新 debug `.app` 真机截图确认 `DevEcoCodeDesktop` 工作区的 69 个变更按目录树显示，
+  工具栏、统计、状态徽标和右栏滚动均正常。
+  证据：`.agent-temp/right-panel-redesign/real-changes.png`。
+
+### 22.54 CLI 配置中心（2026-11-08）
+
+需求：把设置页从只读状态展示升级为可写入的 CLI 配置中心，覆盖全局和当前工作区，
+支持常用字段表单、高级 JSONC、账号/Provider/MCP/Agent/Command/权限/Skills/Plugins、
+启动参数和 CLI 升级。
+
+实现：
+
+- 新增 `src-tauri/src/cli_config.rs`：通过 `/path` 解析全局与项目配置路径，项目只写
+  `.deveco/deveco.jsonc` 或已有根 `deveco.jsonc`，项目作用域强制要求 `directory`；读取时
+  用 `jsonc-parser` 解析并按路径脱敏 `provider.*.options.apiKey`、MCP headers/environment
+  和 MCP OAuth client secret。
+- 保存前校验 base hash，备份旧文件到应用数据目录（`0600`，每个配置目标最近 10 份），临时文件
+  + rename 原子替换；写入后调用 `/instance/dispose?directory=` 或 `/global/dispose` 并重读
+  验证，失败恢复备份。恢复备份前也生成当前文件备份；备份列表按目标文件路径 hash 过滤，
+  避免把 A 工作区的备份恢复到 B 工作区；旧备份也按目标路径分别保留最近 10 份。
+- 前端新增 `cliConfig.ts`、`CliConfigPage.tsx`、`useCliConfigEditor.ts`；设置页共享
+  “全局 / 当前工作区”范围，常用字段用表单，复杂字段用 JSON 子编辑器，最后提供原始
+  JSONC 编辑器、格式化、显示/隐藏密钥、备份恢复和冲突提示。
+- 配置型 Agent 支持 tools/permission/options/maxSteps；Command 支持 variant；MCP 支持
+  local/remote 类型切换、cwd、headers/environment、timeout、OAuth client/callback/redirect；
+  Plugin 改为保留字符串或 `[入口, 选项对象]` 元组的 JSON 编辑。
+- 保存失败保留草稿；离开 CLI 配置页、切换范围、重新读取、恢复备份或运行中重载都会先确认。
+
+验证：
+
+- `npm --prefix ui run build`；`cargo fmt --check`；`cargo clippy --all-targets -- -D warnings`；
+  `cargo test` 91 通过、1 个真实 CLI 集成测试默认忽略。
+- 真实 CLI 集成测试 `真实_cli_项目配置读写与重载` 通过：临时 HOME/工作区写入项目配置、
+  dispose 重载后 `/config` 读到新值。
+- `deveco-selftest` 18/18 通过；`npm run build:debug` 成功。
+- 真实 debug `.app` 检查设置页项目/全局范围、脱敏标签、JSONC 编辑器、配置来源和备份列表；
+  账号、Agent、扩展页可正常加载。为避免改动本机全局配置，未在真实应用里执行保存。
+  证据：`.agent-temp/cli-config-center/project-scope.png`、
+  `.agent-temp/cli-config-center/global-scope.png`、
+  `.agent-temp/cli-config-center/account-models.png`、
+  `.agent-temp/cli-config-center/project-backups-filtered.png`。
+- 重新打包后真机验证：`store.ts` 的整文件 hunk 折叠 2098 行，首个新增块直接出现在顶部；
+  Esc 返回、变更筛选、全部展开/收起、文件搜索、目录定位、忽略项开关和预览返回均正常。
+  证据：`.agent-temp/right-panel-redesign/real-diff-folded.png`。
+- `npm run check`（81 + 6 项 Rust 单测）与 `npm run check:selftest`（18/18）通过。
+
+### 22.55 会话标题与工作区左缘对齐（2026-11-08）
+
+需求：顶栏会话标题紧跟侧栏开关，落在左栏上方；希望移到左栏右侧，与工作区左缘对齐。
+
+实现：
+
+- `TitleBar` 订阅 `sidebarWidth`，在侧栏开关与标题之间插入宽度为
+  `sidebarWidth - 136px` 的占位；136px 为 88px 红黄绿灯留白 + 32px 侧栏按钮 + 两处 8px 间距。
+- 侧栏收起时不渲染占位，标题回到原有位置，不会进入红黄绿灯区域。
+- `docs/features.md` 的标题栏说明同步更新。
+
+验证：
+
+- `npm --prefix ui run build` 与 `npm run build:debug` 通过。
+- 重新启动 debug `.app`：侧栏展开时标题图标的左缘与工作区左缘在同一条垂直线上；
+  收起侧栏后标题保持原有位置。
+  证据：`.agent-temp/titlebar-workspace-align/aligned.png`、
+  `.agent-temp/titlebar-workspace-align/collapsed.png`。
+
+### 22.56 标题栏与工作区列表统一文件夹图标（2026-11-08）
+
+需求：标题栏会话标题左侧不再使用应用图标，改为文件夹图标；左侧工作区列表也换成同一图标。
+
+实现：
+
+- `App.tsx` 的 `TitleBar` 将 `AppIcon` 换成 `Icon name="folder"`，并删除仅服务于
+  `AppIcon` 的圆角样式；启动页和助手头像仍使用 `AppIcon`。
+- `Sidebar.tsx` 的工作区行、搜索结果工作区行和「选择文件夹」空态按钮改用 `folder`；
+  尺寸与描边沿用原工作区图标的 19px / 1.9（空态为 14px）。
+- `Icon.tsx` 的 `workspace` 图标保留，Composer 的工作区选择器仍在使用，本次只统一
+  标题栏和左栏。
+
+验证：
+
+- `npm --prefix ui run build` 与 `npm run build:debug` 通过。
+- 重启 debug `.app` 后，标题栏与左侧工作区行显示同一线性文件夹图标；工作区行已截图确认，
+  搜索结果与空态复用同一图标代码路径。
+  证据：`.agent-temp/workspace-folder-icon/workspace-list.png`。
+
+### 22.57 状态栏 Token 总量与输出速度对齐 DSH（2026-11-08）
+
+需求：底栏 Token 改为总量，速度改为输出速度，参考 DSH 官方口径。
+
+实现：
+
+- 新增 `ui/src/messageStats.ts`：`messageTotalTokens` 优先使用 CLI 的
+  `AssistantMessage.tokens.total`，缺失时回退为
+  `input + output + reasoning + cache.read + cache.write`；`messageDecodeMs` 对齐 DSH 的
+  `decodeMs`，从首个 text/reasoning token 到本步输出结束（有工具时取首个工具开始时间），
+  不含工具执行；只统计已完成的助手消息。
+- `StatusBar.tsx` 改用 `summarizeMessages`；Token 主值显示总量，悬浮提示改为
+  未缓存输入/输出/推理/缓存读取/缓存写入/合计/成本；速度按
+  `(output + reasoning) / decodeMs` 计算，显示为 `tok/s`，tooltip 注明 TPS 口径。
+- `TaskOverview.tsx` 的 Token 卡片复用 `messageTotalTokens`，与底栏和设置页统一。
+- `types.ts` 补充 `Tokens.total` 与 `Part.time`；`docs/features.md` 和
+  `docs/architecture.md` 同步口径与文件地图。
+
+验证：
+
+- `npm --prefix ui run build`（含 `tsc --noEmit`）通过；`npm run build:debug` 通过。
+- 用真实会话 `ses_e4c4be988ffe3s0dagMP5EAGZH` 核对：
+  Token 总量 `5,742,762`（未缓存输入 217,597 + 输出 11,186 + 推理 15,739 +
+  缓存读取 5,498,240）；输出速度 `155.4 tok/s`（26,925 token / 173,247ms）。
+- 重启 debug `.app` 真机截图确认底栏显示 `轮次 2 · Token 5.7M · 速度 155 tok/s`。
+  任务概览的「运行」卡片同步显示 `轮次 2 · Token 5.7M`。
+  证据：`.agent-temp/statusbar-stats/app.png`、`.agent-temp/statusbar-stats/overview-app.png`。
+
+未验证：
+
+- 速度按 DSH 口径只累计已完成步骤，流式中的当前步骤不会实时进入分母；未发送新的真实
+  prompt 验证步骤结束时的跳变时机。
+- 未单独截图悬浮提示；tooltip 文案由代码和构建检查确认。
+
+### 22.58 状态栏缓存命中与上下文占用（2026-11-08）
+
+需求：增加缓存和上下文大小，参考 DSH 的展示方式。
+
+实现：
+
+- `messageStats.ts` 增加 `cacheHitPercent`、`contextTokens`、`contextModel`。缓存命中按
+  `cacheRead / (uncachedInput + cacheRead + cacheWrite)`；上下文取最近一条有 prompt 的
+  助手消息的 `input + cacheRead + cacheWrite`，优先用该消息的模型，回退到当前选择模型。
+- `StatusBar.tsx` 在 Token 后显示 `缓存命中 xx%`；新增上下文环形进度（14px、2px 描边）和
+  `xx%`，悬浮提示显示 `~used / contextWindow`。上下文窗口来自 `/api/model` 的
+  `limit.context`；模型未加载或缺少 limit 时不显示。
+- `types.ts` 补充 `ModelInfo.limit`、`MessageInfo.providerID/modelID`；`README.md`、
+  `docs/features.md` 同步。
+
+验证：
+
+- `npm --prefix ui run build`、`npm run build:debug` 通过。
+- 样本会话：缓存命中 96.2%，上下文 160,914 / 1,000,000 = 16%。
+- 真机截图：`轮次 2 · Token 5.7M 缓存命中 96% · 速度 155 tok/s · 上下文 16%`。
+  证据：`.agent-temp/statusbar-stats/cache-context-final.png`。
+
+未验证：
+
+- 未在窄窗口/长项目名下验证状态栏是否溢出。
+- 上下文取最近一次已完成请求的提示词大小，流式中的下一步不会实时更新；模型切换或压缩后
+  以最新消息的模型和提示词为准。
+
+### 22.59 底部终端（2026-11-08）
+
+需求：在对话与状态栏之间加入可收起的本地终端，直接使用当前工作区目录。
+
+实现：
+
+- `terminal.rs` 复用 CLI 的 `/pty` 契约：创建会话、按面板尺寸调整、用一次性 ticket 建立
+  WebSocket；输出以 `deveco://terminal` 事件交给前端，输入经同一条连接写回。WebView
+  不接触端口、口令或票据。
+- `TerminalPanel.tsx` 使用 xterm.js：支持输入、滚动、选中复制、拖高/双击复位、清屏重开，
+  主题跟随应用亮暗模式；关闭面板先断连接再 `DELETE /pty/{id}`。
+- 标题栏新增终端按钮，快捷键 `⌘J`；终端高度持久化并按窗口高度夹紧。
+- `terminal_open` 在创建 PTY 前校验尺寸，调整尺寸或建立连接失败时回收已创建的会话。
+
+验证：
+
+- `npm --prefix ui run build`、`npm run build:debug`、`cargo fmt --check`、`cargo clippy`
+  与 94 项 Rust 单测通过；`deveco-selftest` 18/18 通过。
+- 真机打开 debug `.app`，`⌘J` 展开后显示当前工作区 zsh 提示符；执行
+  `echo DEVECO_TERMINAL_OK` 能看到回显；再次 `⌘J` 收起后 `/pty` 返回空列表，shell 已回收。
+
+未验证：
+
+- 未在多终端、分屏或面板关闭后后台保活场景下验证；当前产品只保留一个终端。
+- 未单独验证断网、CLI 崩溃时的终端重连文案，失败态由代码和构建检查确认。

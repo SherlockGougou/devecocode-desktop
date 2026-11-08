@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
+import { messageTotalTokens } from "../messageStats";
 import { useApp } from "../store";
 import { buildSubagentTasks, todoProgress } from "../tasks";
 import type { Message } from "../types";
@@ -24,8 +25,7 @@ function summarize(messages: Message[]) {
       turns += 1;
       continue;
     }
-    const tokens = message.info.tokens;
-    if (tokens) total += tokens.input + tokens.output + tokens.reasoning;
+    total += messageTotalTokens(message);
     cost += message.info.cost ?? 0;
   }
   return { turns, total, cost };

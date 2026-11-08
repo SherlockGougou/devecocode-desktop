@@ -6,6 +6,12 @@ import {
   quickLookFirst,
   type FilePreview,
 } from "./filePreview";
+import {
+  ancestorTreePaths,
+  isPathInsideDirectory,
+  normalizeTreePath,
+  sortFileNodes,
+} from "./fileTree";
 import { absoluteWorkspacePath } from "./paths";
 import type {
   AgentInfo,
@@ -25,6 +31,7 @@ import type {
   SettingsPage,
   SessionStatus,
   TodoItem,
+  VcsFileStatus,
 } from "./types";
 import { buildSubagentTasks, normalizeTodos } from "./tasks";
 import {
@@ -36,6 +43,15 @@ import {
 } from "./models";
 
 export type RightTab = "changes" | "files" | "device" | "tasks";
+export type ChangeSource = "workspace" | "session";
+
+/** 没有当前会话时视觉上回退到工作区，但保留用户上次的来源偏好。 */
+export function resolvedChangeSource(
+  source: ChangeSource,
+  sessionID: string | null,
+): ChangeSource {
+  return source === "session" && !sessionID ? "workspace" : source;
+}
 
 const LAST_DIR = "deveco.desktop.dir";
 const LAST_SESSION = "deveco.desktop.session";
@@ -47,9 +63,15 @@ const SESSION_SORT = "deveco.desktop.sessionSort";
 const SESSION_PREVIEW = "deveco.desktop.sessionPreview";
 const SIDEBAR_OPEN = "deveco.desktop.sidebarOpen";
 const RIGHT_WIDTH = "deveco.desktop.rightWidth";
+const TERMINAL_OPEN = "deveco.desktop.terminalOpen";
+const TERMINAL_HEIGHT = "deveco.desktop.terminalHeight";
 const RIGHT_TAB_ORDER = "deveco.desktop.rightTabOrder";
 const OVERVIEW_PINNED = "deveco.desktop.overviewPinned";
+const CHANGE_SOURCE = "deveco.desktop.changeSource";
+const FILE_SHOW_IGNORED = "deveco.desktop.fileShowIgnored";
 export const RIGHT_PANEL_MIN_WIDTH = 320;
+export const TERMINAL_MIN_HEIGHT = 160;
+export const TERMINAL_DEFAULT_HEIGHT = 280;
 const DEFAULT_RIGHT_TAB_ORDER: readonly RightTab[] = [
   "changes",
   "files",
@@ -65,6 +87,11 @@ let permissionWatchTimer: ReturnType<typeof setTimeout> | null = null;
 let permissionWatchToken = 0;
 let tasksRequest = 0;
 let overviewRequest = 0;
+let changesRequest = 0;
+let fileStatusRequest = 0;
+let fileSearchRequest = 0;
+let panelRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+const fileDirRequests = new Map<string, number>();
 
 type BtwPending = {
   sessionID: string;
@@ -164,11 +191,42 @@ function normalizeWorkspace(path: string) {
   return trimmed === "/" ? trimmed : trimmed.replace(/\/+$/, "");
 }
 
+function readChangeSource(): ChangeSource {
+  return localStorage.getItem(CHANGE_SOURCE) === "session" ? "session" : "workspace";
+}
+
+function readShowIgnored(): boolean {
+  return localStorage.getItem(FILE_SHOW_IGNORED) === "1";
+}
+
+function normalizeDiff(entries: FileDiff[] | undefined): FileDiff[] {
+  if (!Array.isArray(entries)) return [];
+  return entries.filter(
+    (entry): entry is FileDiff => Boolean(entry && typeof entry.file === "string" && entry.file),
+  );
+}
+
+/** CLI 从 Finder 启动时的中性工作目录，不属于用户工作区，不能出现在侧栏。 */
+function isInternalWorkspace(path: string) {
+  return normalizeWorkspace(path).endsWith(
+    "/Library/Application Support/DevEco Code Desktop/server-cwd",
+  );
+}
+
 /** 右栏固定下限，上限随窗口宽度变化：始终不超过窗口总宽度的一半。 */
 export function clampRightPanelWidth(width: number, viewportWidth = window.innerWidth) {
   const max = Math.max(1, Math.floor(viewportWidth / 2));
   const min = Math.min(RIGHT_PANEL_MIN_WIDTH, max);
   return Math.min(max, Math.max(min, Math.round(width)));
+}
+
+/** 终端高度上限跟随窗口：小窗口下不能把聊天区完全挤没。 */
+export function clampTerminalHeight(height: number, viewportHeight = window.innerHeight) {
+  const max = Math.max(
+    TERMINAL_MIN_HEIGHT,
+    Math.min(640, Math.round(viewportHeight * 0.65)),
+  );
+  return Math.min(max, Math.max(TERMINAL_MIN_HEIGHT, Math.round(height)));
 }
 
 export type SessionSort = "updated" | "created" | "title";
@@ -446,7 +504,8 @@ function emptyConversationPatch() {
     selectedTaskID: null,
     tasksLoading: false,
     streaming: false,
-    diff: [],
+    sessionDiff: [],
+    diffPath: null,
     overviewGit: null,
     overviewLoading: false,
     overviewError: null,
@@ -459,6 +518,21 @@ function emptyConversationPatch() {
     findOpen: false,
     findQuery: "",
     findIndex: 0,
+  };
+}
+
+function emptyFileTreePatch() {
+  return {
+    fileTree: {},
+    expandedDirs: {},
+    fileLoading: {},
+    fileErrors: {},
+    fileSearchResults: [] as string[],
+    fileSearching: false,
+    fileSearchError: null,
+    fileStatuses: {} as Record<string, VcsFileStatus>,
+    fileQuery: "",
+    fileFocusPath: null,
   };
 }
 
@@ -501,6 +575,8 @@ export interface AppState {
   backend: BackendPhase;
   rightOpen: boolean;
   rightWidth: number;
+  terminalOpen: boolean;
+  terminalHeight: number;
   overviewOpen: boolean;
   overviewPinned: boolean;
   overviewGit: GitRepoState | null;
@@ -516,10 +592,26 @@ export interface AppState {
   shortcutsOpen: boolean;
   rightTab: RightTab;
   rightTabOrder: RightTab[];
-  diff: FileDiff[];
-  files: FileNode[];
-  filePath: string;
+  changeSource: ChangeSource;
+  workspaceDiff: FileDiff[];
+  sessionDiff: FileDiff[];
+  changesLoading: boolean;
+  changesError: string | null;
+  changesRepo: boolean | null;
+  changeQuery: string;
+  collapsedChangeDirs: string[];
+  diffPath: string | null;
+  fileTree: Record<string, FileNode[]>;
+  expandedDirs: Record<string, boolean>;
+  fileLoading: Record<string, boolean>;
+  fileErrors: Record<string, string | null>;
+  fileSearchResults: string[];
+  fileSearching: boolean;
+  fileSearchError: string | null;
+  fileStatuses: Record<string, VcsFileStatus>;
   fileQuery: string;
+  fileFocusPath: string | null;
+  showIgnored: boolean;
   filter: string;
   showArchived: boolean;
   sessionSort: SessionSort;
@@ -533,14 +625,13 @@ export interface AppState {
   sidebarOpen: boolean;
   clearFailedText(): void;
   showNotice(message: string, duration?: number): void;
-  exportCurrentSession(): Promise<void>;
-  exportSession(directory: string, id: string): Promise<void>;
   openFind(): void;
   closeFind(): void;
   setFindQuery(query: string): void;
   stepFind(delta: number): void;
   setSidebarWidth(width: number): void;
   setRightWidth(width: number): void;
+  setTerminalHeight(height: number): void;
   toggleSidebar(): void;
 
   boot(): Promise<void>;
@@ -569,6 +660,7 @@ export interface AppState {
   retryBackend(): Promise<void>;
   refreshAfterReconnect(): Promise<void>;
   toggleRight(): void;
+  toggleTerminal(): void;
   toggleOverview(): void;
   closeOverview(): void;
   setOverviewPinned(pinned: boolean): void;
@@ -607,12 +699,23 @@ export interface AppState {
   /** 全部收起；若有工作区未展开则全部展开并补齐会话列表。 */
   toggleAllProjects(): Promise<void>;
   deleteSession(directory: string, id: string): Promise<void>;
-  refreshDiff(): Promise<void>;
+  setChangeSource(source: ChangeSource): void;
+  refreshChanges(options?: { silent?: boolean }): Promise<void>;
+  setChangeQuery(value: string): void;
+  toggleChangeDir(path: string): void;
+  setCollapsedChangeDirs(paths: string[]): void;
+  openDiff(path: string): void;
+  closeDiff(): void;
   openPreview(path: string): Promise<void>;
-  loadFiles(): Promise<void>;
-  enterDir(path: string): Promise<void>;
-  goUpDir(): Promise<void>;
-  setFileQuery(value: string): Promise<void>;
+  refreshFileTree(options?: { silent?: boolean }): Promise<void>;
+  loadFileDir(path: string): Promise<void>;
+  toggleFileDir(path: string): void;
+  revealFileDir(path: string): Promise<void>;
+  runFileSearch(query: string): Promise<void>;
+  refreshFileStatuses(): Promise<void>;
+  setFileQuery(value: string): void;
+  setShowIgnored(value: boolean): void;
+  setFileFocusPath(path: string | null): void;
   closePreview(): void;
   /** 打开右栏文件页并预览当前工作区内的相对路径 */
   openFile(path: string): Promise<void>;
@@ -660,6 +763,10 @@ export const useApp = create<AppState>()((set, get) => ({
   rightWidth: clampRightPanelWidth(
     Number(localStorage.getItem(RIGHT_WIDTH)) || RIGHT_PANEL_MIN_WIDTH,
   ),
+  terminalOpen: localStorage.getItem(TERMINAL_OPEN) === "1",
+  terminalHeight: clampTerminalHeight(
+    Number(localStorage.getItem(TERMINAL_HEIGHT)) || TERMINAL_DEFAULT_HEIGHT,
+  ),
   overviewOpen: false,
   overviewPinned: localStorage.getItem(OVERVIEW_PINNED) === "1",
   overviewGit: null,
@@ -675,10 +782,26 @@ export const useApp = create<AppState>()((set, get) => ({
   shortcutsOpen: false,
   rightTab: "changes",
   rightTabOrder: readRightTabOrder(),
-  diff: [],
-  files: [],
-  filePath: "",
+  changeSource: readChangeSource(),
+  workspaceDiff: [],
+  sessionDiff: [],
+  changesLoading: false,
+  changesError: null,
+  changesRepo: null,
+  changeQuery: "",
+  collapsedChangeDirs: [],
+  diffPath: null,
+  fileTree: {},
+  expandedDirs: {},
+  fileLoading: {},
+  fileErrors: {},
+  fileSearchResults: [],
+  fileSearching: false,
+  fileSearchError: null,
+  fileStatuses: {},
   fileQuery: "",
+  fileFocusPath: null,
+  showIgnored: readShowIgnored(),
   filter: "",
   showArchived: localStorage.getItem("deveco.desktop.showArchived") === "1",
   sessionSort: readSessionSort(),
@@ -744,7 +867,14 @@ export const useApp = create<AppState>()((set, get) => ({
         const projects = all.filter((project, index) => {
           if (existence[index] === false) return false;
           const key = normalizeWorkspace(project.worktree);
-          if (!key || removed.has(key) || seen.has(key)) return false;
+          if (
+            !key ||
+            isInternalWorkspace(key) ||
+            removed.has(key) ||
+            seen.has(key)
+          ) {
+            return false;
+          }
           seen.add(key);
           return true;
         });
@@ -759,7 +889,14 @@ export const useApp = create<AppState>()((set, get) => ({
         const known = new Set(projects.map((project) => normalizeWorkspace(project.worktree)));
         for (let index = 0; index < local.length; index += 1) {
           const path = local[index];
-          if (localExistence[index] === false || removed.has(path) || known.has(path)) continue;
+          if (
+            localExistence[index] === false ||
+            isInternalWorkspace(path) ||
+            removed.has(path) ||
+            known.has(path)
+          ) {
+            continue;
+          }
           known.add(path);
           projects.push({ id: path, worktree: path });
         }
@@ -807,6 +944,14 @@ export const useApp = create<AppState>()((set, get) => ({
       set({ expanded: { ...get().expanded, [directory]: true } });
     } else {
       previewRequest += 1;
+      changesRequest += 1;
+      fileStatusRequest += 1;
+      fileSearchRequest += 1;
+      fileDirRequests.clear();
+      if (panelRefreshTimer) {
+        clearTimeout(panelRefreshTimer);
+        panelRefreshTimer = null;
+      }
       cancelBtwPending();
       set({
         directory,
@@ -821,7 +966,12 @@ export const useApp = create<AppState>()((set, get) => ({
         sessionStatuses: {},
         selectedTaskID: null,
         tasksLoading: false,
-        diff: [],
+        workspaceDiff: [],
+        sessionDiff: [],
+        changesLoading: false,
+        changesError: null,
+        changesRepo: null,
+        diffPath: null,
         overviewGit: null,
         overviewLoading: false,
         overviewError: null,
@@ -830,9 +980,8 @@ export const useApp = create<AppState>()((set, get) => ({
         commitMessageError: null,
         committing: false,
         pushing: false,
-        files: [],
-        filePath: "",
-        fileQuery: "",
+        preview: null,
+        ...emptyFileTreePatch(),
         error: null,
       });
     }
@@ -885,6 +1034,7 @@ export const useApp = create<AppState>()((set, get) => ({
       set({ streaming: false });
     } else {
       cancelBtwPending();
+      changesRequest += 1;
       set({
         sessionID: id,
         messages: [],
@@ -896,6 +1046,8 @@ export const useApp = create<AppState>()((set, get) => ({
         selectedTaskID: null,
         tasksLoading: true,
         streaming: false,
+        sessionDiff: [],
+        diffPath: null,
         overviewGit: null,
         overviewLoading: false,
         overviewError: null,
@@ -909,18 +1061,16 @@ export const useApp = create<AppState>()((set, get) => ({
       });
     }
     try {
-      const [messages, diff] = await Promise.all([
-        api.messages(directory, id, timeout),
-        get().rightTab === "changes"
-          ? api.diff(directory, id, timeout).catch(() => [])
-          : Promise.resolve([]),
-      ]);
+      const messages = await api.messages(directory, id, timeout);
       // 打开会话期间可能已经有事件到达，合并而不是覆盖
       const merged = mergeMessages(messages, get().messages);
       stopPermissionWatch();
-      set({ messages: merged, diff, error: null });
+      set({ messages: merged, error: null });
       void get().refreshTasks();
       if (get().overviewOpen) void get().refreshOverview();
+      if (get().rightOpen && get().rightTab === "changes") {
+        void get().refreshChanges();
+      }
     } catch (error) {
       set({ tasksLoading: false });
       set({ error: workspaceLoadError(error, patient) });
@@ -938,6 +1088,9 @@ export const useApp = create<AppState>()((set, get) => ({
         ? { expanded: { ...get().expanded, [directory]: true } }
         : {}),
     });
+    if (get().rightOpen && get().rightTab === "changes") {
+      void get().refreshChanges();
+    }
   },
 
   async newSessionIn(directory) {
@@ -951,6 +1104,9 @@ export const useApp = create<AppState>()((set, get) => ({
       expanded: { ...get().expanded, [target]: true },
       error: null,
     });
+    if (get().rightOpen && get().rightTab === "changes") {
+      void get().refreshChanges();
+    }
   },
 
   async changeDraftWorkspace(directory) {
@@ -1046,15 +1202,21 @@ export const useApp = create<AppState>()((set, get) => ({
       await get().selectProject(next);
     } else {
       previewRequest += 1;
+      changesRequest += 1;
+      fileStatusRequest += 1;
+      fileSearchRequest += 1;
+      fileDirRequests.clear();
       set({
         directory: null,
         ...emptyConversationPatch(),
         permissions: [],
         preview: null,
-        diff: [],
-        files: [],
-        filePath: "",
-        fileQuery: "",
+        workspaceDiff: [],
+        sessionDiff: [],
+        changesLoading: false,
+        changesError: null,
+        changesRepo: null,
+        ...emptyFileTreePatch(),
         error: null,
       });
     }
@@ -1248,7 +1410,7 @@ export const useApp = create<AppState>()((set, get) => ({
           api.permissions(directory).catch(() => []),
         ]);
         set({ messages, permissions });
-        void get().refreshDiff();
+        if (get().rightOpen) void refreshPanel(get, set);
         void get().refreshTasks();
         if (get().overviewOpen) void get().refreshOverview();
       }
@@ -1458,13 +1620,29 @@ export const useApp = create<AppState>()((set, get) => ({
         pending.reject(new Error(message));
         break;
       }
+      case "session.diff":
+        if (eventSession === currentSession) {
+          set({ sessionDiff: normalizeDiff(props.diff as FileDiff[] | undefined) });
+          // 会话快照变化通常也意味着工作区发生变化，静默更新另一来源。
+          if (get().changeSource === "workspace") schedulePanelRefresh(600);
+        }
+        break;
+      case "file.watcher.updated":
+      case "file.edited": {
+        const file = typeof props.file === "string" ? props.file : "";
+        const directory = get().directory;
+        if (!directory || !file || !isPathInsideDirectory(directory, file)) break;
+        if (get().rightOpen) schedulePanelRefresh(600);
+        break;
+      }
       case "session.idle":
         if (eventSession === currentSession) {
           set({ streaming: false });
-          // 执行结束后变更列表才有意义，顺手刷新右面板
-          const { directory, rightOpen, rightTab } = get();
-          if (rightOpen && rightTab === "changes" && directory) {
-            void loadDiff(directory, eventSession).then((diff) => set({ diff }));
+          // 执行结束后变更与文件状态才有意义，顺手刷新右面板。
+          const { rightOpen, rightTab } = get();
+          if (rightOpen) void get().refreshChanges({ silent: true });
+          if (rightOpen && rightTab === "files") {
+            void get().refreshFileTree({ silent: true });
           }
           void get().refreshTasks();
           if (get().overviewOpen) void get().refreshOverview();
@@ -1558,28 +1736,6 @@ export const useApp = create<AppState>()((set, get) => ({
     }, duration);
   },
 
-  async exportCurrentSession() {
-    const { directory, sessionID } = get();
-    if (!directory || !sessionID) {
-      set({ error: "请先打开一个会话再导出" });
-      return;
-    }
-    await get().exportSession(directory, sessionID);
-  },
-
-  async exportSession(directory, id) {
-    if (!directory || !id) {
-      set({ error: "请先打开一个会话再导出" });
-      return;
-    }
-    try {
-      const path = await api.exportSession(directory, id);
-      get().showNotice(`已导出：${path}`, 6000);
-    } catch (error) {
-      set({ error: `导出失败：${String(error)}` });
-    }
-  },
-
   openFind() {
     set({ findOpen: true, findIndex: 0 });
   },
@@ -1608,6 +1764,12 @@ export const useApp = create<AppState>()((set, get) => ({
     set({ rightWidth: clamped });
   },
 
+  setTerminalHeight(height) {
+    const clamped = clampTerminalHeight(height);
+    localStorage.setItem(TERMINAL_HEIGHT, String(clamped));
+    set({ terminalHeight: clamped });
+  },
+
   toggleSidebar() {
     const open = !get().sidebarOpen;
     localStorage.setItem(SIDEBAR_OPEN, open ? "1" : "0");
@@ -1618,6 +1780,12 @@ export const useApp = create<AppState>()((set, get) => ({
     const open = !get().rightOpen;
     set({ rightOpen: open });
     if (open) void refreshPanel(get, set);
+  },
+
+  toggleTerminal() {
+    const open = !get().terminalOpen;
+    localStorage.setItem(TERMINAL_OPEN, open ? "1" : "0");
+    set({ terminalOpen: open });
   },
 
   toggleOverview() {
@@ -1808,7 +1976,8 @@ export const useApp = create<AppState>()((set, get) => ({
         result.commit ? `已提交 ${result.commit}` : "已提交",
         6000,
       );
-      void get().refreshDiff();
+      if (get().rightOpen) void get().refreshChanges({ silent: true });
+      void get().refreshFileStatuses();
       void get().refreshTasks();
       if (!next) void get().refreshOverview();
     } catch (error) {
@@ -2146,6 +2315,8 @@ export const useApp = create<AppState>()((set, get) => ({
           selectedTaskID: null,
           tasksLoading: false,
           streaming: false,
+          sessionDiff: [],
+          diffPath: null,
           overviewGit: null,
           overviewLoading: false,
           overviewError: null,
@@ -2156,6 +2327,9 @@ export const useApp = create<AppState>()((set, get) => ({
           pushing: false,
         });
         localStorage.removeItem(`${LAST_SESSION}.${directory}`);
+        if (get().rightOpen && get().rightTab === "changes") {
+          void get().refreshChanges();
+        }
       }
     } catch (error) {
       set({ error: `删除会话失败：${String(error)}` });
@@ -2286,7 +2460,19 @@ export const useApp = create<AppState>()((set, get) => ({
     const relative = normalized.startsWith(`${directory}/`)
       ? normalized.slice(directory.length + 1)
       : normalized.replace(/^\/+/, "");
-    set({ rightOpen: true, rightTab: "files", preview: null });
+    fileSearchRequest += 1;
+    set({
+      rightOpen: true,
+      rightTab: "files",
+      preview: null,
+      fileQuery: "",
+      fileSearchResults: [],
+      fileSearching: false,
+      fileSearchError: null,
+      fileFocusPath: null,
+    });
+    if (!get().fileTree[""]) void get().loadFileDir("");
+    void get().refreshFileStatuses();
     await get().openPreview(relative);
   },
 
@@ -2295,56 +2481,278 @@ export const useApp = create<AppState>()((set, get) => ({
     set({ preview: null });
   },
 
-  async refreshDiff() {
-    const { directory, sessionID } = get();
-    if (!directory) return;
-    set({ diff: await loadDiff(directory, sessionID) });
+  setChangeSource(source) {
+    if (source === "session" && !get().sessionID) return;
+    localStorage.setItem(CHANGE_SOURCE, source);
+    set({ changeSource: source, diffPath: null });
+    void get().refreshChanges();
   },
 
-  async loadFiles() {
-    const { directory, filePath, fileQuery } = get();
-    if (!directory) return;
+  async refreshChanges(options) {
+    const state = get();
+    const { directory, sessionID } = state;
+    const source = resolvedChangeSource(state.changeSource, sessionID);
+    if (!directory) {
+      changesRequest += 1;
+      set({
+        workspaceDiff: [],
+        sessionDiff: [],
+        changesRepo: null,
+        changesLoading: false,
+        changesError: null,
+      });
+      return;
+    }
+    const request = ++changesRequest;
+    const existing = source === "workspace" ? state.workspaceDiff : state.sessionDiff;
+    if (!options?.silent || existing.length === 0) {
+      set({ changesLoading: true, changesError: null });
+    }
     try {
-      if (fileQuery.trim()) {
-        const hits = await api.files(directory, fileQuery.trim());
+      if (source === "workspace") {
+        const [info, diff] = await Promise.all([
+          api.vcsInfo(directory).catch(() => null),
+          api.vcsDiff(directory),
+        ]);
+        if (
+          request !== changesRequest ||
+          get().directory !== directory
+        ) {
+          return;
+        }
         set({
-          files: hits.map((path) => ({
-            name: path.split("/").filter(Boolean).pop() ?? path,
-            path,
-            type: path.endsWith("/") ? "directory" : "file",
-          })),
+          workspaceDiff: normalizeDiff(diff),
+          changesRepo: info ? Boolean(info.branch) : null,
+          changesLoading: false,
+          changesError: null,
         });
         return;
       }
-      const absolute = filePath ? `${directory}/${filePath}` : directory;
-      const entries = await api.listFiles(directory, absolute);
-      entries.sort((a, b) => {
-        if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
-        return a.name.localeCompare(b.name);
+
+      const diff = await api.diff(directory, sessionID!);
+      if (
+        request !== changesRequest ||
+        get().directory !== directory ||
+        get().sessionID !== sessionID
+      ) {
+        return;
+      }
+      set({
+        sessionDiff: normalizeDiff(diff),
+        changesLoading: false,
+        changesError: null,
       });
-      set({ files: entries });
     } catch (error) {
-      set({ error: `读取文件失败：${String(error)}` });
+      if (request !== changesRequest) return;
+      set({
+        changesLoading: false,
+        changesError: `读取变更失败：${String(error)}`,
+      });
     }
   },
 
-  async enterDir(path) {
-    previewRequest += 1;
-    set({ filePath: path.replace(/\/$/, ""), fileQuery: "", preview: null });
-    await get().loadFiles();
+  setChangeQuery(value) {
+    set({ changeQuery: value });
   },
 
-  async goUpDir() {
-    previewRequest += 1;
-    const parts = get().filePath.split("/").filter(Boolean);
-    parts.pop();
-    set({ filePath: parts.join("/"), fileQuery: "", preview: null });
-    await get().loadFiles();
+  toggleChangeDir(path) {
+    const key = normalizeTreePath(path);
+    const collapsed = new Set(get().collapsedChangeDirs);
+    if (collapsed.has(key)) collapsed.delete(key);
+    else collapsed.add(key);
+    set({ collapsedChangeDirs: [...collapsed] });
   },
 
-  async setFileQuery(value) {
-    set({ fileQuery: value });
-    await get().loadFiles();
+  setCollapsedChangeDirs(paths) {
+    set({ collapsedChangeDirs: [...new Set(paths.filter(Boolean))] });
+  },
+
+  openDiff(path) {
+    set({ diffPath: path });
+  },
+
+  closeDiff() {
+    set({ diffPath: null });
+  },
+
+  async refreshFileStatuses() {
+    const directory = get().directory;
+    if (!directory) {
+      fileStatusRequest += 1;
+      set({ fileStatuses: {} });
+      return;
+    }
+    const request = ++fileStatusRequest;
+    try {
+      const statuses = await api.vcsStatus(directory);
+      if (request !== fileStatusRequest || get().directory !== directory) return;
+      const map: Record<string, VcsFileStatus> = {};
+      for (const status of statuses) {
+        map[normalizeTreePath(status.file)] = status;
+      }
+      set({ fileStatuses: map });
+    } catch (error) {
+      if (request !== fileStatusRequest) return;
+      console.warn("读取文件状态失败", error);
+    }
+  },
+
+  async loadFileDir(path) {
+    const directory = get().directory;
+    if (!directory) return;
+    const key = normalizeTreePath(path);
+    const request = (fileDirRequests.get(key) ?? 0) + 1;
+    fileDirRequests.set(key, request);
+    set({
+      fileLoading: { ...get().fileLoading, [key]: true },
+      fileErrors: { ...get().fileErrors, [key]: null },
+    });
+    try {
+      const absolute = key ? absoluteWorkspacePath(directory, key) : directory;
+      const entries = await api.listFiles(directory, absolute);
+      if (request !== fileDirRequests.get(key) || get().directory !== directory) return;
+      set({
+        fileTree: { ...get().fileTree, [key]: sortFileNodes(entries) },
+        fileLoading: { ...get().fileLoading, [key]: false },
+        fileErrors: { ...get().fileErrors, [key]: null },
+      });
+    } catch (error) {
+      if (request !== fileDirRequests.get(key) || get().directory !== directory) return;
+      set({
+        fileLoading: { ...get().fileLoading, [key]: false },
+        fileErrors: {
+          ...get().fileErrors,
+          [key]: `读取目录失败：${String(error)}`,
+        },
+      });
+    }
+  },
+
+  toggleFileDir(path) {
+    const key = normalizeTreePath(path);
+    if (!key) return;
+    const expanded = Boolean(get().expandedDirs[key]);
+    set({
+      expandedDirs: { ...get().expandedDirs, [key]: !expanded },
+      fileErrors: { ...get().fileErrors, [key]: null },
+    });
+    // 目录可能被外部进程改动过，展开时重新读取；旧内容先保留，避免闪空。
+    if (!expanded) {
+      void get().loadFileDir(key);
+    }
+  },
+
+  async revealFileDir(path) {
+    const directory = get().directory;
+    if (!directory) return;
+    const target = normalizeTreePath(path);
+    fileSearchRequest += 1;
+    if (!target) {
+      set({
+        fileQuery: "",
+        fileSearchResults: [],
+        fileSearching: false,
+        fileSearchError: null,
+        fileFocusPath: null,
+      });
+      return;
+    }
+
+    const prefixes = ancestorTreePaths(target);
+    const expanded = { ...get().expandedDirs };
+    for (const prefix of prefixes) expanded[prefix] = true;
+    set({
+      expandedDirs: expanded,
+      fileQuery: "",
+      fileSearchResults: [],
+      fileSearching: false,
+      fileSearchError: null,
+      fileFocusPath: target,
+    });
+
+    // 搜索结果来自最新磁盘状态，定位时强制刷新祖先目录，避免缓存里没有新目录。
+    await Promise.all(["", ...prefixes].map((prefix) => get().loadFileDir(prefix)));
+    set({ fileFocusPath: target });
+  },
+
+  async runFileSearch(query) {
+    const directory = get().directory;
+    if (!directory) return;
+    const keyword = query.trim();
+    if (!keyword) {
+      fileSearchRequest += 1;
+      set({
+        fileSearchResults: [],
+        fileSearching: false,
+        fileSearchError: null,
+      });
+      return;
+    }
+    const request = ++fileSearchRequest;
+    set({ fileSearching: true, fileSearchError: null });
+    try {
+      const hits = await api.files(directory, keyword);
+      if (
+        request !== fileSearchRequest ||
+        get().directory !== directory ||
+        get().fileQuery.trim() !== keyword
+      ) {
+        return;
+      }
+      set({
+        fileSearchResults: hits,
+        fileSearching: false,
+        fileSearchError: null,
+      });
+    } catch (error) {
+      if (request !== fileSearchRequest) return;
+      set({
+        fileSearching: false,
+        fileSearchError: `搜索文件失败：${String(error)}`,
+      });
+    }
+  },
+
+  async refreshFileTree(options) {
+    const state = get();
+    if (!state.directory) return;
+    if (state.fileQuery.trim()) {
+      await get().runFileSearch(state.fileQuery);
+      void get().refreshFileStatuses();
+      return;
+    }
+    const dirs = [
+      "",
+      ...Object.entries(state.expandedDirs)
+        .filter(([, open]) => open)
+        .map(([path]) => path),
+    ];
+    if (!options?.silent && !state.fileTree[""]) {
+      set({ fileLoading: { ...state.fileLoading, "": true } });
+    }
+    await Promise.all(dirs.map((path) => get().loadFileDir(path)));
+    void get().refreshFileStatuses();
+  },
+
+  setFileQuery(value) {
+    fileSearchRequest += 1;
+    set({ fileQuery: value, fileSearching: Boolean(value.trim()) });
+    if (!value.trim()) {
+      set({
+        fileSearchResults: [],
+        fileSearching: false,
+        fileSearchError: null,
+      });
+    }
+  },
+
+  setShowIgnored(value) {
+    localStorage.setItem(FILE_SHOW_IGNORED, value ? "1" : "0");
+    set({ showIgnored: value });
+  },
+
+  setFileFocusPath(path) {
+    set({ fileFocusPath: path });
   },
 
   dismissError() {
@@ -2359,30 +2767,34 @@ async function loadQuickLook(path: string): Promise<Blob> {
 
 async function refreshPanel(
   get: () => AppState,
-  set: (partial: Partial<AppState>) => void,
+  _set: (partial: Partial<AppState>) => void,
 ) {
-  const { directory, sessionID, rightTab } = get();
+  const { directory, rightTab } = get();
   if (!directory) return;
   if (rightTab === "changes") {
-    const diff = await loadDiff(directory, sessionID);
-    set({ diff });
+    await get().refreshChanges();
   }
   if (rightTab === "files") {
-    await get().loadFiles();
+    await get().refreshFileTree();
   }
   if (rightTab === "tasks") {
     await get().refreshTasks();
   }
 }
 
-
-/** 会话快照 diff 为空时，回退到 git 工作区 diff（非 git 项目自然为空） */
-async function loadDiff(directory: string, sessionID: string | null): Promise<FileDiff[]> {
-  if (sessionID) {
-    const snapshot = await api.diff(directory, sessionID).catch(() => []);
-    if (snapshot.length > 0) return snapshot;
-  }
-  return api.vcsDiff(directory).catch(() => []);
+/** 文件监听与 diff 事件会成串到达，合并成一次右栏刷新。 */
+function schedulePanelRefresh(delay = 600) {
+  if (panelRefreshTimer) clearTimeout(panelRefreshTimer);
+  panelRefreshTimer = setTimeout(() => {
+    panelRefreshTimer = null;
+    const state = useApp.getState();
+    if (!state.rightOpen) return;
+    if (state.rightTab === "changes") {
+      void state.refreshChanges({ silent: true });
+    } else if (state.rightTab === "files") {
+      void state.refreshFileTree({ silent: true });
+    }
+  }, delay);
 }
 
 /**
