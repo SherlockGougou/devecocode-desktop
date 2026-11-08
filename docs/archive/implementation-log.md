@@ -2227,3 +2227,35 @@ y=16，两者相差约 7px。
 未验证：
 
 - 只在 macOS 27.2 验证；旧系统的默认左缩进不同，本方案也不再跟随系统默认值。
+
+### 22.59 输出速度排除工具执行等待（2026-11-08）
+
+反馈：实测会话显示 30 多 tok/s，预期约 190–200 tok/s。
+
+定位：会话 `ses_e46349f98ffeb5X0v8MSGKYTlX` 的第一步在 +3.5s 就生成了 3 个 bash
+tool call，但工具真正执行要到 +17.2s；中间约 13.8s 是执行前等待。旧公式用
+`state.time.start` 作为解码结束点，把这段等待算进了分母，180 token 被压成 37.8 tok/s。
+
+修复：
+
+- `store.ts` 在工具的第一次 `running` `message.part.updated` 事件上记录
+  `streamedAt`，后续带执行开始的更新不再覆盖；该时刻是模型输出 tool call 的结束点。
+- `messageStats.ts` 优先用 `max(streamedAt)` 作为解码结束；历史消息没有该字段时，
+  先退回最后一个 text/reasoning 结束，再退回首个工具开始时间或消息完成时间。
+- 速度 tooltip 改为“模型输出耗时（首 token 到最后一个输出/tool call，不含工具执行与
+  等待）”。
+
+验证：
+
+- `npm --prefix ui run build`、`npm run build:debug` 通过。
+- 慢会话重新打开后底栏从 37.8 变为 `218 tok/s`（历史回退口径）；按事件流 `streamedAt`
+  模拟 live 口径为 `176.5 tok/s`。两者都排除了 13.8s 工具等待。
+- 真机截图：`轮次 1 · Token 160.9k 缓存命中 84% · 速度 218 tok/s · 上下文 3%`。
+  证据：`.agent-temp/statusbar-stats/slow-session-fixed.png`。
+
+未验证：
+
+- 历史消息加载时没有 `streamedAt`，只能用 text/reasoning 结束时间回退，可能比 live
+  口径略高（本例 218 vs 176.5）；新产生的 live 会话使用精确事件时间。
+- 若某个工具在首个 running 事件时就已经开始执行，`streamedAt` 会接近执行开始时间；
+  当前 CLI 的 bash 工具会先有 running+input 帧，未覆盖其他工具类型。

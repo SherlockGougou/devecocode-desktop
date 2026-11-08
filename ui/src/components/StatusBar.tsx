@@ -71,7 +71,7 @@ export default function StatusBar() {
         <span className="status-sep">·</span>
         <span
           className={`status-metric status-speed ${streaming ? "live" : ""}`}
-          title="输出速度（TPS）：(输出 + 推理) token / 解码耗时（首 token 到输出结束，不含工具执行）；按已完成步骤累计"
+          title="输出速度（TPS）：(输出 + 推理) token / 模型输出耗时（首 token 到最后一个输出/tool call，不含工具执行与等待）；按已完成步骤累计"
         >
           <span className="status-label">速度</span>
           <span className="status-value">{formatSpeed(stats.speed)}</span>

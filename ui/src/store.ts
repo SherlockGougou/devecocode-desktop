@@ -445,7 +445,13 @@ function upsertMessage(list: Message[], info: Message["info"]): Message[] {
   return next;
 }
 
-function upsertPart(list: Message[], part: Part): Message[] {
+function upsertPart(list: Message[], part: Part, observedAt?: number): Message[] {
+  const withObservedAt = (current?: Part): Part => {
+    if (observedAt === undefined) return part;
+    if (current?.streamedAt !== undefined) return part;
+    if (part.streamedAt !== undefined) return part;
+    return { ...part, streamedAt: observedAt };
+  };
   const messageIndex = list.findIndex((m) => m.info.id === part.messageID);
   if (messageIndex === -1) {
     // 事件先到、消息后到：先建占位，等 message.updated 补齐信息
@@ -453,7 +459,7 @@ function upsertPart(list: Message[], part: Part): Message[] {
       ...list,
       {
         info: { id: part.messageID, sessionID: part.sessionID, role: "assistant" },
-        parts: [part],
+        parts: [withObservedAt()],
       },
     ];
   }
@@ -461,8 +467,8 @@ function upsertPart(list: Message[], part: Part): Message[] {
   const message = next[messageIndex];
   const partIndex = message.parts.findIndex((p) => p.id === part.id);
   const parts = message.parts.slice();
-  if (partIndex === -1) parts.push(part);
-  else parts[partIndex] = { ...parts[partIndex], ...part };
+  if (partIndex === -1) parts.push(withObservedAt());
+  else parts[partIndex] = { ...parts[partIndex], ...withObservedAt(parts[partIndex]) };
   next[messageIndex] = { ...message, parts };
   return next;
 }
@@ -1461,21 +1467,34 @@ export const useApp = create<AppState>()((set, get) => ({
           });
         }
         break;
-      case "message.part.updated":
-        if (eventSession === currentSession && props.part) {
-          set({ messages: upsertPart(get().messages, props.part as Part) });
-        } else if (isChildSession(eventSession) && props.part) {
+      case "message.part.updated": {
+        const part = props.part as Part | undefined;
+        if (!part) break;
+        // 工具调用在真正执行前会先以 running + input 的形式流出；第一次 running
+        // 的时刻是模型输出 tool call 的结束点。不能用后续的 state.time.start，
+        // 否则会把排队/审批等待算进输出速度。
+        const observedAt =
+          part.type === "tool" && part.state?.status === "running"
+            ? typeof props.time === "number"
+              ? props.time
+              : Date.now()
+            : undefined;
+        if (eventSession === currentSession) {
+          set({ messages: upsertPart(get().messages, part, observedAt) });
+        } else if (isChildSession(eventSession)) {
           set({
             childMessages: {
               ...get().childMessages,
               [eventSession]: upsertPart(
                 get().childMessages[eventSession] ?? [],
-                props.part as Part,
+                part,
+                observedAt,
               ),
             },
           });
         }
         break;
+      }
       case "message.part.delta": {
         const isCurrent = eventSession === currentSession;
         if (!isCurrent && !isChildSession(eventSession)) break;

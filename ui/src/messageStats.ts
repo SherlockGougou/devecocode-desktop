@@ -19,7 +19,10 @@ export function messageTotalTokens(message: Message): number {
 /**
  * 输出解码耗时，对齐 DSH 的 decodeMs：
  * - 从首个输出 token 开始，到本步输出结束，不含工具执行；
- * - 有工具调用时，模型在首个工具开始执行前已经输出完 tool call 参数；
+ * - 有工具调用时，优先用事件流记录的工具调用输出结束时间（streamedAt），
+ *   避免把工具执行前的排队/审批等待算进解码耗时；
+ * - 历史消息缺少 streamedAt 时，优先用最后一个 text/reasoning 结束，
+ *   再退回首个工具开始时间或消息完成时间；
  * - 没有可见 text/reasoning 的 tool-call-only 步骤，以消息创建时间近似首 token；
  * - 只统计已完成的助手消息，流式中的步骤不进入分母。
  */
@@ -49,9 +52,16 @@ export function messageDecodeMs(message: Message): number {
     .filter((part) => part.type === "tool")
     .map((part) => part.state?.time?.start)
     .filter((value): value is number => typeof value === "number");
+  const toolStreamEnds = message.parts
+    .filter((part) => part.type === "tool")
+    .map((part) => part.streamedAt)
+    .filter((value): value is number => typeof value === "number");
 
   const start = firstToken ?? time.created;
-  const rawEnd = toolStarts.length > 0 ? Math.min(...toolStarts) : lastOutputEnd ?? time.completed;
+  const rawEnd =
+    toolStreamEnds.length > 0
+      ? Math.max(...toolStreamEnds)
+      : lastOutputEnd ?? (toolStarts.length > 0 ? Math.min(...toolStarts) : time.completed);
   const end = Math.min(rawEnd, time.completed);
   return end > start ? end - start : 0;
 }

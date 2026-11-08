@@ -41,6 +41,8 @@ export interface Part {
   callID?: string;
   state?: ToolState;
   time?: { start?: number; end?: number };
+  /** 事件流观测到的工具调用输出结束时间；不含工具执行等待 */
+  streamedAt?: number;
   /* 其余字段按需透传 */
   [key: string]: unknown;
 }
