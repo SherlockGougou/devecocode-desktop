@@ -270,7 +270,7 @@ pub async fn terminal_open(
     let writer = tokio::spawn(async move {
         while let Some(text) = output.recv().await {
             if let Err(err) = sink
-                .send(tokio_tungstenite::tungstenite::Message::Text(text))
+                .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
                 .await
             {
                 let _ = writer_app.emit(
@@ -299,7 +299,7 @@ pub async fn terminal_open(
                         "deveco://terminal",
                         TerminalEvent::Data {
                             id: reader_id.clone(),
-                            data: text,
+                            data: text.to_string(),
                         },
                     );
                 }
