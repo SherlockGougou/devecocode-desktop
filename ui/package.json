@@ -6,8 +6,8 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "vite --configLoader native",
-    "build": "tsc --noEmit && vite build --configLoader native",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
