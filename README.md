@@ -13,6 +13,7 @@ HarmonyOS 定制分支）的 HTTP + SSE 契约，提供自研三栏界面、系�
 [安装与使用](docs/installation.md) · [功能说明](docs/features.md) · [架构说明](docs/architecture.md) ·
 [开发指南](docs/development.md) · [已知限制](docs/limitations.md) ·
 [开源发布检查](docs/release.md) · [更新记录](CHANGELOG.md) ·
+[GitHub 能力](docs/github.md) ·
 [实现记录](docs/archive/implementation-log.md)
 
 ![DevEco Code Desktop 主界面：左侧工作区与会话，中间 Agent 审查回复，右侧变更文件](docs/assets/screenshots/overview.jpg)
@@ -144,6 +145,9 @@ npm run check:selftest
 - `.github/workflows/pages.yml` 在官网源码更新时部署到 GitHub Pages。
 - 发布包不做 Developer ID 签名，不做公证；下载校验和首次放行步骤见
   [macOS 安装与使用](docs/installation.md)。
+
+工作流、ruleset、安全扫描和发布操作的完整清单见
+[GitHub 能力与工作流](docs/github.md)。
 
 ## 架构概览
 
