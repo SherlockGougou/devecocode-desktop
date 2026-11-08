@@ -225,7 +225,7 @@ jobs:
           APP="src-tauri/target/$TARGET/release/bundle/macos/DevEco Code Offline.app"
           DMG=$(find "src-tauri/target/$TARGET/release/bundle/dmg" -maxdepth 1 -name 'DevEco Code Offline_*.dmg' -print -quit)
           test -n "$DMG"
-          TARBALL=$(find "src-tauri/target/$TARGET/release/bundle/macos" -maxdepth 1 -name 'DevEco Code Offline_*.app.tar.gz' -print -quit)
+          TARBALL=$(find "src-tauri/target/$TARGET/release/bundle/macos" -maxdepth 1 -name 'DevEco Code Offline*.app.tar.gz' -print -quit)
           test -n "$TARBALL"
           test -f "${TARBALL}.sig"
           ls -lh "$DMG" "$TARBALL" "${TARBALL}.sig"
