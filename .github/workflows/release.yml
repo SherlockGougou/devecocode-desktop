@@ -228,7 +228,9 @@ jobs:
           TARBALL=$(find "src-tauri/target/$TARGET/release/bundle/macos" -maxdepth 1 -name 'DevEco Code Offline_*.app.tar.gz' -print -quit)
           test -n "$TARBALL"
           test -f "${TARBALL}.sig"
-          tar -tzf "$TARBALL" | grep -q 'DevEco Code Offline.app/Contents/Info.plist'
+          ls -lh "$DMG" "$TARBALL" "${TARBALL}.sig"
+          tar -tzf "$TARBALL" > "$RUNNER_TEMP/offline-tar-files.txt"
+          grep -q 'DevEco Code Offline.app/Contents/Info.plist' "$RUNNER_TEMP/offline-tar-files.txt"
           VERSION="${RELEASE_TAG#v}"
           case "$TARGET" in
             aarch64-*) ARCH="aarch64" ;;
