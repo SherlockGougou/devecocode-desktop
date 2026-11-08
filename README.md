@@ -106,11 +106,18 @@ npm run check:selftest
 
 - `.github/workflows/ci.yml` 在 push 和 pull request 上运行前端构建、版本一致性、Rust
   格式、Clippy 和单测。
+- `.github/workflows/codeql.yml` 在 push、pull request 和每周计划任务中扫描 Rust、
+  JavaScript/TypeScript 与 GitHub Actions。
+- `.github/workflows/dependency-review.yml` 在 pull request 中检查依赖变更，阻断高危漏洞。
+- `.github/dependabot.yml` 每周检查组依赖更新，覆盖根 npm、UI npm、Cargo 和 GitHub Actions；
+  Dependabot security updates 已启用。
 - `.github/workflows/release.yml` 在推送 `v*` 标签或手动触发时构建 Apple Silicon 与 Intel
   两种 DMG，并额外构建包含固定 CLI 的 Offline 版本。发布使用 draft-first：普通版、
   Offline 版、双语 notes 和 `SHA256SUMS.txt` 全部完成后才公开。
 - 发布资产生成 `SHA256SUMS.txt` 和 GitHub artifact attestation；仓库设置应启用
   Release immutability，使已发布的 tag 和资产不可再修改。
+- `main` 与 `v*` 的 ruleset 已配置：主分支要求 PR、CI、CodeQL 和 Dependency Review；
+  发布标签限制更新、删除和 force push。
 - `.github/workflows/pages.yml` 在官网源码更新时部署到 GitHub Pages。
 - 发布包不做 Developer ID 签名，不做公证；下载校验和首次放行步骤见
   [macOS 安装与使用](docs/installation.md)。

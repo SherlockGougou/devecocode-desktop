@@ -10,6 +10,9 @@
 - [x] CONTRIBUTING、SECURITY、issue 与 pull request 模板；
 - [x] 不依赖本机 CLI 的 CI：前端构建、Rust 格式、Clippy、单测；
 - [x] CI 额外校验 arm64/x64 离线 CLI 资源生成；
+- [x] Dependabot 周更配置（根 npm、UI npm、Cargo、GitHub Actions）和安全更新；
+- [x] CodeQL（Rust、JavaScript/TypeScript、GitHub Actions）与 Dependency Review；
+- [x] `main` 与 `v*` ruleset 的可审查 JSON（`.github/rulesets/`）；
 - [x] tag 触发的 CD：arm64/x86_64 构建、GitHub Release 与 workflow artifacts；
 - [x] 含内置 CLI 的 Offline 构建任务，固定 CLI 版本并随 Release 发布；
 - [x] Release 使用 draft-first：普通版、Offline 版、双语 notes 和 SHA256SUMS 全部完成后才发布；
@@ -59,7 +62,13 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
   仓库应保持公开。
 - 为 `v*` 标签配置 ruleset：限制更新/删除，并要求 CI 状态检查。
 - 启用 Security Advisories、secret scanning（如账户支持）和 Dependabot。
+- 保持 Dependency graph 开启；Dependency Review 依赖它，关闭后 PR 检查会直接失败。
+- 保持 Dependabot alerts、security updates、CodeQL 和 Dependency Review 的默认分支
+  保护检查启用。
 - 为 `main` 配置分支保护：要求 CI 通过、禁止 force push、合并后删除分支。
+- `main` ruleset 需要 `Frontend and Rust checks`、两个 `Offline resources ...`、
+  `Dependency Review` 和三个 `Analyze (...)` 检查；`v*` ruleset 限制标签更新、删除和
+  force push。规则副本见 `.github/rulesets/main.json` 和 `.github/rulesets/tags.json`。
 - 选择是否启用 Discussions；不要在还没有维护承诺时开启过多支持渠道。
 - 确认 issue/PR 模板中的标签已经存在，或让 GitHub 自动创建。
 

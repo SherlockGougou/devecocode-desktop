@@ -5,6 +5,8 @@
 
 ## Unreleased
 
+- 增加 Dependabot 周更、CodeQL、Dependency Review 和 `main`/`v*` ruleset。
+
 ## 0.2.1 - 2026-11-08
 
 - 设置页升级为 CLI 配置中心：支持全局/当前工作区作用域、常用字段表单、高级 JSONC、

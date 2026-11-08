@@ -167,6 +167,25 @@ CI 还会并行运行 `offline-resources` job，分别下载 arm64/x64 的固定
 自检程序是开发用二进制，默认不参与应用打包；手动运行
 `cargo run --bin deveco-selftest` 时需要加 `--features selftest`。
 
+### CodeQL 与依赖审查
+
+- `.github/workflows/codeql.yml`：Rust、JavaScript/TypeScript 和 GitHub Actions 三条
+  分析任务，在 push、PR、每周计划和手动触发时运行。
+- `.github/workflows/dependency-review.yml`：PR 中检查依赖变更，高危漏洞会失败；
+  依赖图未启用时该检查会报错，仓库设置中必须保持 Dependency graph 开启。
+- `.github/dependabot.yml`：根 npm、`ui/` npm、`src-tauri` Cargo 和 GitHub Actions
+  每周更新；minor/patch 分组，major 单独提 PR。
+
+`.github/rulesets/main.json` 和 `tags.json` 是仓库 ruleset 的可审查副本。首次创建或重建：
+
+```bash
+gh api --method POST repos/<owner>/<repo>/rulesets --input .github/rulesets/main.json
+gh api --method POST repos/<owner>/<repo>/rulesets --input .github/rulesets/tags.json
+```
+
+`main` 规则要求 PR、CI、CodeQL 和 Dependency Review；`v*` 规则限制更新、删除和
+force push。规则里的 `bypass_actors` 只允许仓库所有者绕过。
+
 ## CD 与 Release
 
 `.github/workflows/release.yml` 在推送 `v*` 标签或手动触发时运行：
