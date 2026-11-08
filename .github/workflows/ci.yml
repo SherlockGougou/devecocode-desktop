@@ -48,10 +48,19 @@ jobs:
       - name: Check automation scripts
         run: |
           node --check scripts/bump-version.mjs
+          node --check scripts/render-homebrew-casks.mjs
           node --check scripts/stage-offline-cli.mjs
           node --check scripts/build-offline.mjs
           node --check scripts/render-release-notes.mjs
           node -e "JSON.parse(require('fs').readFileSync('src-tauri/tauri.offline.conf.json'))"
+          node scripts/render-homebrew-casks.mjs \
+            --version v0.0.0 \
+            --sums scripts/homebrew/SHA256SUMS.fixture \
+            --out-dir "$RUNNER_TEMP/homebrew-casks"
+          ruby -c "$RUNNER_TEMP/homebrew-casks/devecocode-desktop.rb"
+          ruby -c "$RUNNER_TEMP/homebrew-casks/devecocode-desktop-offline.rb"
+          brew style "$RUNNER_TEMP/homebrew-casks/devecocode-desktop.rb" \
+            "$RUNNER_TEMP/homebrew-casks/devecocode-desktop-offline.rb"
 
       - name: Check formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check

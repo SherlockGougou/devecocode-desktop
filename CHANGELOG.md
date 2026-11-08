@@ -5,7 +5,12 @@
 
 ## Unreleased
 
-- 无。
+- 新增完整英文 README，中文仍为默认入口，并在两份 README 顶部互相切换。
+- Dependabot 的 patch/minor 更新在 7 项必需检查通过后自动 squash 合并；major 继续人工处理。
+- 新增独立 Homebrew tap `SherlockGougou/homebrew-tap`，提供普通版与 Offline 版 cask，
+  按 arm64/x64 校验 DMG。
+- Release 成功后自动更新 tap cask；更新失败可用同一 tag 手动重跑。
+- 新增 Homebrew Cask 渲染脚本、cask 模板和 tap CI。
 
 ## 0.2.2 - 2026-11-08
 

@@ -45,7 +45,7 @@
         <h1>把它放进 Applications，<br />然后开始工作。</h1>
         <p class="hero-lead">
           这页覆盖从下载到第一次对话的完整流程，也说明未签名构建在 macOS 上会遇到什么。
-          只从本项目 Releases 下载安装包。
+          只从本项目 Releases 或 Homebrew tap 安装。
         </p>
       </div>
 
@@ -76,6 +76,25 @@
               每个 Release 附带 <code>SHA256SUMS.txt</code> 和 GitHub artifact attestation；
               校验命令见仓库的 <code>docs/installation.md</code>。attestation 只证明构建来源，
               不能替代 Apple 公证。
+            </p>
+          </section>
+
+          <section id="homebrew">
+            <h2>Homebrew</h2>
+            <p>
+              已安装 Homebrew 的用户可以通过独立 tap 安装。两个 cask 会按 Apple Silicon /
+              Intel 选择对应 DMG，并用 Release 的 <code>SHA256SUMS.txt</code> 校验：
+            </p>
+            <pre><code>brew trust sherlockgougou/tap
+brew install --cask sherlockgougou/tap/devecocode-desktop
+# Offline 版，内置固定版本 CLI
+brew install --cask sherlockgougou/tap/devecocode-desktop-offline</code></pre>
+            <p>
+              Homebrew 7 起第三方 tap 需要先执行 <code>brew trust sherlockgougou/tap</code>；
+              这只信任该 tap，不会关闭 macOS 的签名或隔离检查。
+              cask 仍保留 ad-hoc 签名和未公证提示，不会自动绕过 Gatekeeper；首次打开
+              仍需要右键“打开”或到“系统设置 → 隐私与安全性”放行。tap 源在
+              <a href="https://github.com/SherlockGougou/homebrew-tap" target="_blank" rel="noreferrer">SherlockGougou/homebrew-tap</a>。
             </p>
           </section>
 

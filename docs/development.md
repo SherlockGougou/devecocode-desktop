@@ -229,6 +229,11 @@ npm run release:prepare -- 0.2.2
 Release 正文读取 `docs/releases/vX.Y.Z.md`，必须同时包含中英文段落。新增版本时先创建对应
 文件，再推送 `vX.Y.Z` 标签；发布流程先在 draft 中更新正文，最后由 `publish` job 发布。
 
+Release 成功后，`update-homebrew.yml` 会用 `HOMEBREW_TAP_TOKEN` 把两个 cask 更新到
+`SherlockGougou/homebrew-tap`；失败时用 `workflow_dispatch` 输入同一个 tag 重跑。可以用
+`npm run homebrew:render -- --version v0.2.2 --sums SHA256SUMS.txt --out-dir /tmp/casks`
+在本地预览生成结果，再运行 `brew style`。
+
 官网由 `.github/workflows/pages.yml` 部署到 GitHub Pages；本地预览方式见
 [website/README.md](../website/README.md)。
 

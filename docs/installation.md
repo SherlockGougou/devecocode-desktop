@@ -91,6 +91,30 @@ xattr -dr com.apple.quarantine "/Applications/DevEco Code Offline.app"
 这会绕过 Gatekeeper 的隔离检查，只应对你自己信任、且来源明确的安装包使用；不要用它运行
 来源不明的软件。应用没有 Apple 可验证的签名和公证，系统不会替你验证发布者。
 
+## Homebrew
+
+如果已经安装 Homebrew，可以通过独立 tap 安装，普通版和 Offline 版各有一个 cask：
+
+```bash
+brew trust sherlockgougou/tap
+brew install --cask sherlockgougou/tap/devecocode-desktop
+# Offline 版，内置固定版本 CLI
+brew install --cask sherlockgougou/tap/devecocode-desktop-offline
+```
+
+Homebrew 7 起，第三方 tap 需要先执行 `brew trust sherlockgougou/tap` 才会加载 cask；
+这只信任该 tap，不会关闭 macOS 的签名或隔离检查。
+
+两个 cask 都会按 Apple Silicon / Intel 选择对应 DMG，并用 Release 中
+`SHA256SUMS.txt` 的 SHA-256 校验下载文件。cask 明确保留 ad-hoc 签名和未公证提示，
+不会自动绕过 Gatekeeper；首次打开仍需按上一节操作。
+
+tap 源在 <https://github.com/SherlockGougou/homebrew-tap>。查看安装信息：
+
+```bash
+brew info --cask sherlockgougou/tap/devecocode-desktop
+```
+
 ## 首次配置
 
 ### 连接 CLI
@@ -136,10 +160,12 @@ xattr -dr com.apple.quarantine "/Applications/DevEco Code Offline.app"
 
 ## 更新
 
-当前没有自动更新。更新步骤：
+当前没有应用内自动更新。更新步骤：
 
 1. 退出旧版本（托盘菜单“退出”，不要只关闭窗口）；
-2. 下载新的 DMG 并拖入“应用程序”，覆盖旧应用；
+2. 如果通过 Homebrew 安装，执行 `brew upgrade --cask devecocode-desktop` 或
+   `brew upgrade --cask devecocode-desktop-offline`；否则下载新的 DMG 并拖入
+   “应用程序”，覆盖旧应用；
 3. 重新打开应用。配置和会话数据通常会保留。
 
 CLI 升级与应用更新相互独立；升级 CLI 后重启应用即可重新连接。
@@ -147,13 +173,18 @@ CLI 升级与应用更新相互独立；升级 CLI 后重启应用即可重新�
 ## 卸载
 
 1. 从托盘菜单完全退出应用；
-2. 从“应用程序”删除 `DevEco Code.app`；
-3. 如确认不再需要本地配置和日志，可手动删除：
+2. 如果通过 Homebrew 安装，执行 `brew uninstall --cask devecocode-desktop` 或
+   `brew uninstall --cask devecocode-desktop-offline`；否则从“应用程序”删除
+   `DevEco Code.app`；
+3. 如确认不再需要本地配置和日志，Homebrew 用户可以追加 `--zap`，或手动删除：
 
 ```bash
 rm -rf "$HOME/Library/Application Support/DevEco Code Desktop"
 rm -rf "$HOME/Library/Logs/DevEco Code Desktop"
 ```
+
+`--zap` 还会清理 WebKit、缓存和偏好；普通版与 Offline 版共用桌面端配置目录，
+因此对任一 cask 执行 `--zap` 都会删除这份共享配置。
 
 不要为了卸载桌面端删除 `~/.local/share/deveco/`，除非你明确要同时清除 CLI 会话数据。
 

@@ -15,6 +15,8 @@
 - [x] RustSec `cargo audit`（依赖变更、每周和手动触发）；
 - [x] 发布就绪检查 workflow：版本一致性、双语 notes 与占位符；
 - [x] PR 路径标签 workflow，以及 `frontend`/`rust`/`docs`/`ci` 标签；
+- [x] Dependabot patch/minor auto-merge workflow（major 保持人工）；
+- [x] 独立的 [Homebrew tap](https://github.com/SherlockGougou/homebrew-tap) 和 cask 更新 workflow；
 - [x] `npm run release:prepare -- X.Y.Z` 同步四处版本号；
 - [x] `main` 与 `v*` ruleset 的可审查 JSON（`.github/rulesets/`）；
 - [x] tag 触发的 CD：arm64/x86_64 构建、GitHub Release 与 workflow artifacts；
@@ -71,6 +73,10 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
 - 保持 Dependency graph 开启；Dependency Review 依赖它，关闭后 PR 检查会直接失败。
 - 保持 Dependabot alerts、security updates、CodeQL 和 Dependency Review 的默认分支
   保护检查启用。
+- 启用仓库 **Allow auto-merge**；Dependabot 的 patch/minor PR 会在 7 项必需检查通过后
+  squash 合并，major 仍需人工处理。
+- 为 tap 自动更新创建 `HOMEBREW_TAP_TOKEN`：fine-grained PAT，只授权
+  `SherlockGougou/homebrew-tap` 的 `Contents: Read and write`。
 - 为 `main` 配置分支保护：要求 CI 通过、禁止 force push、合并后删除分支。
 - `main` ruleset 需要 `Frontend and Rust checks`、两个 `Offline resources ...`、
   `Dependency Review` 和三个 `Analyze (...)` 检查；`v*` ruleset 限制标签更新、删除和
@@ -99,6 +105,8 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
 - Release notes 附已知限制和安装说明；不要附带未脱敏截图。发布 workflow 会生成
   `SHA256SUMS.txt` 并上传到 Release，同时为资产生成 build provenance attestation；
   不要再描述成“未提供校验和”。
+- 发布成功后确认 `update-homebrew.yml` 已更新 tap 的两个 cask；失败时用
+  `workflow_dispatch` 输入同一 tag 重跑，不要重建 Release。
 
 ## 下载校验
 
@@ -109,6 +117,10 @@ shasum -a 256 -c SHA256SUMS.txt
 grep 'DevEco.Code_.*aarch64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
 gh release verify v0.2.2 -R SherlockGougou/devecocode-desktop
 gh attestation verify "DevEco.Code_0.2.2_aarch64.dmg" -R SherlockGougou/devecocode-desktop
+brew trust sherlockgougou/tap
+brew info --cask sherlockgougou/tap/devecocode-desktop
+brew fetch --cask sherlockgougou/tap/devecocode-desktop
+brew fetch --cask sherlockgougou/tap/devecocode-desktop-offline
 ```
 
 只下载单个 DMG 时，用 `grep` 过滤对应文件名。`gh` 命令需要 GitHub CLI 已登录。
