@@ -14,7 +14,7 @@
 | `release-check.yml` | 手动 | 校验版本一致性、双语 Release notes 和占位符，上传 notes 预览 | v0.2.2 运行通过 |
 | `labeler.yml` | pull request | 按改动路径添加 `frontend`、`rust`、`docs`、`ci` 标签 | PR #15 自动添加 `ci` |
 | `dependabot-automerge.yml` | Dependabot pull request | patch/minor 在 7 项必需检查通过后启用 squash auto-merge；major 和未知类型跳过 | 待下一次 Dependabot PR 验证 |
-| `update-homebrew.yml` | Release 成功、手动 | 从已发布 Release 读取 `SHA256SUMS.txt`，更新独立 tap 的两个 cask | tap 已初始化 v0.2.2；自动更新待 PAT 配置后验证 |
+| `update-homebrew.yml` | Release 成功、手动 | 从已发布 Release 读取 `SHA256SUMS.txt`，更新独立 tap 的两个 cask | v0.2.2 手动验证通过；run `42492068139` 推送了 tap commit `7493e76` |
 | `release.yml` | push `v*` 标签、手动 | 构建 arm64/x64 普通版与 Offline 版，生成校验和、attestation、双语正文，draft-first 发布 | v0.2.1、v0.2.2 通过；v0.2.2 run `42483989177` |
 | `pages.yml` | `website/**` 变更、手动 | 校验静态官网并部署到 GitHub Pages | 提交 `31f9675` 通过 |
 
@@ -66,8 +66,9 @@ gh workflow run update-homebrew.yml \
 ```
 
 - tap 仓库 CI 会运行 `brew audit --cask --strict --online` 和 `brew style`；发布后还应在
-  本机执行 `brew fetch --cask` 验证下载和 SHA。
-- 当前 v0.2.2 cask 已通过 tap CI（run `42488236055`），并在本机用 `brew fetch` 验证了
+  本机执行 `brew fetch --cask` 验证下载和 SHA。audit 使用 `GITHUB_TOKEN` 提高 GitHub API
+  限额，避免共享 runner 触发未认证限流。
+- 当前 v0.2.2 cask 已通过 tap CI（run `42492319538`），并在本机用 `brew fetch` 验证了
   arm64 和 Intel 两种 DMG 的下载与 SHA-256。
 
 ## 发布操作
