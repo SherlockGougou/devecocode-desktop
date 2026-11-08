@@ -206,7 +206,7 @@ jobs:
           subject-path: .artifacts/*
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: offline-${{ matrix.target }}
           path: .artifacts/*
@@ -274,7 +274,7 @@ jobs:
             --clobber
 
       - name: Upload checksums artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-checksums
           path: SHA256SUMS.txt
