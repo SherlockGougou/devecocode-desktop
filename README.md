@@ -9,6 +9,7 @@ HarmonyOS 定制分支）的 HTTP + SSE 契约，提供自研三栏界面、系�
 
 > 早期开发中，当前只验证 macOS。普通版需要自行安装并登录 CLI；Offline 版内置固定版本 CLI。
 
+[GitHub 仓库](https://github.com/SherlockGougou/devecocode-desktop) ·
 [安装与使用](docs/installation.md) · [功能说明](docs/features.md) · [架构说明](docs/architecture.md) ·
 [开发指南](docs/development.md) · [已知限制](docs/limitations.md) ·
 [开源发布检查](docs/release.md) · [更新记录](CHANGELOG.md) ·
@@ -142,7 +143,8 @@ website/     静态官网与 GitHub Pages 部署内容
 
 后端启动链路、进程组回收、事件契约和目录职责见[架构说明](docs/architecture.md)。
 
-从 GitHub Releases 下载安装的步骤见[macOS 安装与使用](docs/installation.md)。
+从 [GitHub Releases](https://github.com/SherlockGougou/devecocode-desktop/releases)
+下载安装的步骤见[macOS 安装与使用](docs/installation.md)。
 
 ## 数据与隐私
 

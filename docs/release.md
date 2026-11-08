@@ -50,7 +50,7 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
 - 在 **Settings → Releases** 启用 **Enable release immutability**。该设置只对启用后的新
   Release 生效；发布流程必须保持 draft-first，先附上全部资产，再 publish。
   也可以用有 admin 权限的 GitHub CLI 执行
-  `gh api --method PUT repos/<owner>/<repo>/immutable-releases`。
+  `gh api --method PUT repos/SherlockGougou/devecocode-desktop/immutable-releases`。
   启用后 GitHub 会为新 Release 自动生成 release attestation，`gh release verify` 依赖它。
   工作流不会自动修改这项仓库设置，需要发布者启用一次。
 - `publish` job 会在发布后检查 Release 的 `isImmutable`；如果仍为 `false`，Actions 会输出
@@ -89,8 +89,8 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
 grep 'DevEco.Code_.*aarch64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
-gh release verify v0.2.1 -R <owner>/<repo>
-gh attestation verify "DevEco.Code_0.2.1_aarch64.dmg" -R <owner>/<repo>
+gh release verify v0.2.1 -R SherlockGougou/devecocode-desktop
+gh attestation verify "DevEco.Code_0.2.1_aarch64.dmg" -R SherlockGougou/devecocode-desktop
 ```
 
 只下载单个 DMG 时，用 `grep` 过滤对应文件名。`gh` 命令需要 GitHub CLI 已登录。

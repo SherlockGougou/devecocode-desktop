@@ -25,8 +25,9 @@ deveco --version
 
 ## 下载
 
-在项目的 **Releases** 页面下载与你的 Mac 架构对应的 DMG。如果不想另装 CLI，选择文件名以
-`DevEco Code Offline` 开头的 Offline 版：
+在项目的 [Releases](https://github.com/SherlockGougou/devecocode-desktop/releases)
+页面下载与你的 Mac 架构对应的 DMG。如果不想另装 CLI，选择文件名以 `DevEco Code Offline`
+开头的 Offline 版：
 
 - Apple Silicon（M1/M2/M3/M4）：选择文件名带 `aarch64` 或 `arm64` 的 DMG；
 - Intel：选择文件名带 `x64` 或 `x86_64` 的 DMG。
@@ -52,12 +53,12 @@ Offline 版把模式换成 `DevEco.Code.Offline_.*aarch64.dmg$`。使用 GitHub 
 仓库启用 immutable release 后，还可以验证整个发布：
 
 ```bash
-gh attestation verify "DevEco.Code_0.2.1_aarch64.dmg" -R <owner>/<repo>
-gh release verify v0.2.1 -R <owner>/<repo>
+gh attestation verify "DevEco.Code_0.2.1_aarch64.dmg" -R SherlockGougou/devecocode-desktop
+gh release verify v0.2.1 -R SherlockGougou/devecocode-desktop
 ```
 
-把 `<owner>/<repo>` 换成项目仓库地址。attestation 只证明资产来自该仓库的构建工作流，
-不能替代 Apple Developer ID 签名或公证；首次打开仍可能需要按下一节放行。
+attestation 只证明资产来自该仓库的构建工作流，不能替代 Apple Developer ID 签名或公证；
+首次打开仍可能需要按下一节放行。
 
 ## 安装
 

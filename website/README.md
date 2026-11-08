@@ -36,7 +36,7 @@ npx --yes html-validate@9 --config website/.htmlvalidate.json website/index.html
 项目站点地址通常为：
 
 ```text
-https://<owner>.github.io/<repo>/
+https://sherlockgougou.github.io/devecocode-desktop/
 ```
 
 站点使用相对路径，因此项目 Pages 的二级路径可以直接工作。
@@ -47,7 +47,7 @@ https://<owner>.github.io/<repo>/
 `REPO_URL` 改成实际的仓库地址，例如：
 
 ```js
-const REPO_URL = "https://github.com/example/deveco-code-desktop";
+const REPO_URL = "https://github.com/SherlockGougou/devecocode-desktop";
 ```
 
 并在 Pages 设置中配置自定义域名和 DNS；需要时同时在 `website/` 添加 `CNAME`。
