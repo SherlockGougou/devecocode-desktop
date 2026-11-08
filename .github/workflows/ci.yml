@@ -45,8 +45,9 @@ jobs:
       - name: Check version consistency
         run: npm run check:version
 
-      - name: Check offline build scripts
+      - name: Check automation scripts
         run: |
+          node --check scripts/bump-version.mjs
           node --check scripts/stage-offline-cli.mjs
           node --check scripts/build-offline.mjs
           node --check scripts/render-release-notes.mjs

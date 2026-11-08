@@ -5,7 +5,22 @@
 
 ## Unreleased
 
-- 增加 Dependabot 周更、CodeQL、Dependency Review 和 `main`/`v*` ruleset。
+- 无。
+
+## 0.2.2 - 2026-11-08
+
+- 升级 Tauri 与 Rust 依赖：`tauri-plugin-dialog 2.8.4`、`dirs 7`、
+  `tokio-tungstenite 0.30`、`jsonc-parser 0.34`。
+- 升级 TypeScript `7.0.2`、Vite `8.3.6`、`@vitejs/plugin-react 6.2.1` 和 GitHub Actions
+  主版本。
+- 修复 `tokio-tungstenite` 文本消息类型、`jsonc-parser` feature、Node 20 Vite 配置加载、
+  `.artifacts` 隐藏目录上传和已退役 `macos-14` runner 的兼容问题。
+- 增加 Dependabot 周更、CodeQL、Dependency Review、RustSec `cargo audit`、
+  Release readiness 和 PR 路径标签工作流。
+- 配置 `main`/`v*` ruleset 和 Release immutability。
+- README、官网和安装页改用真实应用截图，新增界面截图区块和截图素材维护约定。
+
+完整说明：[v0.2.2](docs/releases/v0.2.2.md)
 
 ## 0.2.1 - 2026-11-08
 

@@ -1,0 +1,52 @@
+name: Release readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "准备发布的标签，例如 v0.2.2"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-check-${{ github.event.inputs.tag }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify version and release notes
+        run: |
+          node scripts/check-release-version.mjs "$RELEASE_TAG"
+          node scripts/render-release-notes.mjs "$RELEASE_TAG" .release-notes.md
+          test -s .release-notes.md
+          if grep -q "{{" .release-notes.md; then
+            echo "Release notes 仍包含占位符"
+            exit 1
+          fi
+
+      - name: Upload notes preview
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-notes-preview
+          path: .release-notes.md
+          if-no-files-found: error

@@ -213,7 +213,16 @@ force push。规则里的 `bypass_actors` 只允许仓库所有者绕过。
 构建使用 ad-hoc 签名；用户需要按[macOS 安装与使用](installation.md)首次放行。若未来改变
 分发策略，应在 release workflow 中单独加入签名、公证和密钥管理，不要把凭据放进仓库。
 
-手动发布时，在 Actions 中选择 `Release`，填写与项目版本一致的 tag（例如 `v0.2.1`）。
+准备新版本时，先用脚本同步四处版本号：
+
+```bash
+npm run release:prepare -- 0.2.2
+```
+
+然后编写 `docs/releases/v0.2.2.md`、更新 CHANGELOG 和官网页脚。推送前在 Actions 中手动
+运行 `Release readiness`，输入 `v0.2.2`；它会校验版本一致性、双语正文和占位符。
+
+手动发布时，在 Actions 中选择 `Release`，填写与项目版本一致的 tag（例如 `v0.2.2`）。
 同一 workflow 的 `offline` job 还会构建包含固定 CLI 的离线版；其资源准备、体积和验收见
 [离线版打包](offline-packaging.md)。
 

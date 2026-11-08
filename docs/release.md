@@ -12,12 +12,18 @@
 - [x] CI 额外校验 arm64/x64 离线 CLI 资源生成；
 - [x] Dependabot 周更配置（根 npm、UI npm、Cargo、GitHub Actions）和安全更新；
 - [x] CodeQL（Rust、JavaScript/TypeScript、GitHub Actions）与 Dependency Review；
+- [x] RustSec `cargo audit`（依赖变更、每周和手动触发）；
+- [x] 发布就绪检查 workflow：版本一致性、双语 notes 与占位符；
+- [x] PR 路径标签 workflow，以及 `frontend`/`rust`/`docs`/`ci` 标签；
+- [x] `npm run release:prepare -- X.Y.Z` 同步四处版本号；
 - [x] `main` 与 `v*` ruleset 的可审查 JSON（`.github/rulesets/`）；
 - [x] tag 触发的 CD：arm64/x86_64 构建、GitHub Release 与 workflow artifacts；
 - [x] 含内置 CLI 的 Offline 构建任务，固定 CLI 版本并随 Release 发布；
 - [x] Release 使用 draft-first：普通版、Offline 版、双语 notes 和 SHA256SUMS 全部完成后才发布；
 - [x] 发布资产生成 `SHA256SUMS.txt`，并通过 `actions/attest` 生成 build provenance；
 - [x] 静态官网与 GitHub Pages 部署 workflow；
+- [x] README、官网和安装页使用真实应用截图，素材维护约定见
+  [截图素材](assets/screenshots/README.md)；
 - [x] 面向普通用户的 [macOS 安装与使用](installation.md)；
 - [x] 历史提交已清理本机用户目录与私有工作区名；实现记录中的 `.agent-temp/`
   截图路径只是本地证据，公开仓库不包含这些文件。
@@ -84,9 +90,12 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
 - `publish` job 会校验 4 个 DMG、2 个 Offline `.app.zip`、`SHA256SUMS.txt` 和双语正文，
   全部存在后才把 draft 发布。
 - 确认版本号在 `package.json`、`ui/package.json`、`src-tauri/Cargo.toml` 和
-  `src-tauri/tauri.conf.json` 中一致，可运行 `npm run check:version`。
+  `src-tauri/tauri.conf.json` 中一致，可运行 `npm run check:version`。升级版本时优先用
+  `npm run release:prepare -- X.Y.Z`，脚本会先检查四处版本是否一致。
 - 每个版本维护 `docs/releases/vX.Y.Z.md`，必须同时包含 `## 中文` 和 `## English`；
   Release workflow 会在 draft 中更新正文，最后统一 publish。不要只写自动生成的历史提交摘要。
+- 打标签前手动运行 `Release readiness` workflow（输入 `vX.Y.Z`），它会再次校验版本、
+  双语 notes 和占位符；失败时不要继续发布。
 - Release notes 附已知限制和安装说明；不要附带未脱敏截图。发布 workflow 会生成
   `SHA256SUMS.txt` 并上传到 Release，同时为资产生成 build provenance attestation；
   不要再描述成“未提供校验和”。
@@ -98,8 +107,8 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
 grep 'DevEco.Code_.*aarch64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
-gh release verify v0.2.1 -R SherlockGougou/devecocode-desktop
-gh attestation verify "DevEco.Code_0.2.1_aarch64.dmg" -R SherlockGougou/devecocode-desktop
+gh release verify v0.2.2 -R SherlockGougou/devecocode-desktop
+gh attestation verify "DevEco.Code_0.2.2_aarch64.dmg" -R SherlockGougou/devecocode-desktop
 ```
 
 只下载单个 DMG 时，用 `grep` 过滤对应文件名。`gh` 命令需要 GitHub CLI 已登录。
