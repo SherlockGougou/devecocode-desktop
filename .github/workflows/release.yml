@@ -210,6 +210,7 @@ jobs:
         with:
           name: offline-${{ matrix.target }}
           path: .artifacts/*
+          include-hidden-files: true
           if-no-files-found: error
 
       - name: Upload offline assets to GitHub Release

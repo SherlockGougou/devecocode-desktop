@@ -45,14 +45,14 @@ shasum -a 256 -c SHA256SUMS.txt
 如果只下载了一个 DMG，可以按文件名过滤：
 
 ```bash
-grep 'DevEco Code_.*aarch64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
+grep 'DevEco.Code_.*aarch64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
 ```
 
-Offline 版把模式换成 `DevEco Code Offline_.*aarch64.dmg$`。使用 GitHub CLI 可以验证构建来源；
+Offline 版把模式换成 `DevEco.Code.Offline_.*aarch64.dmg$`。使用 GitHub CLI 可以验证构建来源；
 仓库启用 immutable release 后，还可以验证整个发布：
 
 ```bash
-gh attestation verify "DevEco Code_0.2.1_aarch64.dmg" -R <owner>/<repo>
+gh attestation verify "DevEco.Code_0.2.1_aarch64.dmg" -R <owner>/<repo>
 gh release verify v0.2.1 -R <owner>/<repo>
 ```
 

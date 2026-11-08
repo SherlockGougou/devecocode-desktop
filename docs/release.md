@@ -88,9 +88,9 @@ git grep -n -I -e 'PRIVATE KEY' -e 'api_key' -e 'ghp_' $(git rev-list --all) -- 
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
-grep 'DevEco Code_.*aarch64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
+grep 'DevEco.Code_.*aarch64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
 gh release verify v0.2.1 -R <owner>/<repo>
-gh attestation verify "DevEco Code_0.2.1_aarch64.dmg" -R <owner>/<repo>
+gh attestation verify "DevEco.Code_0.2.1_aarch64.dmg" -R <owner>/<repo>
 ```
 
 只下载单个 DMG 时，用 `grep` 过滤对应文件名。`gh` 命令需要 GitHub CLI 已登录。
