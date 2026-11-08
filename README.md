@@ -2,6 +2,14 @@
 
 <img src="ui/src/assets/app-icon.png" width="96" height="96" alt="DevEco Code Desktop 图标">
 
+<p>
+  <a href="https://github.com/SherlockGougou/devecocode-desktop/actions/workflows/ci.yml"><img src="https://github.com/SherlockGougou/devecocode-desktop/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/SherlockGougou/devecocode-desktop/actions/workflows/codeql.yml"><img src="https://github.com/SherlockGougou/devecocode-desktop/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="https://github.com/SherlockGougou/devecocode-desktop/actions/workflows/release.yml"><img src="https://github.com/SherlockGougou/devecocode-desktop/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="https://github.com/SherlockGougou/devecocode-desktop/releases"><img src="https://img.shields.io/github/v/release/SherlockGougou/devecocode-desktop?label=release" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+</p>
+
 面向 macOS 的 DevEco Code 桌面客户端。它驱动本机
 [DevEco Code CLI](https://www.npmjs.com/package/@deveco/deveco-code)（opencode 的
 HarmonyOS 定制分支）的 HTTP + SSE 契约，提供自研三栏界面、系统通知、工作区/会话管理、
