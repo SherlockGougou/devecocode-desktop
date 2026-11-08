@@ -1,6 +1,6 @@
 {
   "name": "deveco-code-desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "DevEco Code 的 macOS 桌面客户端：驱动本机 deveco CLI，提供自研三栏界面与系统集成",
   "license": "MIT",

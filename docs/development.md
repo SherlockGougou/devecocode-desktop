@@ -180,7 +180,7 @@ CI 还会并行运行 `offline-resources` job，分别下载 arm64/x64 的固定
 构建使用 ad-hoc 签名；用户需要按[macOS 安装与使用](installation.md)首次放行。若未来改变
 分发策略，应在 release workflow 中单独加入签名、公证和密钥管理，不要把凭据放进仓库。
 
-手动发布时，在 Actions 中选择 `Release`，填写与项目版本一致的 tag（例如 `v0.2.0`）。
+手动发布时，在 Actions 中选择 `Release`，填写与项目版本一致的 tag（例如 `v0.2.1`）。
 同一 workflow 的 `offline` job 还会构建包含固定 CLI 的离线版；其资源准备、体积和验收见
 [离线版打包](offline-packaging.md)。
 

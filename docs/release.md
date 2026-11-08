@@ -14,7 +14,8 @@
 - [x] 含内置 CLI 的 Offline 构建任务，固定 CLI 版本并随 Release 发布；
 - [x] 静态官网与 GitHub Pages 部署 workflow；
 - [x] 面向普通用户的 [macOS 安装与使用](installation.md)；
-- [x] 历史实现记录归档，并脱敏个人路径和私有项目名。
+- [x] 历史提交已清理本机用户目录与私有工作区名；实现记录中的 `.agent-temp/`
+  截图路径只是本地证据，公开仓库不包含这些文件。
 
 ## 公开前必须人工确认
 
