@@ -3,6 +3,19 @@
 版本说明按发布标签维护在 [`docs/releases/`](docs/releases/README.md)。Release workflow
 会读取对应版本的 Markdown 文件，生成 GitHub Release 正文。
 
+## 0.2.5 - 2026-11-09
+
+- 消息支持内嵌本地 Markdown 图片和工具返回图片，新增缩放/拖动/多图切换查看器，
+  以及复制图片、图片另存为和失败占位。
+- Composer 新增“跟随 Agent / 每次询问 / 完全访问”会话级权限选择；规则只写入当前会话，
+  保留 Agent 的通配 deny、兜底 deny 和具体命令/路径限制。
+- 权限 PATCH 失败或已被新请求取代时取消发送；切换 Agent 同步失败时恢复原 Agent。
+- 增加轮次导航、“最新消息”按钮、同分钟助手步骤聚合、图标化消息操作和空闲会话待办中断态。
+- 图片读取增加 32MB 上限、远程流式限制、URL 编码路径解析和解码失败占位。
+- 新增前端纯逻辑测试、Rust 图片边界测试和会话权限 PATCH 追加契约自检。
+
+完整说明：[v0.2.5](docs/releases/v0.2.5.md)
+
 ## 0.2.4 - 2026-11-09
 
 - 修复普通版从 Finder / LaunchServices 启动时找不到 Node，导致 `deveco serve` 立即退出、
