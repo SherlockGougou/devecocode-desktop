@@ -2434,5 +2434,6 @@ deveco serve 启动后立即退出，输出：（无输出）”，自动重试�
 - 已安装的 GitHub 0.2.3 仍包含旧逻辑，需要重新打包 / 发版后才会修复；
   本次未改 `/Applications` 中的安装包。
 - 非 Homebrew 的自定义 Node 前缀未单独构造；nvm / fnm / volta / bun 通过目录补全覆盖。
-- 2026-11-09 后续：修复已随 v0.2.4 发布；发布后 GitHub Releases 只保留 v0.2.4，
-  旧版本下架。
+- 2026-11-09 后续：修复已随 v0.2.4 发布（Release run `42545665753`，17 个资产，
+  immutable；Homebrew tap 更新 run `42546983059`，tap commit `2ffbc3a`）；发布后
+  GitHub Releases 只保留 v0.2.4，v0.2.1 / v0.2.2 / v0.2.3 已下架，旧资产 URL 返回 404。

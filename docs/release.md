@@ -144,6 +144,9 @@ Gatekeeper 提示仍可能发生。
 
 ## 发布后
 
+- 只保留当前版本 Release；发布成功并校验资产后，用
+  `gh release delete <tag> --yes` 下架旧 Release，避免用户继续下载到受影响版本。
+  保留 tag 供历史引用即可，旧资产 URL 会返回 404。
 - 为安全问题保留私密报告入口，不在公开 issue 中讨论细节。
 - 启用 immutable release 后，已发布资产的哈希和 tag 不能再修改；发现问题应发布新版本，
   不要尝试覆盖旧 Release。

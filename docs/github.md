@@ -11,12 +11,12 @@
 | `codeql.yml` | push、pull request、每周、手动 | CodeQL 扫描 Rust、JavaScript/TypeScript 和 GitHub Actions | PR #14 全部通过 |
 | `dependency-review.yml` | pull request | 依赖变更审查，阻断 high 漏洞 | PR #14、#15 通过 |
 | `security.yml` | Cargo 依赖变更、每周、手动 | RustSec `cargo audit`；`glib` 的 Linux-only 例外在 workflow 中注明 | PR #14 通过 |
-| `release-check.yml` | 手动 | 校验版本一致性、双语 Release notes 和占位符，上传 notes 预览 | v0.2.2 运行通过 |
+| `release-check.yml` | 手动 | 校验版本一致性、双语 Release notes 和占位符，上传 notes 预览 | v0.2.4 运行通过（run `42545627940`） |
 | `labeler.yml` | pull request | 按改动路径添加 `frontend`、`rust`、`docs`、`ci` 标签 | PR #15 自动添加 `ci` |
 | `dependabot-automerge.yml` | Dependabot pull request | patch/minor 在 7 项必需检查通过后启用 squash auto-merge；major 和未知类型跳过 | 待下一次 Dependabot PR 验证 |
-| `update-homebrew.yml` | Release 成功、手动 | 从已发布 Release 读取 `SHA256SUMS.txt`，更新独立 tap 的两个 cask | v0.2.2 手动验证通过；run `42492068139` 推送了 tap commit `7493e76` |
-| `release.yml` | push `v*` 标签、手动 | 构建 arm64/x64 普通版与 Offline 版，生成更新包与签名、两套 updater 清单、校验和、attestation、双语正文，draft-first 发布 | v0.2.1、v0.2.2 通过；v0.2.2 run `42483989177` |
-| `pages.yml` | `website/**` 变更、手动 | 校验静态官网并部署到 GitHub Pages | 提交 `31f9675` 通过 |
+| `update-homebrew.yml` | Release 成功、手动 | 从已发布 Release 读取 `SHA256SUMS.txt`，更新独立 tap 的两个 cask | v0.2.4 自动验证通过；run `42546983059` 推送了 tap commit `2ffbc3a` |
+| `release.yml` | push `v*` 标签、手动 | 构建 arm64/x64 普通版与 Offline 版，生成更新包与签名、两套 updater 清单、校验和、attestation、双语正文，draft-first 发布 | v0.2.4 通过；run `42545665753`，17 个资产，Release immutable |
+| `pages.yml` | `website/**` 变更、手动 | 校验静态官网并部署到 GitHub Pages | v0.2.4 站脚更新 run `42545617290` 通过 |
 
 ## 仓库设置
 
@@ -88,6 +88,11 @@ git push origin v0.2.4
 `latest-offline.json`、双语正文、publish 和 immutable 检查都应成功。
 Release 成功后 `update-homebrew.yml` 会自动更新 tap；如果只看 Release 成功而 tap 失败，
 按上面的 `workflow_dispatch` 重跑，不要重新打标签或重建 Release。
+
+发布完成后只保留当前版本 Release：旧 Release 用
+`gh release delete <tag> --repo SherlockGougou/devecocode-desktop --yes` 下架。保留
+`v*` tag 供历史引用，但旧 DMG、更新包和校验和不再可下载。v0.2.4 发布后已下架
+v0.2.1、v0.2.2、v0.2.3，旧资产 URL 返回 404。
 
 ## 发布后核验
 
