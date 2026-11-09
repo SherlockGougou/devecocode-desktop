@@ -27,6 +27,8 @@ export interface Session {
   tokens?: Tokens;
   time?: { created: number; updated: number; archived?: number };
   summary?: { additions: number; deletions: number; files: number };
+  /** 会话级权限覆盖；不设置时继承 Agent / 全局配置 */
+  permission?: PermissionRule[];
   /** CLI 原生回滚状态；下一次 prompt 的 cleanup 会删除边界后的消息并清空 */
   revert?: { messageID: string; partID?: string; snapshot?: string; diff?: string };
 }
@@ -58,8 +60,18 @@ export interface ToolState {
   output?: unknown;
   title?: string;
   metadata?: Record<string, unknown>;
+  /** 工具结果附带的文件；Read 读图时会在这里返回 data URL 图片 */
+  attachments?: ToolAttachment[];
   time?: { start?: number; end?: number };
   error?: unknown;
+}
+
+export interface ToolAttachment {
+  type?: string;
+  mime?: string;
+  url?: string;
+  filename?: string;
+  [key: string]: unknown;
 }
 
 export interface MessageInfo {
@@ -93,6 +105,18 @@ export interface PermissionRequest {
   metadata?: Record<string, unknown>;
   always?: string[];
 }
+
+export type PermissionAction = "allow" | "ask" | "deny";
+
+/** CLI 的会话权限规则：哪个工具、匹配什么资源、执行什么动作。 */
+export interface PermissionRule {
+  permission: string;
+  pattern: string;
+  action: PermissionAction;
+}
+
+/** 桌面端只暴露两个会话级模式，不提供按工具编辑。 */
+export type PermissionMode = "allow" | "ask";
 
 export interface FileDiff {
   file: string;
@@ -168,6 +192,8 @@ export interface AgentInfo {
   description?: string;
   mode?: "subagent" | "primary" | "all";
   hidden?: boolean;
+  /** CLI 解析后的完整权限规则，含全局配置和内置默认值 */
+  permission?: PermissionRule[];
 }
 
 export interface CommandInfo {

@@ -32,6 +32,9 @@ export type IconName =
   | "stop"
   | "paperclip"
   | "image"
+  | "zoom-in"
+  | "zoom-out"
+  | "maximize"
   | "file"
   | "compose"
   | "workspace"
@@ -39,6 +42,7 @@ export type IconName =
   | "folder-up"
   | "refresh"
   | "alert"
+  | "shield"
   | "spark"
   | "branch"
   | "list"
@@ -155,6 +159,23 @@ const ICONS: Record<IconName, ReactNode> = {
       <path d="m4.4 18.4 5.2-5.2 3.6 3.6 3-3 3.4 3.4" />
     </>
   ),
+  "zoom-in": (
+    <>
+      <circle cx="10.5" cy="10.5" r="6.2" />
+      <path d="m15.2 15.2 4.6 4.6M10.5 7.8v5.4M7.8 10.5h5.4" />
+    </>
+  ),
+  "zoom-out": (
+    <>
+      <circle cx="10.5" cy="10.5" r="6.2" />
+      <path d="m15.2 15.2 4.6 4.6M7.8 10.5h5.4" />
+    </>
+  ),
+  maximize: (
+    <>
+      <path d="M9 4.5H4.5V9M15 4.5h4.5V9M9 19.5H4.5V15M15 19.5h4.5V15" />
+    </>
+  ),
   file: (
     <>
       <path d="M14.2 3.6H7.6a2 2 0 0 0-2 2v12.8a2 2 0 0 0 2 2h8.8a2 2 0 0 0 2-2V8z" />
@@ -194,6 +215,12 @@ const ICONS: Record<IconName, ReactNode> = {
     <>
       <path d="M12 4.2 21 19.8H3z" />
       <path d="M12 10v4.2M12 17h.01" />
+    </>
+  ),
+  shield: (
+    <>
+      <path d="M12 3.6 19 6v5.1c0 4.2-2.8 7.6-7 9.3-4.2-1.7-7-5.1-7-9.3V6z" />
+      <path d="m9.3 12 1.9 1.9 3.5-3.8" />
     </>
   ),
   // 思考过程：不对称的四角星，比灯泡更像“内部推理”而不是提示或灵感

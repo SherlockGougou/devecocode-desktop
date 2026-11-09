@@ -4,9 +4,11 @@
 //! 1. WebView 不直连 `127.0.0.1:<port>`，绕开 CORS 与 ATS；
 //! 2. 连接信息（base_url / 口令）只存在于 Rust 侧，前端拿不到也用不着。
 
-use deveco_desktop::{cli_config, device, http};
+use deveco_desktop::{cli_config, device, http, preview};
+use futures_util::StreamExt;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -604,6 +606,164 @@ pub async fn quick_look_thumbnail(path: String) -> Result<tauri::ipc::Response, 
     .map_err(|err| format!("系统预览任务失败：{err}"))?
     .map_err(|err| format!("{err:#}"))?;
     Ok(tauri::ipc::Response::new(png))
+}
+
+/// 读取 Markdown 或消息附件里的本地图片，原始字节直接回传 WebView。
+#[tauri::command]
+pub async fn read_local_image(
+    base_dir: Option<String>,
+    source: String,
+) -> Result<tauri::ipc::Response, String> {
+    let path = preview::resolve_inline_image(base_dir.as_deref(), &source)
+        .map_err(|err| format!("{err:#}"))?;
+    let bytes = tauri::async_runtime::spawn_blocking(move || preview::read_inline_image(&path))
+        .await
+        .map_err(|err| format!("读取图片任务失败：{err}"))?
+        .map_err(|err| format!("{err:#}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// 读取图片的统一入口：本地路径和 data URL 在阻塞线程里处理，网络图片异步下载。
+async fn load_image_source(
+    base_dir: Option<String>,
+    source: String,
+) -> Result<(Vec<u8>, String), String> {
+    let parsed = preview::parse_image_source(base_dir.as_deref(), &source)
+        .map_err(|err| format!("{err:#}"))?;
+    match parsed {
+        preview::ImageSource::Remote(url) => {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .map_err(|err| format!("创建图片下载客户端失败：{err}"))?;
+            let response = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|err| format!("下载图片失败：{err}"))?;
+            if !response.status().is_success() {
+                return Err(format!("下载图片失败：HTTP {}", response.status()));
+            }
+            let declared_length = response.content_length();
+            if let Some(length) = declared_length {
+                if length > preview::MAX_INLINE_IMAGE_BYTES {
+                    return Err(format!(
+                        "图片过大（{:.1} MB），上限 {} MB",
+                        length as f64 / 1024.0 / 1024.0,
+                        preview::MAX_INLINE_IMAGE_BYTES / 1024 / 1024
+                    ));
+                }
+            }
+            let mime = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let capacity = declared_length
+                .unwrap_or(0)
+                .min(preview::MAX_INLINE_IMAGE_BYTES) as usize;
+            let mut bytes = Vec::with_capacity(capacity);
+            let mut stream = response.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|err| format!("读取图片响应失败：{err}"))?;
+                preview::append_inline_image_chunk(&mut bytes, &chunk)
+                    .map_err(|err| format!("{err:#}"))?;
+            }
+            if bytes.is_empty() {
+                return Err("图片内容为空".into());
+            }
+            let mime = if mime.starts_with("image/") {
+                mime
+            } else {
+                "application/octet-stream".into()
+            };
+            Ok((bytes, mime))
+        }
+        other => tauri::async_runtime::spawn_blocking(move || preview::read_image_source(other))
+            .await
+            .map_err(|err| format!("读取图片任务失败：{err}"))?
+            .map_err(|err| format!("{err:#}")),
+    }
+}
+
+/// 把消息里的图片写入系统剪贴板。
+#[tauri::command]
+pub async fn copy_image(
+    app: tauri::AppHandle,
+    base_dir: Option<String>,
+    source: String,
+) -> Result<(), String> {
+    let (bytes, mime) = load_image_source(base_dir, source).await?;
+    if mime == "image/svg+xml" {
+        return Err("SVG 图片暂不支持复制到剪贴板，请使用「图片另存为…」".into());
+    }
+    if mime == "image/avif" {
+        return Err("AVIF 图片暂不支持复制到剪贴板，请使用「图片另存为…」".into());
+    }
+    let decode_mime = mime.clone();
+    let decoded = tauri::async_runtime::spawn_blocking(move || image::load_from_memory(&bytes))
+        .await
+        .map_err(|err| format!("解码图片任务失败：{err}"))?
+        .map_err(|err| format!("解码图片失败（{decode_mime}）：{err}"))?;
+    let rgba = decoded.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    let clipboard_image = Image::new(rgba.as_raw(), width, height);
+    app.clipboard()
+        .write_image(&clipboard_image)
+        .map_err(|err| format!("写入剪贴板失败：{err}"))?;
+    log::info!("图片已复制到剪贴板（{width}×{height}，{mime}）");
+    Ok(())
+}
+
+fn sanitize_image_name(name: &str) -> String {
+    let leaf = Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("图片.png");
+    let cleaned: String = leaf
+        .chars()
+        .filter(|ch| !matches!(ch, '/' | '\\' | '\0'))
+        .collect();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        "图片.png".into()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// 通过系统保存对话框把消息里的图片另存到本地。
+#[tauri::command]
+pub async fn save_image(
+    app: tauri::AppHandle,
+    base_dir: Option<String>,
+    source: String,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    let (bytes, _mime) = load_image_source(base_dir, source).await?;
+    let name = sanitize_image_name(&default_name);
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("保存图片")
+            .set_file_name(name)
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|err| format!("保存对话框异常：{err}"))?;
+
+    let Some(target) = picked else {
+        return Ok(None);
+    };
+    let target = target
+        .into_path()
+        .map_err(|err| format!("无法读取保存路径：{err}"))?;
+    std::fs::write(&target, &bytes).map_err(|err| format!("保存图片失败：{err}"))?;
+    log::info!("图片已另存为：{}", target.display());
+    Ok(Some(target.to_string_lossy().to_string()))
 }
 
 #[tauri::command]

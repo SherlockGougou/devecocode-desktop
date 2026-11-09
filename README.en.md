@@ -58,9 +58,23 @@ paths.
   a spinner; finished sessions that have not been opened show an unread dot.
 - **Conversation experience:** streaming Markdown, collapsible reasoning, grouped tool
   calls, subagent/todo progress, permission cards, in-session search, and stop
-  generation. Enter queues a message while a turn is running; `⌘Enter` steers it. Stopping
-  pauses the queue. Stale tools/reasoning after an abnormal stop are shown as interrupted
-  instead of spinning forever.
+  generation. Local images in Markdown and image attachments returned by tools render
+  inline, with image reads shown as a "已查看 N 张图像" row and a clickable thumbnail;
+  failures fall back to readable placeholders. Clicking an image opens a large viewer
+  with zoom, pan, multi-image navigation, and a shared-element transition; the context
+  menu can copy or save the image. Enter queues a message while a turn is
+  running; `⌘Enter` steers it. Stopping pauses the queue. Stale tools/reasoning after an abnormal stop are shown as interrupted
+  instead of spinning forever; leftover in-progress todos in an idle session are also
+  shown as interrupted. The left side of the transcript shows one marker per user turn;
+  hover to expand the turn list and jump between turns, and use the latest-message button
+  when scrolled up. Consecutive assistant steps in the same `HH:mm` minute are grouped,
+  with one shared copy action at the end of the group.
+- **Session permissions:** a Composer selector switches the current session between
+  "follow agent", "ask every time", and "full access" for commands, files outside the
+  workspace, and network requests. New sessions follow the agent unless you choose a mode;
+  explicit choices are stored on the session only. CLI config files are untouched and hard
+  Agent deny rules still apply. Custom session rules are shown as such and require
+  confirmation before a mode switch; switching agents is disabled while a turn is running.
 - **Message editing:** user messages can be edited and resent in place. The app first uses
   the CLI `revert` to restore the workspace state before that message, then permanently
   removes the old message and everything after it on the next prompt. The original
@@ -276,8 +290,10 @@ Commit, push, and device screenshots are explicit user actions. See
 - macOS only for now; there is no Universal binary, Developer ID signature, or
   notarization. In-app updates use a self-managed Ed25519 key, not an Apple identity.
 - The CLI may block while the screen is locked; notification clicks only focus the window.
-- Permission cards require `permission: ask` on the CLI side. The device panel and agent
-  device skill require developer mode, debugging authorization, and `hdc`.
+- Permission cards require `permission: ask` on the CLI side, or the current session can be
+  switched to "ask every time". New sessions follow the Agent unless a mode is explicitly
+  chosen. The device panel and agent device skill require developer mode, debugging
+  authorization, and `hdc`.
 - Saving CLI configuration reloads the instance and may interrupt running tasks. Project
   scope requires selecting a workspace first.
 - Message editing only covers user messages with text/attachments. It cannot be undone,

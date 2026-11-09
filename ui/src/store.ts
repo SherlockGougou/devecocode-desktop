@@ -37,6 +37,8 @@ import type {
   ModelInfo,
   Part,
   PermissionRequest,
+  PermissionMode,
+  PermissionRule,
   Project,
   Session,
   SettingsPage,
@@ -58,6 +60,18 @@ import {
   readHiddenModels,
   writeHiddenModels,
 } from "./models";
+import {
+  PERMISSION_MODE_LABELS,
+  canControlPermission,
+  hardPermissionRules,
+  hasCustomSessionPermission,
+  ownedPermissionMode,
+  rulesForMode,
+} from "./sessionPermission";
+import {
+  awaitPermissionPatch,
+  type PermissionPatchResult,
+} from "./permissionGate";
 
 export type RightTab = "changes" | "files" | "device" | "tasks";
 export type ChangeSource = "workspace" | "session";
@@ -682,6 +696,68 @@ function upsertSession(list: Session[], session: Session): Session[] {
   return next;
 }
 
+/** 权限写入在途时，后续 prompt 必须等它完成，避免用旧规则启动新一轮。 */
+let permissionPatch: Promise<PermissionPatchResult> = Promise.resolve("ok");
+let permissionPatchToken = 0;
+
+function applySessionPermission(
+  directory: string,
+  sessionID: string,
+  permission: PermissionRule[],
+  previous: PermissionRule[] | undefined,
+  options?: { notice?: string; errorPrefix?: string },
+): Promise<PermissionPatchResult> {
+  const token = ++permissionPatchToken;
+  const task = (async (): Promise<PermissionPatchResult> => {
+    try {
+      const updated = await api.updateSessionPermission(
+        directory,
+        sessionID,
+        permission,
+      );
+      if (token !== permissionPatchToken) return "superseded";
+      permissionPatch = Promise.resolve("ok");
+      const current = useApp.getState();
+      const list = current.sessions[directory] ?? [];
+      useApp.setState({
+        sessions: {
+          ...current.sessions,
+          [directory]: upsertSession(list, updated),
+        },
+        permissionUpdating: false,
+      });
+      if (options?.notice) current.showNotice(options.notice);
+      return "ok";
+    } catch (error) {
+      if (token !== permissionPatchToken) return "superseded";
+      // 已在途的发送会从旧 Promise 读到 failed 并中止；之后的新发送使用
+      // 已回滚后的真实权限，不应被一次失败永久阻塞。
+      permissionPatch = Promise.resolve("ok");
+      const current = useApp.getState();
+      const list = current.sessions[directory] ?? [];
+      const session = list.find((item) => item.id === sessionID);
+      useApp.setState({
+        ...(session
+          ? {
+              sessions: {
+                ...current.sessions,
+                [directory]: upsertSession(list, {
+                  ...session,
+                  permission: previous,
+                }),
+              },
+            }
+          : {}),
+        permissionUpdating: false,
+        error: `${options?.errorPrefix ?? "切换会话权限失败"}：${String(error)}`,
+      });
+      return "failed";
+    }
+  })();
+  permissionPatch = task;
+  return task;
+}
+
 function upsertMessage(list: Message[], info: Message["info"]): Message[] {
   const index = list.findIndex((m) => m.info.id === info.id);
   if (index === -1) return [...list, { info, parts: [] }];
@@ -765,6 +841,7 @@ function emptyConversationPatch() {
     commitMessageError: null,
     committing: false,
     pushing: false,
+    draftPermissionMode: null as PermissionMode | null,
     failedText: null,
     findOpen: false,
     findQuery: "",
@@ -837,6 +914,10 @@ export interface AppState {
   stoppingSessions: Record<string, boolean>;
   /** 首条消息正在创建会话，阻止并发创建第二个会话 */
   creatingSession: boolean;
+  /** 新会话草稿的权限选择；null 表示跟随 Agent 默认 */
+  draftPermissionMode: PermissionMode | null;
+  /** 会话权限正在写入 CLI，期间禁用选择器并阻止重复提交 */
+  permissionUpdating: boolean;
   /** 正在内联编辑的历史用户消息；为空表示不在编辑态 */
   editing: MessageEditTarget | null;
   /** 编辑提交阶段：idle → reverting → reverted → prompting */
@@ -1001,6 +1082,9 @@ export interface AppState {
   setModelVisible(model: { providerID: string; modelID: string }, visible: boolean): void;
   loadMeta(): Promise<void>;
   selectAgent(name: string): void;
+  setPermissionMode(mode: PermissionMode): Promise<void>;
+  /** 新会话草稿恢复为跟随 Agent 默认；已有会话无对应操作 */
+  resetPermissionMode(): void;
   selectVariant(variant: string | null): void;
   selectModel(model: { providerID: string; modelID: string }): void;
   renameSession(directory: string, id: string, title: string): Promise<void>;
@@ -1073,6 +1157,8 @@ export const useApp = create<AppState>()((set, get) => ({
   steerMessageIDs: {},
   stoppingSessions: {},
   creatingSession: false,
+  draftPermissionMode: null,
+  permissionUpdating: false,
   editing: null,
   editPhase: "idle",
   selectedTaskID: null,
@@ -1645,7 +1731,21 @@ export const useApp = create<AppState>()((set, get) => ({
     if (!sessionID) set({ creatingSession: true });
     try {
       if (!sessionID) {
-        const session = await api.createSession(directory);
+        const current = get();
+        const agent = current.agents.find(
+          (item) => item.name === current.selectedAgent,
+        );
+        // 未显式选择时不下发 permission，让会话继承 Agent/全局配置。
+        const permission =
+          current.draftPermissionMode &&
+          agent &&
+          canControlPermission(agent)
+            ? rulesForMode(current.draftPermissionMode, agent)
+            : [];
+        const session = await api.createSession(
+          directory,
+          permission.length > 0 ? { permission } : undefined,
+        );
         sessionID = session.id;
         const list = get().sessions[directory] ?? [];
         set({
@@ -1681,6 +1781,7 @@ export const useApp = create<AppState>()((set, get) => ({
       set({ streaming: true, error: null });
       const selection = currentSelection(get());
       const parts = buildPromptParts(directory, text, mentions, files);
+      await awaitPermissionPatch(permissionPatch);
       await api.prompt(directory, sessionID, parts, {
         ...(selection.model ? { model: selection.model } : {}),
         agent: selection.agent,
@@ -1909,6 +2010,7 @@ export const useApp = create<AppState>()((set, get) => ({
 
     if (stillEditing()) set({ editPhase: "prompting", error: null });
     try {
+      await awaitPermissionPatch(permissionPatch);
       await api.prompt(directory, sessionID, parts, {
         ...(model
           ? { model: { providerID: model.providerID, modelID: model.modelID } }
@@ -2208,6 +2310,7 @@ export const useApp = create<AppState>()((set, get) => ({
       ...(state.sessionID === input.sessionID ? { streaming: true } : {}),
     });
     try {
+      await awaitPermissionPatch(permissionPatch);
       await api.prompt(
         input.directory,
         input.sessionID,
@@ -2442,6 +2545,7 @@ export const useApp = create<AppState>()((set, get) => ({
       ...(state.sessionID === sessionID ? { streaming: true } : {}),
     });
     try {
+      await awaitPermissionPatch(permissionPatch);
       await api.prompt(
         item.directory,
         item.sessionID,
@@ -2657,6 +2761,7 @@ export const useApp = create<AppState>()((set, get) => ({
       ...(state.sessionID === sessionID ? { streaming: true } : {}),
     });
     try {
+      await awaitPermissionPatch(permissionPatch);
       await api.prompt(
         last.directory,
         sessionID,
@@ -4035,7 +4140,127 @@ export const useApp = create<AppState>()((set, get) => ({
   },
 
   selectAgent(name) {
+    const state = get();
+    const previousName = state.selectedAgent;
+    if (name === previousName) return;
+    const { directory, sessionID } = state;
+    if (sessionID && isSessionBusy(state, sessionID)) {
+      state.showNotice("当前轮执行中，结束后可切换 Agent");
+      return;
+    }
+    if (state.creatingSession || state.permissionUpdating) return;
     set({ selectedAgent: name });
+    if (!directory || !sessionID) return;
+    const previousAgent = state.agents.find((agent) => agent.name === previousName);
+    const nextAgent = state.agents.find((agent) => agent.name === name);
+    if (!previousAgent || !nextAgent) return;
+    const list = state.sessions[directory] ?? [];
+    const session = list.find((item) => item.id === sessionID);
+    if (!session) return;
+    const mode = ownedPermissionMode(session, previousAgent);
+    const permission = mode
+      ? rulesForMode(mode, nextAgent)
+      : hasCustomSessionPermission(session)
+        ? hardPermissionRules(nextAgent)
+        : [];
+    if (permission.length === 0) return;
+    set({
+      permissionUpdating: true,
+      error: null,
+      sessions: {
+        ...state.sessions,
+        [directory]: upsertSession(list, {
+          ...session,
+          permission: [...(session.permission ?? []), ...permission],
+        }),
+      },
+    });
+    void (async () => {
+      const result = await applySessionPermission(
+        directory,
+        sessionID,
+        permission,
+        session.permission,
+        { errorPrefix: "切换 Agent 后同步会话权限失败" },
+      );
+      if (result !== "failed") return;
+      const current = get();
+      if (current.sessionID === sessionID && current.selectedAgent === name) {
+        set({ selectedAgent: previousName });
+      }
+    })();
+  },
+
+  async setPermissionMode(mode) {
+    const state = get();
+    const { directory, sessionID } = state;
+    if (!directory) return;
+    if (!sessionID) {
+      set({ draftPermissionMode: mode });
+      state.showNotice(
+        `已选择${PERMISSION_MODE_LABELS[mode]}：新会话将按此权限创建`,
+      );
+      return;
+    }
+    if (
+      state.creatingSession ||
+      state.permissionUpdating ||
+      isSessionBusy(state, sessionID)
+    ) {
+      return;
+    }
+    const agent = state.agents.find((item) => item.name === state.selectedAgent);
+    if (!agent) {
+      set({ error: "Agent 信息未加载，暂时无法切换权限" });
+      return;
+    }
+    if (!canControlPermission(agent)) {
+      state.showNotice("该 Agent 已拒绝这些操作，无法切换权限");
+      return;
+    }
+    const permission = rulesForMode(mode, agent);
+    const list = state.sessions[directory] ?? [];
+    const session = list.find((item) => item.id === sessionID);
+    const owned = ownedPermissionMode(session, agent);
+    if (owned === mode) return;
+    if (
+      session &&
+      owned === null &&
+      hasCustomSessionPermission(session)
+    ) {
+      if (
+        !window.confirm(
+          "当前会话已有自定义权限规则，切换会覆盖这些规则。继续？",
+        )
+      ) {
+        return;
+      }
+    }
+    const previous = session?.permission;
+    set({
+      permissionUpdating: true,
+      error: null,
+      ...(session
+        ? {
+            sessions: {
+              ...state.sessions,
+              [directory]: upsertSession(list, {
+                ...session,
+                permission: [...(session.permission ?? []), ...permission],
+              }),
+            },
+          }
+        : {}),
+    });
+    await applySessionPermission(directory, sessionID, permission, previous, {
+      notice: `已切换为${PERMISSION_MODE_LABELS[mode]}`,
+    });
+  },
+
+  resetPermissionMode() {
+    if (get().sessionID) return;
+    set({ draftPermissionMode: null });
+    get().showNotice("已恢复为跟随 Agent 默认权限");
   },
 
   selectVariant(variant) {
@@ -4156,6 +4381,7 @@ export const useApp = create<AppState>()((set, get) => ({
           sessionStatuses: {},
           selectedTaskID: null,
           tasksLoading: false,
+          draftPermissionMode: null,
           streaming: false,
           sessionDiff: [],
           diffPath: null,

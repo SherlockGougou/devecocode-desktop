@@ -108,6 +108,18 @@ export function mimeForPath(path: string): string {
   return MIME_BY_EXTENSION[fileExtension(path)] ?? "";
 }
 
+/** WebView 能直接解码的图片格式；Rust 侧 `inline_image_mime` 与此保持一致。 */
+export function inlineImageMime(path: string): string {
+  const mime = mimeForPath(path.split(/[?#]/, 1)[0]);
+  return NATIVE_IMAGE_MIMES.has(mime) ? mime : "";
+}
+
+/** 取文件所在目录，供 Markdown 里的相对图片路径使用。 */
+export function directoryOf(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index > 0 ? path.slice(0, index) : "/";
+}
+
 export function isMarkdownFile(path: string): boolean {
   return /^(md|markdown)$/i.test(fileExtension(path));
 }

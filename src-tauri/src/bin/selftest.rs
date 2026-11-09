@@ -166,6 +166,10 @@ async fn main() {
         Ok(detail) => report.pass("历史消息 revert/unrevert 契约", detail),
         Err(err) => report.fail("历史消息 revert/unrevert 契约", err),
     }
+    match check_session_permission_roundtrip(&base).await {
+        Ok(detail) => report.pass("会话权限规则契约（POST/PATCH 追加保留旧规则）", detail),
+        Err(err) => report.fail("会话权限规则契约（POST/PATCH 追加保留旧规则）", err),
+    }
 
     // 6. 事件流
     let event_url = supervisor
@@ -476,6 +480,144 @@ async fn check_revert_roundtrip(base: &str) -> Result<String, String> {
         Ok(format!(
             "会话 {session_id}，revert 边界 {boundary}，unrevert 已清空"
         ))
+    }
+    .await;
+
+    let _ = http::send(base, None, "DELETE", &session_path, &query, None).await;
+    result
+}
+
+fn permission_action<'a>(session: &'a serde_json::Value, tool: &str) -> Option<&'a str> {
+    session
+        .get("permission")?
+        .as_array()?
+        .iter()
+        .rev()
+        .find_map(|rule| {
+            if rule.get("permission")?.as_str()? != tool || rule.get("pattern")?.as_str()? != "*" {
+                return None;
+            }
+            rule.get("action")?.as_str()
+        })
+}
+
+fn permission_rule_count(
+    session: &serde_json::Value,
+    tool: &str,
+    pattern: &str,
+    action: &str,
+) -> usize {
+    session
+        .get("permission")
+        .and_then(|value| value.as_array())
+        .map(|rules| {
+            rules
+                .iter()
+                .filter(|rule| {
+                    rule.get("permission").and_then(|value| value.as_str()) == Some(tool)
+                        && rule.get("pattern").and_then(|value| value.as_str()) == Some(pattern)
+                        && rule.get("action").and_then(|value| value.as_str()) == Some(action)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// 会话权限是 UI 的总开关契约：创建时带规则，PATCH 追加并覆盖旧动作。
+/// 不调用模型，失败时会清理临时会话。
+async fn check_session_permission_roundtrip(base: &str) -> Result<String, String> {
+    let directory = std::env::current_dir()
+        .map_err(|err| err.to_string())?
+        .to_string_lossy()
+        .to_string();
+    let query = vec![("directory".to_string(), directory)];
+    let created = http::send(
+        base,
+        None,
+        "POST",
+        "/session",
+        &query,
+        Some(&serde_json::json!({
+            "title": "desktop-selftest-permission",
+            "permission": [
+                { "permission": "bash", "pattern": "*", "action": "ask" }
+            ]
+        })),
+    )
+    .await
+    .map_err(|err| format!("创建带权限的会话失败：{err:#}"))?;
+    let session_id = created
+        .get("id")
+        .and_then(|value| value.as_str())
+        .ok_or("创建带权限的会话未返回 id")?
+        .to_string();
+    let session_path = format!("/session/{session_id}");
+
+    let result = async {
+        if permission_action(&created, "bash") != Some("ask") {
+            return Err(format!("创建会话未保留 ask 规则：{created}"));
+        }
+        let fetched = http::send(base, None, "GET", &session_path, &query, None)
+            .await
+            .map_err(|err| format!("读取会话失败：{err:#}"))?;
+        if permission_action(&fetched, "bash") != Some("ask") {
+            return Err(format!("GET 未返回创建时的 ask 规则：{fetched}"));
+        }
+
+        let updated = http::send(
+            base,
+            None,
+            "PATCH",
+            &session_path,
+            &query,
+            Some(&serde_json::json!({
+                "permission": [
+                    { "permission": "bash", "pattern": "*", "action": "allow" },
+                    { "permission": "webfetch", "pattern": "*", "action": "allow" }
+                ]
+            })),
+        )
+        .await
+        .map_err(|err| format!("PATCH 会话权限失败：{err:#}"))?;
+        if permission_action(&updated, "bash") != Some("allow")
+            || permission_action(&updated, "webfetch") != Some("allow")
+        {
+            return Err(format!("PATCH 未更新权限规则：{updated}"));
+        }
+        if permission_rule_count(&updated, "bash", "*", "ask") != 1
+            || permission_rule_count(&updated, "bash", "*", "allow") != 1
+        {
+            return Err(format!(
+                "PATCH 没有保留旧规则，疑似替换而不是追加：{updated}"
+            ));
+        }
+
+        let switched_back = http::send(
+            base,
+            None,
+            "PATCH",
+            &session_path,
+            &query,
+            Some(&serde_json::json!({
+                "permission": [
+                    { "permission": "bash", "pattern": "*", "action": "ask" },
+                    { "permission": "webfetch", "pattern": "*", "action": "ask" }
+                ]
+            })),
+        )
+        .await
+        .map_err(|err| format!("再次 PATCH 会话权限失败：{err:#}"))?;
+        if permission_action(&switched_back, "bash") != Some("ask")
+            || permission_action(&switched_back, "webfetch") != Some("ask")
+        {
+            return Err(format!("追加规则未覆盖旧动作：{switched_back}"));
+        }
+        if permission_rule_count(&switched_back, "bash", "*", "ask") != 2
+            || permission_rule_count(&switched_back, "bash", "*", "allow") != 1
+        {
+            return Err(format!("第二次 PATCH 未继续追加规则：{switched_back}"));
+        }
+        Ok(format!("会话 {session_id}，ask → allow → ask"))
     }
     .await;
 

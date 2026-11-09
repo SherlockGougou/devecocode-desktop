@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { initTheme } from "./theme";
 import { initFontPreferences } from "./uiPrefs";
 import { ContextMenuProvider } from "./contextMenu";
+import { ImageViewerProvider } from "./imageViewer";
 import App from "./App";
 import "./styles.css";
 
@@ -13,7 +14,9 @@ initFontPreferences();
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ContextMenuProvider>
-      <App />
+      <ImageViewerProvider>
+        <App />
+      </ImageViewerProvider>
     </ContextMenuProvider>
   </React.StrictMode>,
 );

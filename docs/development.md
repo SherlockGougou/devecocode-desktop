@@ -33,11 +33,12 @@ npm --prefix ui install
 | `npm run dev` | Tauri 开发模式，自动拉起本机 `deveco serve` |
 | `npm --prefix ui run dev` | 只启动 Vite，适合纯前端页面调试 |
 | `npm --prefix ui run build` | TypeScript 类型检查 + 前端生产构建 |
+| `npm --prefix ui test` | 前端纯逻辑测试 |
 | `npm run build:debug` | 生成 debug `.app`，最快验证桌面集成 |
 | `npm run build` | 生成 release `.app` / `.dmg` |
 | `npm run build:offline` | 生成包含固定 CLI 的离线 `.app` / `.dmg` |
 | `npm run stage:offline-cli` | 只准备内置 CLI 资源，不打包应用 |
-| `npm run check` | 前端构建 + 全部 Rust 单测 |
+| `npm run check` | 前端测试/构建 + 全部 Rust 单测 |
 | `npm run check:selftest` | 启动真实 serve 的端到端自检 |
 | `npm run test` | 只跑 Rust 单测 |
 
@@ -76,7 +77,7 @@ npm --prefix ui install
 npm run check
 ```
 
-覆盖 TypeScript 类型检查、Vite 构建和 Rust 单元测试，适合每次提交前运行。
+覆盖前端纯逻辑测试、TypeScript 类型检查、Vite 构建和 Rust 单元测试，适合每次提交前运行。
 
 ### 端到端自检
 

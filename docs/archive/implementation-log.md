@@ -2437,3 +2437,159 @@ deveco serve 启动后立即退出，输出：（无输出）”，自动重试�
 - 2026-11-09 后续：修复已随 v0.2.4 发布（Release run `42545665753`，17 个资产，
   immutable；Homebrew tap 更新 run `42546983059`，tap commit `2ffbc3a`）；发布后
   GitHub Releases 只保留 v0.2.4，v0.2.1 / v0.2.2 / v0.2.3 已下架，旧资产 URL 返回 404。
+
+## 24. 消息内嵌本地图片
+
+现象：Agent 在助手消息里输出 Markdown 图片
+`![手机截图](/Users/.../.agent-temp/screenshots/current-home.png)`，界面只显示裂图；
+Read/截图工具返回的图片附件在助手消息里也不显示。补上渲染后，包含图片的会话还会频繁
+抖动、抽搐。
+
+根因：
+
+- `Markdown.tsx` 只定制了 `a`/`code`，`react-markdown` 原样输出 `<img src="/Users/...">`。
+  页面来源是 `tauri://localhost`，绝对路径和相对路径都会被当成站点路径；`file://` 还会被
+  默认 `urlTransform` 清空。
+- `ChatView.tsx` 对助手消息里的 `file` part 直接 `return null`，图片附件被跳过。
+- 图片 `onLoad` 后内容高度增加，消息流没有继续贴底，图片会被顶出视口。
+- `Markdown` 的 `components.img` 和内联组件函数每次 render 都重新创建，React 会卸载并
+  重挂图片，Blob URL 被撤销重建；流式输出或滚动触发重渲染时图片反复加载，这是页面
+  抖动/抽搐的根因。
+
+实现：
+
+- `preview.rs` 新增 `resolve_inline_image` / `read_inline_image`：支持绝对路径、`~/`、
+  `file://` 和工作区相对路径；限制 PNG/JPEG/GIF/WebP/SVG/AVIF，单张 ≤32MB。
+- `ipc.rs` 新增 `read_local_image`，原始字节直接回传 WebView，不经过 base64。
+- 前端新增 `InlineImage`：本地路径走 IPC 转 Blob URL；`data:`/`http(s):`/`blob:` 直通；
+  失败显示带文件名的占位提示。
+- `Markdown` 增加 `img` 渲染和图片 URL 放行；`FilePreview` 传入 Markdown 文件所在目录
+  作为相对路径基准。
+- 助手消息渲染 `file` 图片附件，点击复用 `AttachmentViewer`。
+- 图片加载后仅在用户仍贴底时继续贴底；用户主动上翻（wheel/pointerdown）后不再拉回，
+  回到底部或点击“最新消息”后恢复。
+- `Markdown` 的 `components` 用 `useMemo` 固定，右键菜单上下文也做 memo，避免图片
+  反复卸载/重挂。
+
+验证：
+
+- `npm --prefix ui run build`、`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、
+  `cargo test --manifest-path src-tauri/Cargo.toml`（103 passed、1 ignored）通过；
+  `npm run build:debug` 出包成功。
+- 真实 debug `.app` 打开 itemory-harmony / 待办事项检查：1.7MB、1084×2412 的 PNG
+  成功解码，显示约 283×629；初始滚动与底部只差 6px。
+- 滚动触发重渲染后，图片 `blob:` 地址不变，`deveco:inline-image-load` 计数为 0；
+  模拟图片加载事件后视图回到距底部 6px。
+- 截图：`.agent-temp/image-render-final.png`。
+
+未验证：
+
+- CLI 0.2.5 的历史消息不持久化 Read 图片附件，因此助手 `file` part 分支没有真实历史
+  数据可验收；该分支与 Markdown 共用 `InlineImage`。
+- HEIC/TIFF/BMP 等格式仍不在消息内嵌显示；远程 http 图片没有单独构造测试。
+
+## 25. 消息操作图标化与消息间距
+
+现象：消息悬停操作区带“编辑 / 复制”文字，按钮偏宽；操作行绝对定位在消息底部，只借用
+`18px` 行间距，悬停时会压到下一条用户消息。
+
+实现：
+
+- `MessageMeta` 的编辑与复制按钮改为纯图标，保留 `title` 与 `aria-label`；复制成功时
+  图标切换为绿色勾。
+- 操作行固定在消息底部并预留 `24px` 行内空间，用户消息顶部再留 `8px` 轮次间距；助手
+  操作行改为左对齐，与正文起点一致。
+- 连续助手步骤按 `HH:mm` 合并为 `.msg-group`：组内使用 `minute-continues` 收紧间距，
+  组尾只渲染一次 `MessageMeta`；复制操作拼接整组文本，跨分钟或查找过滤时不合并。
+- 用户消息操作行右对齐，助手消息操作行左对齐；时间戳与图标同排，不再额外占用一行。
+
+验证：
+
+- `npm --prefix ui run build` 通过；debug `.app` 重新打包并打开 itemory-harmony /
+  待办事项检查，悬停用户消息与助手消息均显示纯图标操作行，下一条消息前保留独立空隙。
+- 同一分钟的 3 段助手步骤在真实应用中收拢为一个消息组，组尾只保留一个复制图标和
+  `14:01`；悬停组内任一步骤都会显示这组操作。
+- `npm run build:debug` 的 `.app` 打包成功；DMG 阶段的 `bundle_dmg.sh` 在当前环境等待
+  Finder 创建 `.DS_Store` 超时，未影响本次界面验证。
+
+## 26. 图片查看器、复制与另存
+
+现象：消息里的图片只能看缩略图，无法点开大图；右键菜单没有图片相关操作，助手返回的
+图片附件也不能复制或保存。
+
+实现：
+
+- `ui/src/imageViewer.tsx` 提供全局查看器和 `ImageGroup` 注册表。同一消息里的图片按 DOM
+  顺序注册，点击任意一张可左右切换；注册表只存 ref，不驱动 React 状态，避免流式输出时
+  重挂图片。
+- 查看器使用共享元素过渡：从缩略图的 `getBoundingClientRect()` 位置/尺寸动画到视口内的
+  fit 矩形；关闭时再动画回原缩略图，缩略图移出视口时退化为居中缩小。支持滚轮/按钮缩放、
+  拖动平移、适应窗口、实际大小、Esc 关闭、←/→ 切换和双击 2×。
+- `InlineImage` 增加图片右键菜单：查看大图、复制图片、图片另存为…；远程图片额外提供
+  复制图片地址。`ChatView` 的助手 `file` 图片 part 改为直接注册到 `ImageGroup`，点击
+  打开查看器；上传附件预览层保留复制/另存按钮。
+- `preview.rs` 新增 `parse_image_source` / `read_image_source`，统一解析本地路径、`~/`、
+  `file://`、base64 图片 data URL 和 http(s) 地址；`ipc.rs` 新增 `copy_image` 与
+  `save_image`，分别写入系统剪贴板和系统保存对话框。剪贴板解码使用 `image` crate 的
+  PNG/JPEG/GIF/WebP 解码器，SVG/AVIF 明确提示改用另存为。
+- `Markdown` 在对话正文里传入工作区目录，修复助手 Markdown 相对图片路径缺少基准目录的
+  问题；目录为空时不再把空字符串当作 base dir 传给 Rust。
+
+验证：
+
+- `npm --prefix ui run build` 通过；`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`
+  通过；`cargo test --manifest-path src-tauri/Cargo.toml` 为 106 passed、1 ignored；
+  `npm run check:selftest` 20/20 通过。
+- debug `.app` 打开 itemory-harmony / 待办事项检查：点击 1084×2412 PNG 打开查看器，
+  初始适应窗口 30%，点击放大后为 38%；共享元素过渡和关闭动画可见。
+- 查看器“复制图片”写入系统剪贴板后，读回的 PNG 为 1084×2412，与源图一致；右键菜单
+  正确列出查看大图、复制图片、图片另存为… 三项。
+- “图片另存为…”弹出系统保存面板，默认文件名沿用源图片文件名。
+
+未验证：
+
+- 当前测试会话的同一消息只有一张图片，多图左右切换只做了代码路径检查，未构造真实多图
+  消息逐张切换；`ImageGroup` 与查看器导航需要后续用双图消息补一次真机验证。
+- 保存面板的本机自动化在切换目录时触发了应用实例重建，未完成最终落盘验证；保存命令只
+  在对话框确认后执行 `std::fs::write`，核心路径与复制命令共用同一套图片读取逻辑。
+- 自动化物理右键在当前环境偶尔导致应用实例重建，右键菜单本身已通过辅助功能 surface
+  观察确认；正常鼠标右键路径仍需用户实际交互复验。
+
+## 27. 图片与权限边界修复
+
+复审发现 6 个边界问题：
+
+- 会话权限把“工具下任意 deny”误判成整个工具不可调整，又会用模式通配规则覆盖 Agent
+  的兜底 deny；具体命令 deny 在模式切换后可能失效。
+- 权限 PATCH 在途时，消息会等待它完成，但没有检查 `failed/superseded`，仍可能用新
+  Agent 和旧会话规则发送。
+- 远程图片先完整读入内存，再检查 32MB 上限。
+- 图片 `onError` 没有进入可读占位状态。
+- Markdown 会把空格等字符编码成 `%20`，本地图片解析却按原始字符串找文件。
+- selftest 声称验证 PATCH 追加，实际只检查最后一个 action，替换语义也能通过。
+
+修复：
+
+- `sessionPermission.ts` 按通配规则和 `findLast` 语义区分工具级 deny、具体 deny 与
+  局部 allow；整体拒绝工具不参与模式动作，可调整工具的具体 deny 追加在模式之后。
+- `permissionGate.ts` 集中校验权限写入结果；所有 prompt 入口在 `failed/superseded`
+  时取消发送。失败 Promise 在回滚后恢复为 `ok`，不会让后续发送永久阻塞。
+- 远程图片改为 `bytes_stream` 分块累计，单块追加前检查上限。
+- `InlineImage` 增加 `onError`，撤销 Blob URL 并显示文件名占位。
+- 本地图片路径按 URL 语义去掉 query/fragment，再对百分号转义做 UTF-8 解码；
+  `file://` 使用标准 URL 解析。
+- 前端新增 `node:test` 纯逻辑测试，覆盖权限规则、权限等待和图片 MIME；Rust 增加流式
+  上限与编码路径测试；selftest 断言旧规则在 PATCH 后仍存在。
+
+验证：
+
+- `npm run check` 通过：前端 6 个测试全过，Vite 构建通过，Rust 108 passed、1 ignored。
+- `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 通过。
+- `npm run check:selftest` 20/20 通过，权限契约确认 `ask → allow → ask` 为追加。
+- debug `.app` 构建成功并打开现有会话；Composer 的 Agent 权限菜单正常显示三个选项。
+  `build:debug` 最后的 DMG 阶段因已有同名镜像报错，`--bundles app` 复验应用包成功。
+
+未验证：
+
+- 没有用真实模型触发工具执行来逐类验证 `ask` 下的审批弹窗；本轮验证覆盖规则生成、
+  PATCH 契约和 UI 入口，实际工具授权仍依赖 CLI 执行路径。

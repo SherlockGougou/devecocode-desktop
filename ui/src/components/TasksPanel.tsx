@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useApp } from "../store";
 import {
   buildSubagentTasks,
+  isBusyStatus,
   taskActivities,
   todoProgress,
   type TaskActivityItem,
@@ -75,7 +76,13 @@ function useNow(active: boolean) {
   return now;
 }
 
-function TodoMark({ status }: { status: TodoItem["status"] }) {
+function TodoMark({
+  status,
+  active,
+}: {
+  status: TodoItem["status"];
+  active: boolean;
+}) {
   if (status === "completed") {
     return (
       <span className="todo-mark completed">
@@ -84,6 +91,13 @@ function TodoMark({ status }: { status: TodoItem["status"] }) {
     );
   }
   if (status === "in_progress") {
+    if (!active) {
+      return (
+        <span className="todo-mark interrupted">
+          <Icon name="stop" size={9} strokeWidth={2} />
+        </span>
+      );
+    }
     return (
       <span className="todo-mark in-progress">
         <span className="tool-spinner" />
@@ -100,26 +114,44 @@ function TodoMark({ status }: { status: TodoItem["status"] }) {
   return <span className="todo-mark pending" />;
 }
 
-function TodoChecklist({ todos }: { todos: TodoItem[] }) {
+function TodoChecklist({ todos, active }: { todos: TodoItem[]; active: boolean }) {
   return (
     <div className="todo-list">
-      {todos.map((todo, index) => (
-        <div
-          className={`todo-item ${todo.status}`}
-          key={`${todo.content}-${index}`}
-          title={todo.content}
-        >
-          <TodoMark status={todo.status} />
-          <span className="todo-text">{todo.content}</span>
-          {todo.status === "in_progress" && <span className="todo-tag">进行中</span>}
-          {todo.priority === "high" && <span className="todo-priority">高</span>}
-        </div>
-      ))}
+      {todos.map((todo, index) => {
+        const interrupted = todo.status === "in_progress" && !active;
+        return (
+          <div
+            className={`todo-item ${todo.status}${interrupted ? " interrupted" : ""}`}
+            key={`${todo.content}-${index}`}
+            title={todo.content}
+          >
+            <TodoMark status={todo.status} active={active} />
+            <span className="todo-text">{todo.content}</span>
+            {interrupted && (
+              <span className="todo-tag interrupted" title="会话已结束，该待办未完成">
+                已中断
+              </span>
+            )}
+            {todo.status === "in_progress" && active && (
+              <span className="todo-tag">进行中</span>
+            )}
+            {todo.priority === "high" && <span className="todo-priority">高</span>}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function TodoSection({ todos, compact = false }: { todos: TodoItem[]; compact?: boolean }) {
+function TodoSection({
+  todos,
+  compact = false,
+  active = true,
+}: {
+  todos: TodoItem[];
+  compact?: boolean;
+  active?: boolean;
+}) {
   const progress = todoProgress(todos);
   if (todos.length === 0) return null;
   return (
@@ -135,7 +167,7 @@ function TodoSection({ todos, compact = false }: { todos: TodoItem[]; compact?: 
         </span>
       </div>
       <TaskProgressBar progress={progress} />
-      <TodoChecklist todos={todos} />
+      <TodoChecklist todos={todos} active={active} />
     </section>
   );
 }
@@ -246,7 +278,15 @@ function ActivityRow({ item }: { item: TaskActivityItem }) {
   );
 }
 
-function TaskDetail({ task, now }: { task: SubagentTask; now: number }) {
+function TaskDetail({
+  task,
+  now,
+  parentActive,
+}: {
+  task: SubagentTask;
+  now: number;
+  parentActive: boolean;
+}) {
   const closeTaskDetail = useApp((state) => state.closeTaskDetail);
   const childMessages = useApp((state) =>
     task.sessionID ? state.childMessages[task.sessionID] : undefined,
@@ -260,6 +300,9 @@ function TaskDetail({ task, now }: { task: SubagentTask; now: number }) {
   const activities = useMemo(() => taskActivities(childMessages ?? []), [childMessages]);
   const duration = formatTaskDuration(task, now);
   const progress = childTodos ? todoProgress(childTodos) : null;
+  const childActive = status
+    ? isBusyStatus(status)
+    : parentActive && task.status === "running";
   const waitingForParent =
     task.status === "running" && status?.type === "idle" && Boolean(task.sessionID);
 
@@ -303,7 +346,7 @@ function TaskDetail({ task, now }: { task: SubagentTask; now: number }) {
       {waitingForParent && (
         <div className="task-note">子代理已停止输出，等待主代理收尾。</div>
       )}
-      <TodoSection todos={childTodos ?? []} compact />
+      <TodoSection todos={childTodos ?? []} compact active={childActive} />
       {task.prompt && (
         <details className="task-prompt">
           <summary>
@@ -337,6 +380,13 @@ function TaskDetail({ task, now }: { task: SubagentTask; now: number }) {
 export default function TasksPanel() {
   const messages = useApp((state) => state.messages);
   const sessionID = useApp((state) => state.sessionID);
+  const sessionActive = useApp((state) => {
+    if (!state.sessionID) return false;
+    const status = state.sessionStatuses[state.sessionID];
+    return status
+      ? isBusyStatus(status)
+      : state.streaming || state.busySessions[state.sessionID] === true;
+  });
   const sessionChildren = useApp((state) => state.sessionChildren);
   const sessionStatuses = useApp((state) => state.sessionStatuses);
   const todos = useApp((state) => state.todos);
@@ -351,7 +401,9 @@ export default function TasksPanel() {
     ? tasks.find((task) => task.id === selectedTaskID)
     : undefined;
 
-  if (selected) return <TaskDetail task={selected} now={now} />;
+  if (selected) {
+    return <TaskDetail task={selected} now={now} parentActive={sessionActive} />;
+  }
 
   const hasContent = todos.length > 0 || tasks.length > 0;
   return (
@@ -362,7 +414,7 @@ export default function TasksPanel() {
           正在读取任务状态…
         </div>
       )}
-      <TodoSection todos={todos} />
+      <TodoSection todos={todos} active={sessionActive} />
       <SubagentSection tasks={tasks} now={now} />
       {!tasksLoading && !hasContent && (
         <div className="task-empty">

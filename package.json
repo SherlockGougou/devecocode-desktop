@@ -14,10 +14,11 @@
     "tauri": "tauri",
     "selftest": "cargo run --manifest-path src-tauri/Cargo.toml --features selftest --bin deveco-selftest",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:ui": "npm --prefix ui test",
     "homebrew:render": "node scripts/render-homebrew-casks.mjs",
     "release:prepare": "node scripts/bump-version.mjs",
     "check:version": "node scripts/check-release-version.mjs",
-    "check": "npm --prefix ui run build && cargo test --manifest-path src-tauri/Cargo.toml",
+    "check": "npm --prefix ui test && npm --prefix ui run build && cargo test --manifest-path src-tauri/Cargo.toml",
     "check:selftest": "cargo run --manifest-path src-tauri/Cargo.toml --features selftest --bin deveco-selftest"
   },
   "devDependencies": {

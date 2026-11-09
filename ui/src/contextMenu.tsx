@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
@@ -574,7 +575,7 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
     if (item?.type === "item") void activate(item);
   };
 
-  const contextValue = { open, close };
+  const contextValue = useMemo(() => ({ open, close }), [open, close]);
   const portal =
     menu &&
     createPortal(

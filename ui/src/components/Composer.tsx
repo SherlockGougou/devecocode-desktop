@@ -19,6 +19,12 @@ import {
   type PendingSteer,
   type QueuedMessage,
 } from "../delivery";
+import {
+  PERMISSION_MODE_LABELS,
+  canControlPermission,
+  displayedPermissionMode,
+  hasCustomSessionPermission,
+} from "../sessionPermission";
 import { Icon } from "./Icon";
 
 /** 弹层最多展示多少条候选 */
@@ -79,6 +85,11 @@ export default function Composer() {
   const directory = useApp((s) => s.directory);
   const sessionID = useApp((s) => s.sessionID);
   const sessions = useApp((s) => s.sessions);
+  const creatingSession = useApp((s) => s.creatingSession);
+  const draftPermissionMode = useApp((s) => s.draftPermissionMode);
+  const permissionUpdating = useApp((s) => s.permissionUpdating);
+  const setPermissionMode = useApp((s) => s.setPermissionMode);
+  const resetPermissionMode = useApp((s) => s.resetPermissionMode);
   const queuedMessages = useApp((s) =>
     s.sessionID ? s.queuedMessages[s.sessionID] : undefined,
   );
@@ -128,6 +139,7 @@ export default function Composer() {
   const [modelOpen, setModelOpen] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [permissionOpen, setPermissionOpen] = useState(false);
   const [workspacePicking, setWorkspacePicking] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [revertConfirm, setRevertConfirm] = useState(false);
@@ -147,6 +159,7 @@ export default function Composer() {
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const variantPickerRef = useRef<HTMLDivElement>(null);
   const workspacePickerRef = useRef<HTMLDivElement>(null);
+  const permissionPickerRef = useRef<HTMLDivElement>(null);
   const menu = useContextMenu();
 
   const hiddenModelKeys = useMemo(() => new Set(hiddenModels), [hiddenModels]);
@@ -171,6 +184,56 @@ export default function Composer() {
         : undefined,
     [directory, sessionID, sessions],
   );
+  const selectedAgentInfo = useMemo(
+    () => agents.find((agent) => agent.name === selectedAgent),
+    [agents, selectedAgent],
+  );
+  const permissionMode = displayedPermissionMode(
+    sessionID ? activeSession : undefined,
+    selectedAgentInfo,
+    sessionID ? null : draftPermissionMode,
+  );
+  const permissionAvailable = canControlPermission(selectedAgentInfo);
+  const permissionCustom = Boolean(
+    sessionID && activeSession && hasCustomSessionPermission(activeSession),
+  );
+  const permissionLabel = permissionMode
+    ? PERMISSION_MODE_LABELS[permissionMode]
+    : permissionCustom
+      ? "自定义"
+      : "跟随 Agent";
+  const permissionDisabled =
+    !directory ||
+    !selectedAgentInfo ||
+    !permissionAvailable ||
+    busy ||
+    creatingSession ||
+    permissionUpdating;
+  const permissionTitle = !directory
+    ? "请先选择工作区"
+    : !selectedAgentInfo
+      ? "Agent 信息未加载，暂时无法切换权限"
+      : !permissionAvailable
+        ? "该 Agent 已拒绝这些操作，无法切换权限"
+        : permissionUpdating
+          ? "正在应用权限…"
+          : creatingSession
+            ? "正在创建会话…"
+            : busy
+              ? "当前轮执行中，结束后可切换权限"
+              : permissionMode
+                ? `Agent 权限：${permissionLabel}（点击切换）`
+                : permissionCustom
+                  ? "当前会话使用自定义权限规则（点击切换）"
+                  : "跟随 Agent 默认权限（点击选择）";
+  const agentDisabled = busy || creatingSession || permissionUpdating;
+  const agentTitle = permissionUpdating
+    ? "正在应用权限…"
+    : creatingSession
+      ? "正在创建会话…"
+      : busy
+        ? "当前轮执行中，结束后可切换 Agent"
+        : `切换 Agent（当前：${selectedAgent}）`;
   const revertCount = revertedCount(messages, activeSession?.revert);
 
   // 设备面板截图通过轻量事件总线附加到当前输入框；不把附件状态提升到全局，
@@ -370,15 +433,24 @@ export default function Composer() {
     [directory, insertReference, showNotice],
   );
 
-  // 四个工具栏菜单互斥；点外部或按 Esc 一起收起，避免弹层叠在一起。
+  // 工具栏菜单互斥；点外部或按 Esc 一起收起，避免弹层叠在一起。
   useEffect(() => {
-    if (!agentOpen && !modelOpen && !variantOpen && !workspaceOpen) return;
+    if (
+      !agentOpen &&
+      !modelOpen &&
+      !variantOpen &&
+      !workspaceOpen &&
+      !permissionOpen
+    ) {
+      return;
+    }
     const onPointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
       if (!agentPickerRef.current?.contains(target)) setAgentOpen(false);
       if (!modelPickerRef.current?.contains(target)) setModelOpen(false);
       if (!variantPickerRef.current?.contains(target)) setVariantOpen(false);
       if (!workspacePickerRef.current?.contains(target)) setWorkspaceOpen(false);
+      if (!permissionPickerRef.current?.contains(target)) setPermissionOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -386,6 +458,7 @@ export default function Composer() {
       setModelOpen(false);
       setVariantOpen(false);
       setWorkspaceOpen(false);
+      setPermissionOpen(false);
     };
     window.addEventListener("mousedown", onPointerDown);
     window.addEventListener("keydown", onKeyDown);
@@ -393,7 +466,17 @@ export default function Composer() {
       window.removeEventListener("mousedown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [agentOpen, modelOpen, variantOpen, workspaceOpen]);
+  }, [agentOpen, modelOpen, variantOpen, workspaceOpen, permissionOpen]);
+
+  // 忙碌或权限写入期间不允许继续操作弹层，避免选择结果与当前轮错位。
+  useEffect(() => {
+    if (permissionDisabled) setPermissionOpen(false);
+  }, [permissionDisabled]);
+
+  // Agent 切换会同步会话权限，执行中或权限写入期间收起菜单并禁用入口。
+  useEffect(() => {
+    if (busy || creatingSession || permissionUpdating) setAgentOpen(false);
+  }, [busy, creatingSession, permissionUpdating]);
 
   // 当前模型：优先用户本次选择的，其次最近一条带模型的消息
   const currentModel = useMemo(() => {
@@ -680,6 +763,7 @@ export default function Composer() {
                   setAgentOpen(false);
                   setModelOpen(false);
                   setVariantOpen(false);
+                  setPermissionOpen(false);
                 }}
                 disabled={workspacePicking}
                 title={directory ?? "选择新会话的工作区"}
@@ -1136,11 +1220,13 @@ export default function Composer() {
                   setAgentOpen((open) => !open);
                   setModelOpen(false);
                   setVariantOpen(false);
+                  setPermissionOpen(false);
                 }}
-                title={`切换 Agent（当前：${selectedAgent}）`}
-                aria-label={`切换 Agent，当前 ${selectedAgent}`}
+                title={agentTitle}
+                aria-label={agentTitle}
                 aria-haspopup="menu"
                 aria-expanded={agentOpen}
+                disabled={agentDisabled}
               >
                 <span className="agent-dot" />
                 <span className="toolbar-label">{selectedAgent}</span>
@@ -1181,6 +1267,137 @@ export default function Composer() {
                 </div>
               )}
             </div>
+            <div
+              className="toolbar-picker permission-picker"
+              ref={permissionPickerRef}
+            >
+              <button
+                type="button"
+                className={`toolbar-pill permission-pill ${
+                  permissionMode === "allow" ? "danger" : ""
+                } ${permissionOpen ? "open" : ""}`}
+                onClick={() => {
+                  setPermissionOpen((open) => !open);
+                  setAgentOpen(false);
+                  setModelOpen(false);
+                  setVariantOpen(false);
+                  setWorkspaceOpen(false);
+                }}
+                disabled={permissionDisabled}
+                title={permissionTitle}
+                aria-label={`Agent 权限，当前 ${permissionLabel}`}
+                aria-haspopup="menu"
+                aria-expanded={permissionOpen}
+              >
+                <Icon
+                  name={permissionMode === "allow" ? "alert" : "shield"}
+                  size={15}
+                  className="permission-icon"
+                />
+                <span className="toolbar-label">{permissionLabel}</span>
+                <Icon name="chevron-down" size={13} className="toolbar-caret" />
+              </button>
+              {permissionOpen && (
+                <div
+                  className="composer-pop permission-pop"
+                  role="menu"
+                  aria-label="Agent 权限"
+                >
+                  {!sessionID && (
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={permissionMode === null}
+                      className="toolbar-menu-item permission-option"
+                      onClick={() => {
+                        setPermissionOpen(false);
+                        resetPermissionMode();
+                      }}
+                    >
+                      <Icon
+                        name="shield"
+                        size={18}
+                        className="permission-option-icon"
+                      />
+                      <span className="toolbar-menu-copy">
+                        <span className="toolbar-menu-title">跟随 Agent</span>
+                        <span className="toolbar-menu-desc">
+                          使用 Agent 当前的权限配置，不写入会话规则
+                        </span>
+                      </span>
+                      <Icon
+                        name="check"
+                        size={15}
+                        className={`toolbar-menu-check ${
+                          permissionMode === null ? "on" : ""
+                        }`}
+                      />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={permissionMode === "ask"}
+                    className="toolbar-menu-item permission-option"
+                    onClick={() => {
+                      setPermissionOpen(false);
+                      void setPermissionMode("ask");
+                    }}
+                  >
+                    <Icon
+                      name="shield"
+                      size={18}
+                      className="permission-option-icon"
+                    />
+                    <span className="toolbar-menu-copy">
+                      <span className="toolbar-menu-title">每次询问</span>
+                      <span className="toolbar-menu-desc">
+                        执行命令、修改工作区外文件或访问网络前，始终询问
+                      </span>
+                    </span>
+                    <Icon
+                      name="check"
+                      size={15}
+                      className={`toolbar-menu-check ${
+                        permissionMode === "ask" ? "on" : ""
+                      }`}
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={permissionMode === "allow"}
+                    className="toolbar-menu-item permission-option danger"
+                    onClick={() => {
+                      setPermissionOpen(false);
+                      void setPermissionMode("allow");
+                    }}
+                  >
+                    <Icon
+                      name="alert"
+                      size={18}
+                      className="permission-option-icon"
+                    />
+                    <span className="toolbar-menu-copy">
+                      <span className="toolbar-menu-title">完全访问</span>
+                      <span className="toolbar-menu-desc">
+                        不再询问，可自由访问你的文件、终端和网络
+                      </span>
+                    </span>
+                    <Icon
+                      name="check"
+                      size={15}
+                      className={`toolbar-menu-check ${
+                        permissionMode === "allow" ? "on" : ""
+                      }`}
+                    />
+                  </button>
+                  <div className="permission-pop-note">
+                    Agent 自身的硬性限制仍然生效
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <div className="composer-tools composer-tools-right">
             <div className="toolbar-picker model-picker" ref={modelPickerRef}>
@@ -1191,6 +1408,7 @@ export default function Composer() {
                   setModelOpen((open) => !open);
                   setAgentOpen(false);
                   setVariantOpen(false);
+                  setPermissionOpen(false);
                 }}
                 title={`切换模型（当前：${modelLabel}）`}
                 aria-label={`切换模型，当前 ${modelLabel}`}
@@ -1267,6 +1485,7 @@ export default function Composer() {
                     setVariantOpen((open) => !open);
                     setAgentOpen(false);
                     setModelOpen(false);
+                    setPermissionOpen(false);
                   }}
                 >
                   <Icon name="spark" size={14} className="variant-icon" />

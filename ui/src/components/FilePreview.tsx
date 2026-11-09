@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
-import type { FilePreview } from "../filePreview";
+import { directoryOf, type FilePreview } from "../filePreview";
+import { ImageGroup } from "../imageViewer";
 import { useApp } from "../store";
 import { Icon } from "./Icon";
 import Markdown from "./Markdown";
@@ -179,7 +180,12 @@ export default function FilePreviewView({ preview }: { preview: FilePreview }) {
         <div className="preview-scroll">
           {markdownMode === "rendered" ? (
             <div className="preview-markdown">
-              <Markdown text={preview.content} />
+              <ImageGroup>
+                <Markdown
+                  text={preview.content}
+                  directory={directoryOf(preview.absolute)}
+                />
+              </ImageGroup>
             </div>
           ) : (
             <pre className="preview-body preview-code">{preview.content}</pre>

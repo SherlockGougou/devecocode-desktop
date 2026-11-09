@@ -35,6 +35,10 @@ graph LR
 - 端口、可选口令和连接状态只保留在 Rust 侧；
 - 后端自愈后可以替换端口，前端无需感知；
 - Git、设备、文件预览等需要 shell 或系统能力的操作可以在受限的 Rust 命令中实现。
+- Markdown 和消息附件里的本地图片经 `read_local_image` 读取后转 Blob URL；
+  `tauri://localhost` 不能直接加载 `/Users/...` 路径，也不依赖 `file://` 访问权限。
+  图片复制和另存统一走 `copy_image` / `save_image`，由 Rust 处理本地路径、data URL
+  和远程地址，避免 WebView 直接读盘或跨域取图。
 
 ## 目录与模块
 
@@ -77,7 +81,7 @@ graph LR
 | `src/git.rs` | 当前工作区 Git 状态、显式提交与推送 |
 | `src/device.rs` | HarmonyOS 设备发现、HDC 截图与充电亮屏锁 |
 | `src/device_skill.rs` | 内嵌 `deveco-desktop-device` skill 的安装、管理标记与 CLI 配置目录解析 |
-| `src/preview.rs` | macOS Quick Look 缩略图生成 |
+| `src/preview.rs` | macOS Quick Look 缩略图生成；读取并校验消息内嵌的本地图片与图片 data URL |
 | `src/fonts.rs` | 系统字体枚举 |
 | `src/config.rs` | 应用配置：CLI 路径、通知、菜单栏、端口与可选本地口令 |
 | `src/bin/selftest.rs` | 不打开窗口的端到端自检；由 `selftest` feature 启用，默认不进入应用包 |
@@ -93,6 +97,7 @@ graph LR
 | 状态与数据 | `ui/src/store.ts`、`ui/src/api.ts`、`ui/src/types.ts`、`ui/src/appEvents.ts` |
 | 配置编辑 | `ui/src/cliConfig.ts`、`components/settings/CliConfigPage.tsx`、`components/settings/useCliConfigEditor.ts` |
 | 对话体验 | `components/ChatView.tsx`、`components/Composer.tsx`、`components/Markdown.tsx` |
+| 图片查看 | `components/InlineImage.tsx`、`imageViewer.tsx`、`imageActions.ts` |
 | 导航与工作区 | `components/Sidebar.tsx`、`components/StatusBar.tsx` |
 | 底部终端 | `components/TerminalPanel.tsx` |
 | 右栏 | `components/RightPanel.tsx`、`components/ChangesPanel.tsx`、`components/FilesPanel.tsx`、`components/DiffView.tsx`、`components/FilePreview.tsx`、`components/TasksPanel.tsx`、`components/DevicePanel.tsx` |
@@ -221,6 +226,20 @@ stateDiagram-v2
     发送 synthetic 继续消息。不要改用 `/api/session/:id/prompt` 的 `delivery`，
     CLI 0.2.5 的 serve 尚未接通 v2 执行层。客户端 `messageID` 必须是 ULID 形状的
     `msg_` + 26 位 Crockford 字符；非 ULID 值仍返回 204，但消息会静默不落库。
+17. **会话权限选择走会话级规则，不写配置文件。** 未显式选择时新会话不发送 `permission`，
+    继承 Agent/全局配置；用户选择“每次询问 / 完全访问”后才用 `POST /session` 带入，已有
+    会话用 `PATCH /session/{id}` 更新。**PATCH 的 `permission` 是追加合并，不是替换**；
+    CLI 按 `findLast` 匹配，所以切换模式时只追加 `bash`、`external_directory`、`webfetch`、
+    `websearch` 的新动作，并把 Agent 的有效 deny 规则追加到最后；整体拒绝的工具还会重建
+    其通配 deny 和局部 allow，避免 `plan` 等限制被旧会话规则或新模式覆盖。不要试图用空
+    数组清除已有会话规则。
+    `每次询问` 写 `ask`，`完全访问` 写 `allow`；权限写入在途时，下一条 prompt 必须等待其
+    完成；写入失败时取消本次 prompt 并恢复输入，不能用旧权限继续发送。模式所有权判断要求
+    可调整工具最后一个非 deny 规则是 `pattern:"*"` 的桌面预设动作；整体拒绝（工具通配
+    deny 或全局兜底 deny）的工具保留 Agent 规则且不写模式动作。出现自定义路径/命令规则
+    时显示为“自定义”，切换模式前确认。切换 Agent 时，桌面预设按模式追加规则，自定义
+    会话只追加新 Agent 的硬限制；执行期间禁止切换 Agent，同步失败时恢复原 Agent。不要用
+    修改 `deveco.jsonc` 实现会话内切换。
 
 ## 数据与配置
 

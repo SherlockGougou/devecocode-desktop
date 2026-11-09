@@ -25,6 +25,7 @@ import type {
   ModelInfo,
   ProductAgreement,
   PermissionRequest,
+  PermissionRule,
   ProviderAuthAuthorization,
   ProviderAuthMethods,
   ProviderOverview,
@@ -230,8 +231,14 @@ export const api = {
       undefined,
       timeoutMs,
     ),
-  createSession: (directory: string, title?: string) =>
-    request<Session>("POST", "/session", { directory }, title ? { title } : {}),
+  createSession: (
+    directory: string,
+    options?: { title?: string; permission?: PermissionRule[] },
+  ) =>
+    request<Session>("POST", "/session", { directory }, {
+      ...(options?.title ? { title: options.title } : {}),
+      ...(options?.permission?.length ? { permission: options.permission } : {}),
+    }),
   prompt: (
     directory: string,
     sessionID: string,
@@ -483,6 +490,12 @@ export const api = {
     ),
   renameSession: (directory: string, id: string, title: string) =>
     request<Session>("PATCH", `/session/${id}`, { directory }, { title }),
+  updateSessionPermission: (
+    directory: string,
+    id: string,
+    permission: PermissionRule[],
+  ) =>
+    request<Session>("PATCH", `/session/${id}`, { directory }, { permission }),
   archiveSession: (directory: string, id: string, archived: boolean) =>
     request<Session>("PATCH", `/session/${id}`, { directory }, {
       time: { archived: archived ? Date.now() : 0 },
@@ -498,6 +511,12 @@ export const api = {
     }>("GET", "/file/content", { directory, path }),
   quickLookThumbnail: (path: string) =>
     invoke<ArrayBuffer>("quick_look_thumbnail", { path }),
+  readLocalImage: (baseDir: string | null, source: string) =>
+    invoke<ArrayBuffer>("read_local_image", { baseDir, source }),
+  copyImage: (baseDir: string | null, source: string) =>
+    invoke<void>("copy_image", { baseDir, source }),
+  saveImage: (baseDir: string | null, source: string, defaultName: string) =>
+    invoke<string | null>("save_image", { baseDir, source, defaultName }),
   terminalOpen: (directory: string | null, cols: number, rows: number) =>
     invoke<PtySession>("terminal_open", { directory, cols, rows }),
   terminalWrite: (id: string, data: string) =>
