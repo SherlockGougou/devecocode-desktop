@@ -2593,3 +2593,13 @@ Read/截图工具返回的图片附件在助手消息里也不显示。补上渲
 
 - 没有用真实模型触发工具执行来逐类验证 `ask` 下的审批弹窗；本轮验证覆盖规则生成、
   PATCH 契约和 UI 入口，实际工具授权仍依赖 CLI 执行路径。
+
+## 28. v0.2.5 发布
+
+- 发布提交：`c389cb8`；标签：`v0.2.5`。
+- `Release readiness` run `42640165986` 通过；Release run `42640306357` 完成双架构普通版、
+  双架构 Offline、两套更新清单、双语正文和 draft-first 发布。
+- Release 共 17 个资产，`isImmutable=true`；`gh release verify v0.2.5` 通过。
+- Homebrew tap run `42643356783` 成功，tap commit `c1d7ef2` 的两个 cask 已更新到
+  `0.2.5` 并写入对应 DMG SHA-256。
+- 发布后按仓库策略删除旧 Release `v0.2.4`，保留 tag；GitHub Releases 仅保留 `v0.2.5`。
