@@ -2399,3 +2399,40 @@ tool call，但工具真正执行要到 +17.2s；中间约 13.8s 是执行前等
 - 带图片附件、`@引用` 的编辑重发未在真实 `.app` 中逐项验证；正文引用重建和附件保留
   仅经过类型检查与代码审阅。
 - 中文 IME、浅色主题和窄窗口下的编辑器布局未逐一截图验收。
+
+## 23. 普通版从 Finder 启动后 serve 立即退出（2026-11-09）
+
+现象：GitHub 普通版 0.2.3 安装后打开，横幅显示“本地服务已停止 /
+deveco serve 启动后立即退出，输出：（无输出）”，自动重试和手动重试都无效。
+
+根因：
+
+- Finder / LaunchServices 启动的 `.app` 只有 `/usr/bin:/bin:/usr/sbin:/sbin`。
+  应用能按常见路径找到 `/opt/homebrew/bin/deveco`，但 npm / Homebrew 的 `deveco`
+  是 `#!/usr/bin/env node` 启动器，子进程找不到 Homebrew 的 `node`，以 127 退出。
+- 原实现只收集 stdout；node 的错误写在 stderr，所以界面显示“（无输出）”，
+  掩盖了真正原因，版本探测也因同一原因失败。
+
+修复：
+
+- `cli.rs` 新增 `child_path()`：调用 CLI 前把 CLI 目录、常见安装目录、
+  npm / volta / bun 目录和 nvm / fnm 版本目录并入子进程 `PATH`；
+  `--version` 探测与 `serve` 启动共用。
+- `server.rs` 同时收集 stderr 尾部，启动失败时随 stdout 一起回显。
+
+验证：
+
+- `env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin ... deveco-selftest` 19 项全过。
+- `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、
+  `cargo test`（98 passed、1 ignored）通过。
+- 用 Finder 打开 debug `.app`，应用进程 PATH 为最小系统 PATH，serve 子进程 PATH
+  已补 `/opt/homebrew/bin`；日志显示“已找到 deveco 0.2.5”“后端已就绪”，
+  状态栏“本机 CLI · 已连接”。
+
+未验证：
+
+- 已安装的 GitHub 0.2.3 仍包含旧逻辑，需要重新打包 / 发版后才会修复；
+  本次未改 `/Applications` 中的安装包。
+- 非 Homebrew 的自定义 Node 前缀未单独构造；nvm / fnm / volta / bun 通过目录补全覆盖。
+- 2026-11-09 后续：修复已随 v0.2.4 发布；发布后 GitHub Releases 只保留 v0.2.4，
+  旧版本下架。

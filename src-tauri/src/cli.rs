@@ -16,6 +16,62 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub const ENV_OVERRIDE: &str = "DEVECO_BIN_PATH";
 
+/// CLI 子进程的 PATH 补全。
+///
+/// npm / Homebrew 安装的 `deveco` 是 `#!/usr/bin/env node` 启动器。从 Finder
+/// 启动的应用只有 `/usr/bin:/bin:/usr/sbin:/sbin`，找不到 Homebrew 或版本管理器
+/// 里的 `node`，`deveco serve` 会立刻以 127 退出且不产生 stdout。这里把 CLI
+/// 自身目录和常见安装目录并回 PATH；调用方显式传入的 env 仍然优先。
+pub fn child_path(bin: &Path) -> Option<std::ffi::OsString> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = bin.parent() {
+        dirs.push(parent.to_path_buf());
+    }
+    // 用户已有的 PATH 优先于兜底目录，避免把 nvm / asdf 里的 node
+    // 悄悄换成 Homebrew 版本。
+    if let Some(existing) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&existing));
+    }
+    if let Some(home) = dirs::home_dir() {
+        for rel in [
+            ".local/bin",
+            ".npm-global/bin",
+            ".volta/bin",
+            ".bun/bin",
+            ".asdf/shims",
+            ".mise/shims",
+            "Library/pnpm",
+            ".yarn/bin",
+        ] {
+            dirs.push(home.join(rel));
+        }
+        // 版本管理器把 node 和全局包放在同一个版本目录下；只加常见目录
+        // 不够，用户可能把 deveco 装在 nvm / fnm 的某个版本里。
+        for root in version_manager_dirs(&home) {
+            dirs.push(root.join("bin"));
+            dirs.push(root.join("installation/bin"));
+        }
+    }
+    for dir in [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/opt/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        dirs.push(PathBuf::from(dir));
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<PathBuf> = dirs
+        .into_iter()
+        .filter(|dir| !dir.as_os_str().is_empty() && seen.insert(dir.clone()))
+        .collect();
+    std::env::join_paths(unique).ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliInfo {
     pub path: PathBuf,
@@ -95,21 +151,27 @@ pub fn probe_candidates() -> Vec<PathBuf> {
         out.push(home.join(".npm-global/bin/deveco"));
         out.push(home.join(".volta/bin/deveco"));
         out.push(home.join(".bun/bin/deveco"));
-        // nvm / fnm 多版本目录
-        for root in [".nvm/versions/node", ".fnm/node-versions"] {
-            if let Ok(entries) = std::fs::read_dir(home.join(root)) {
-                let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-                dirs.sort();
-                for d in dirs.into_iter().rev() {
-                    out.push(d.join("bin/deveco"));
-                    out.push(d.join("installation/bin/deveco"));
-                }
-            }
+        for dir in version_manager_dirs(&home) {
+            out.push(dir.join("bin/deveco"));
+            out.push(dir.join("installation/bin/deveco"));
         }
     }
     out.push(PathBuf::from("/opt/homebrew/bin/deveco"));
     out.push(PathBuf::from("/usr/local/bin/deveco"));
     out.push(PathBuf::from("/usr/bin/deveco"));
+    out
+}
+
+/// nvm / fnm 的多版本目录，新版本优先。
+fn version_manager_dirs(home: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for root in [".nvm/versions/node", ".fnm/node-versions"] {
+        if let Ok(entries) = std::fs::read_dir(home.join(root)) {
+            let mut dirs: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+            dirs.sort();
+            out.extend(dirs.into_iter().rev());
+        }
+    }
     out
 }
 
@@ -152,8 +214,12 @@ pub fn read_version_with_env(path: &Path, env: &[(String, String)]) -> Result<Ve
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .envs(env.iter().map(|(key, value)| (key, value)));
+        .stderr(Stdio::piped());
+    if let Some(path_env) = child_path(path) {
+        command.env("PATH", path_env);
+    }
+    // 显式 env 最后应用，允许调用方覆盖 PATH（与 spawn 的优先级保持一致）
+    command.envs(env.iter().map(|(key, value)| (key, value)));
     // 独立进程组：`deveco` 是 node launcher，超时只杀 launcher 会留下 161MB 的
     // 原生二进制继续占着 CLI 数据库（实测会让下一次探测直接卡死）。
     #[cfg(unix)]
@@ -301,5 +367,33 @@ mod tests {
             minor: 2,
             patch: 0
         }));
+    }
+
+    #[test]
+    fn 子进程_path_包含_cli_目录与常见安装位置() {
+        let path = child_path(Path::new("/opt/homebrew/bin/deveco")).expect("构建 PATH");
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+
+        assert_eq!(dirs.first(), Some(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
+        assert!(dirs.contains(&PathBuf::from("/opt/local/bin")));
+        assert!(dirs.contains(&PathBuf::from("/usr/bin")));
+        if let Some(home) = dirs::home_dir() {
+            assert!(dirs.contains(&home.join(".asdf/shims")));
+        }
+        assert_eq!(
+            dirs.iter()
+                .filter(|dir| dir.as_path() == Path::new("/opt/homebrew/bin"))
+                .count(),
+            1,
+            "重复目录应被去掉"
+        );
+        assert_eq!(
+            dirs.iter()
+                .filter(|dir| dir.as_path() == Path::new("/usr/bin"))
+                .count(),
+            1,
+            "现有 PATH 与兜底目录重复时应去重"
+        );
     }
 }

@@ -3,7 +3,7 @@
 每个发布标签对应一份 Markdown 文件：
 
 ```text
-docs/releases/v0.2.3.md
+docs/releases/v0.2.4.md
 ```
 
 发布 workflow 在普通版和 Offline 版产物都上传完成后，读取与标签同版本的文件并更新

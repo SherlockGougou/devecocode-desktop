@@ -107,7 +107,9 @@ graph LR
 ## 启动与请求链路
 
 1. 应用读取 `~/Library/Application Support/DevEco Code Desktop/config.json`。
-2. `cli.rs` 定位 `deveco` 并执行 `deveco --version`。
+2. `cli.rs` 定位 `deveco` 并执行 `deveco --version`。npm / Homebrew 安装的 `deveco`
+   是 `#!/usr/bin/env node` 启动器，因此调用 CLI 前会把 CLI 目录、常见安装目录和
+   nvm / fnm 版本目录并入子进程 `PATH`；Finder 启动的应用本身只有系统 PATH。
 3. `backend.rs` 定位 `hdc` 并注入 `HDC`，再把内嵌设备 skill 写入 CLI 的全局 skills 目录；
    随后决定复用固定端口上的实例，或在应用侧先找空闲端口后拉起
    `deveco serve --hostname 127.0.0.1 --port <port>`。serve 固定以

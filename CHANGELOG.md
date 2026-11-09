@@ -3,6 +3,18 @@
 版本说明按发布标签维护在 [`docs/releases/`](docs/releases/README.md)。Release workflow
 会读取对应版本的 Markdown 文件，生成 GitHub Release 正文。
 
+## 0.2.4 - 2026-11-09
+
+- 修复普通版从 Finder / LaunchServices 启动时找不到 Node，导致 `deveco serve` 立即退出、
+  界面显示“本地服务已停止 / 输出：（无输出）”的问题。
+- 启动 CLI 前把 CLI 自身目录、用户现有 PATH 和常见包管理器 / 版本管理器目录并入子进程
+  PATH；版本探测与 serve 启动共用同一规则，并保持用户已有 PATH 的优先级。
+- 启动失败横幅同时显示 stdout 与 stderr 尾部，不再隐藏 `env: node: No such file or
+  directory` 等真实错误。
+- 发布完成后只保留当前 Release，旧版本不再提供下载，避免继续安装受影响的 0.2.3。
+
+完整说明：[v0.2.4](docs/releases/v0.2.4.md)
+
 ## 0.2.3 - 2026-11-08
 
 - 新增应用内更新：普通版与 Offline 版分别检查 `latest.json` / `latest-offline.json`；

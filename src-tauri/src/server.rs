@@ -5,9 +5,11 @@
 //! `deveco server listening on http://127.0.0.1:<port>`，不假设固定端口。
 
 use anyhow::{anyhow, bail, Context, Result};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -19,6 +21,10 @@ pub const GLOBAL_EVENT_PATH: &str = "/global/event";
 
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const TERM_TIMEOUT: Duration = Duration::from_secs(5);
+/// 启动失败时回显的 stderr 尾部行数。
+const STDERR_TAIL_LINES: usize = 20;
+/// 进程退出后等待 stderr 读取任务排空的时间。
+const STDERR_FLUSH_WAIT: Duration = Duration::from_millis(300);
 
 /// CLI 的启动目录。
 ///
@@ -207,6 +213,11 @@ impl DevEcoServer {
         if let Some(auth) = &spec.auth {
             cmd.env("DEVECO_SERVER_PASSWORD", auth);
         }
+        // Finder 启动的应用只有系统 PATH；`deveco` 是 node launcher，
+        // 不补 PATH 会找不到 Homebrew / 版本管理器里的 node。
+        if let Some(path) = crate::cli::child_path(&spec.bin) {
+            cmd.env("PATH", path);
+        }
         for (key, value) in &spec.env {
             cmd.env(key, value);
         }
@@ -244,15 +255,22 @@ impl DevEcoServer {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("拿不到 deveco serve 的 stdout"))?;
-        let stderr = child.stderr.take();
-
-        if let Some(stderr) = stderr {
-            tokio::spawn(async move {
+        let stderr_tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let mut stderr_task = None;
+        if let Some(stderr) = child.stderr.take() {
+            let tail = Arc::clone(&stderr_tail);
+            stderr_task = Some(tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     log::debug!("[deveco stderr] {line}");
+                    if let Ok(mut tail) = tail.lock() {
+                        if tail.len() == STDERR_TAIL_LINES {
+                            tail.pop_front();
+                        }
+                        tail.push_back(line);
+                    }
                 }
-            });
+            }));
         }
 
         let mut lines = BufReader::new(stdout).lines();
@@ -262,11 +280,7 @@ impl DevEcoServer {
         let base_url = loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                let detail = if tail.is_empty() {
-                    "（无输出）".to_string()
-                } else {
-                    tail.join("\n")
-                };
+                let detail = startup_detail(&tail, &stderr_tail, &mut stderr_task).await;
                 return Err(cleanup(format!(
                     "等待 deveco serve 就绪超时（{}s）。最近的输出：{detail}",
                     START_TIMEOUT.as_secs()
@@ -284,11 +298,7 @@ impl DevEcoServer {
                     }
                 }
                 Ok(Ok(None)) => {
-                    let detail = if tail.is_empty() {
-                        "（无输出）".to_string()
-                    } else {
-                        tail.join("\n")
-                    };
+                    let detail = startup_detail(&tail, &stderr_tail, &mut stderr_task).await;
                     return Err(cleanup(format!(
                         "deveco serve 启动后立即退出，输出：{detail}"
                     )));
@@ -347,6 +357,29 @@ impl DevEcoServer {
             }
             let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
         }
+    }
+}
+
+/// 汇总启动失败时的 stdout / stderr 尾部。
+///
+/// stderr 才是 node launcher 失败的唯一线索（例如
+/// `env: node: No such file or directory`），不能只回显 stdout。
+async fn startup_detail(
+    stdout_tail: &[String],
+    stderr_tail: &Arc<Mutex<VecDeque<String>>>,
+    stderr_task: &mut Option<tokio::task::JoinHandle<()>>,
+) -> String {
+    if let Some(task) = stderr_task.take() {
+        let _ = tokio::time::timeout(STDERR_FLUSH_WAIT, task).await;
+    }
+    let mut lines: Vec<String> = stdout_tail.to_vec();
+    if let Ok(tail) = stderr_tail.lock() {
+        lines.extend(tail.iter().map(|line| format!("[stderr] {line}")));
+    }
+    if lines.is_empty() {
+        "（无输出）".to_string()
+    } else {
+        lines.join("\n")
     }
 }
 
@@ -476,5 +509,29 @@ mod tests {
 
         assert_eq!(prepare_launch_cwd(&dir).unwrap(), dir);
         assert!(dir.is_dir());
+    }
+
+    #[tokio::test]
+    async fn 启动失败时汇总_stderr_尾部() {
+        let stderr_tail = Arc::new(Mutex::new(VecDeque::from([String::from(
+            "env: node: No such file or directory",
+        )])));
+        let mut task = None;
+
+        let detail = startup_detail(&[String::from("stdout line")], &stderr_tail, &mut task).await;
+
+        assert!(detail.contains("stdout line"));
+        assert!(detail.contains("[stderr] env: node: No such file or directory"));
+    }
+
+    #[tokio::test]
+    async fn 启动失败且没有输出时给出占位文案() {
+        let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
+        let mut task = None;
+
+        assert_eq!(
+            startup_detail(&[], &stderr_tail, &mut task).await,
+            "（无输出）"
+        );
     }
 }

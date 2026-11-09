@@ -244,13 +244,13 @@ force push。规则里的 `bypass_actors` 只允许仓库所有者绕过。
 准备新版本时，先用脚本同步四处版本号：
 
 ```bash
-npm run release:prepare -- 0.2.3
+npm run release:prepare -- 0.2.4
 ```
 
-然后编写 `docs/releases/v0.2.3.md`、更新 CHANGELOG 和官网页脚。推送前在 Actions 中手动
-运行 `Release readiness`，输入 `v0.2.3`；它会校验版本一致性、双语正文和占位符。
+然后编写 `docs/releases/v0.2.4.md`、更新 CHANGELOG 和官网页脚。推送前在 Actions 中手动
+运行 `Release readiness`，输入 `v0.2.4`；它会校验版本一致性、双语正文和占位符。
 
-手动发布时，在 Actions 中选择 `Release`，填写与项目版本一致的 tag（例如 `v0.2.3`）。
+手动发布时，在 Actions 中选择 `Release`，填写与项目版本一致的 tag（例如 `v0.2.4`）。
 同一 workflow 的 `offline` job 还会构建包含固定 CLI 的离线版；其资源准备、体积和验收见
 [离线版打包](offline-packaging.md)。
 
@@ -259,7 +259,7 @@ Release 正文读取 `docs/releases/vX.Y.Z.md`，必须同时包含中英文段�
 
 Release 成功后，`update-homebrew.yml` 会用 `HOMEBREW_TAP_TOKEN` 把两个 cask 更新到
 `SherlockGougou/homebrew-tap`；失败时用 `workflow_dispatch` 输入同一个 tag 重跑。可以用
-`npm run homebrew:render -- --version v0.2.3 --sums SHA256SUMS.txt --out-dir /tmp/casks`
+`npm run homebrew:render -- --version v0.2.4 --sums SHA256SUMS.txt --out-dir /tmp/casks`
 在本地预览生成结果，再运行 `brew style`。
 
 官网由 `.github/workflows/pages.yml` 部署到 GitHub Pages；本地预览方式见
@@ -270,11 +270,16 @@ Release 成功后，`update-homebrew.yml` 会用 `HOMEBREW_TAP_TOKEN` 把两个 
 ### CLI 找不到
 
 GUI 进程通常拿不到 shell 的完整 PATH。应用会按设置、`DEVECO_BIN_PATH`、常见 Node
-版本目录和 login shell 探测。仍失败时，在“设置 → CLI 与服务”中手动选择可执行文件。
+版本目录和 login shell 探测。`deveco` 本身是 `#!/usr/bin/env node` 启动器，应用在拉起
+`serve` 前还会把 CLI 目录、Homebrew / npm 全局目录和 nvm / fnm 版本目录并入子进程
+`PATH`，否则会因找不到 `node` 而立即退出。仍失败时，在“设置 → CLI 与服务”中手动选择
+可执行文件。
 
 ### 后端启动失败
 
-查看 `~/Library/Logs/DevEco Code Desktop/app.log`，并在终端确认：
+失败横幅会带 `serve` 的 stdout / stderr 尾部（例如
+`env: node: No such file or directory`），完整内容在
+`~/Library/Logs/DevEco Code Desktop/app.log`。也可以在终端确认：
 
 ```bash
 deveco --version

@@ -61,7 +61,7 @@ gh secret set HOMEBREW_TAP_TOKEN \
 
 ```bash
 gh workflow run update-homebrew.yml \
-  -f tag=v0.2.3 \
+  -f tag=v0.2.4 \
   --repo SherlockGougou/devecocode-desktop
 ```
 
@@ -74,13 +74,13 @@ gh workflow run update-homebrew.yml \
 ## 发布操作
 
 ```bash
-npm run release:prepare -- 0.2.3
-# 编写 docs/releases/v0.2.3.md，更新 CHANGELOG 和官网页脚
+npm run release:prepare -- 0.2.4
+# 编写 docs/releases/v0.2.4.md，更新 CHANGELOG 和官网页脚
 npm run check
-npm run check:version 0.2.3
-gh workflow run release-check.yml -f tag=v0.2.3
-git tag -a v0.2.3 -m "DevEco Code Desktop v0.2.3"
-git push origin v0.2.3
+npm run check:version 0.2.4
+gh workflow run release-check.yml -f tag=v0.2.4
+git tag -a v0.2.4 -m "DevEco Code Desktop v0.2.4"
+git push origin v0.2.4
 ```
 
 `release-check` 通过后再打标签。标签推送后观察 `Release` workflow：draft 创建、四个 DMG、
@@ -92,9 +92,9 @@ Release 成功后 `update-homebrew.yml` 会自动更新 tap；如果只看 Relea
 ## 发布后核验
 
 ```bash
-gh release view v0.2.3 --json isDraft,isImmutable,assets
-gh release verify v0.2.3 -R SherlockGougou/devecocode-desktop
-gh attestation verify "DevEco.Code_0.2.3_aarch64.dmg" -R SherlockGougou/devecocode-desktop
+gh release view v0.2.4 --json isDraft,isImmutable,assets
+gh release verify v0.2.4 -R SherlockGougou/devecocode-desktop
+gh attestation verify "DevEco.Code_0.2.4_aarch64.dmg" -R SherlockGougou/devecocode-desktop
 shasum -a 256 -c SHA256SUMS.txt
 brew trust sherlockgougou/tap
 brew info --cask sherlockgougou/tap/devecocode-desktop

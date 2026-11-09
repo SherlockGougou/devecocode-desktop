@@ -163,7 +163,7 @@ npm run check:selftest
 - `.github/workflows/dependabot-automerge.yml` 对 patch/minor 更新在 7 项必需检查通过后
   自动 squash 合并；major 和未知类型继续人工处理。
 - `.github/workflows/release-check.yml` 手动检查版本一致性、双语 Release notes 和占位符；
-  `npm run release:prepare -- 0.2.3` 同步四个版本文件。
+  `npm run release:prepare -- 0.2.4` 同步四个版本文件。
 - `.github/workflows/release.yml` 在推送 `v*` 标签或手动触发时构建 Apple Silicon 与 Intel
   两种 DMG，并额外构建包含固定 CLI 的 Offline 版本。发布使用 draft-first：普通版、
   Offline 版、双语 notes、`SHA256SUMS.txt` 和两套 updater 清单全部完成后才公开。
