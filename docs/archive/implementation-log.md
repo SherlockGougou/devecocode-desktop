@@ -2702,3 +2702,20 @@ Read/截图工具返回的图片附件在助手消息里也不显示。补上渲
 
 - 没有在真实华为账号上重新执行完整浏览器登录；取消接口通过 CLI 0.2.5 路由和实现核对，
   未构造真实 OAuth 回调。
+
+## 32. v0.2.6 发布
+
+- 发布提交：`f05a5e0`；标签：`v0.2.6`。
+- `Release readiness` run `42973761542` 通过；Release run `42973829913` 完成双架构普通版、
+  双架构 Offline、两套更新清单、双语正文和 draft-first 发布。
+- Release 共 17 个资产，`isDraft=false`、`isImmutable=true`；`gh release verify v0.2.6`
+  通过。下载 `SHA256SUMS.txt` 后校验 aarch64 普通版 DMG 通过，并单独执行了
+  `gh attestation verify`。
+- `latest.json` / `latest-offline.json` 的版本均为 `0.2.6`，各包含 `darwin-aarch64`、
+  `darwin-x86_64` 及对应 `-app` 四个平台条目。
+- Homebrew tap run `42975928249` 成功，tap commit `bd4766e` 的两个 cask 已更新到
+  `0.2.6`；tap CI run `42975948695` 通过，本机 `brew fetch` 验证两个 cask 的下载和
+  SHA-256 通过。
+- 发布后按仓库策略删除旧 Release `v0.2.5`，保留 tag；GitHub Releases 仅保留 `v0.2.6`。
+- 同一发布提交的 CI、CodeQL、Security audit 和 Pages 分别由 run `42973751974`、
+  `42973752010`、`42973752072`、`42973752206` 验证通过。
