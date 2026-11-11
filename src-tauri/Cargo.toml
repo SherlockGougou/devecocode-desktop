@@ -1,6 +1,6 @@
 [package]
 name = "deveco-desktop"
-version = "0.2.5"
+version = "0.2.6"
 description = "DevEco Code 的 macOS 桌面客户端"
 license = "MIT"
 publish = false
