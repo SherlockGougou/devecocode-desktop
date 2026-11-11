@@ -54,8 +54,8 @@ Offline 版把模式换成 `DevEco.Code.Offline_.*aarch64.dmg$`。使用 GitHub 
 仓库启用 immutable release 后，还可以验证整个发布：
 
 ```bash
-gh attestation verify "DevEco.Code_0.2.6_aarch64.dmg" -R SherlockGougou/devecocode-desktop
-gh release verify v0.2.6 -R SherlockGougou/devecocode-desktop
+gh attestation verify "DevEco.Code_0.2.7_aarch64.dmg" -R SherlockGougou/devecocode-desktop
+gh release verify v0.2.7 -R SherlockGougou/devecocode-desktop
 ```
 
 attestation 只证明资产来自该仓库的构建工作流，不能替代 Apple Developer ID 签名或公证；
