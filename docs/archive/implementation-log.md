@@ -2603,3 +2603,102 @@ Read/截图工具返回的图片附件在助手消息里也不显示。补上渲
 - Homebrew tap run `42643356783` 成功，tap commit `c1d7ef2` 的两个 cask 已更新到
   `0.2.5` 并写入对应 DMG SHA-256。
 - 发布后按仓库策略删除旧 Release `v0.2.4`，保留 tag；GitHub Releases 仅保留 `v0.2.5`。
+
+## 29. Agent `question` 底部问答面板
+
+现象：CLI 的 `question` 工具已经在等待用户输入，但桌面端把它当普通工具渲染，
+只能看到原始 `questions/options` JSON，无法选择或回传答案。
+
+实现：
+
+- `ui/src/questions.ts` 统一定义 `QuestionInfo` / `QuestionRequest` / `QuestionAnswer`
+  的归一化、tool part 匹配、单选/多选/自定义文本组装和完整性判断。
+- `/global/event` 新增 `question.asked/replied/rejected` 处理；打开工作区、打开会话和
+  断线重连时从 `GET /question?directory=` 补齐待答请求。回答走
+  `POST /question/{requestID}/reply` 的 `answers: string[][]`，跳过走
+  `POST /question/{requestID}/reject`。
+- `/question` 快照与 SSE 可能交错：读取期间按顺序记录 upsert/remove/session-clear，
+  快照返回后再重放，避免慢请求清掉刚到的问题，或把已回答的请求重新带回。`session.idle`、
+  `session.error` 和会话删除也会同步清掉该会话的待答请求。
+- 初版曾在消息流中内联渲染交互卡，按反馈改为待答时用 `QuestionDock` 替换 Composer：
+  Composer 只隐藏、不卸载，未发送草稿不会丢。底部面板一次展示一题，支持 `1/2` 翻页、
+  收起/展开、单选/多选、选项说明、自定义答案和 `⌘Enter` 提交。
+- “无偏好”把未回答项填成 `["无偏好"]` 后提交；右侧下拉菜单提供“停止生成”，先调用
+  `session.abort`，再静默 reject 仍存在的 question 请求。已答后消息流保留可展开的
+  已回答摘要，答案优先读取 `state.metadata.answers`，兼容重启或事件丢失。
+- 面板使用独立蓝色语义变量与 question 图标，不复用授权卡的警告色；浅色/深色主题都有
+  对应配色。
+
+验证：
+
+- `npm --prefix ui test` 11 项通过；`npm --prefix ui run build` 通过。
+- 在临时工作区用真实模型触发 `question`：单个请求在早先的内联实现中完成过
+  `reply -> 1/1 已回答`，两题/多选请求完成过渲染、选择、自定义输入和 reject；应用重启后
+  未回答请求能从 `/question` 恢复。后端事件与回传链路已实际跑通。
+- 按反馈改为底部面板后，用 Vite 加载同一 `QuestionDock` 和 `styles.css` 验证：Composer
+  被替换，`1/2` 翻页、多选、单选、提交按钮启用、无偏好提交、停止生成菜单和操作后关闭
+  面板均符合预期；浅色主题截图确认布局。
+
+未验证：
+
+- 最终底部面板没有再次触发真实模型：当前手工 serve 实例的产品协议记录处于
+  `review_required`，模型请求被要求重新登录；这不是代码错误。
+- 自定义文本与多选答案在实际模型中只验证到输入和启用提交，没有提交该组合；答案矩阵由
+  `questions.ts` 单测覆盖。
+- 没有构造 CLI 返回 `tool` 缺失的异常请求；正常内置 question 工具始终带
+  `messageID/callID`。
+
+## 30. 提问提醒与提醒链路梳理
+
+现象：`question.asked` 已在对话底部显示问答面板，但窗口失焦或用户停留在其他会话时
+没有系统通知，菜单栏也只统计授权请求。
+
+实现：
+
+- `events.rs` 增加 `Question` / `QuestionResolved`，从第一个问题提取 header、正文和总题数；
+  `question.replied/rejected` 只用于清理提醒状态，不弹通知。
+- `notify.rs` 将提问与授权都视为阻塞型提醒：即使应用在前台也发送系统通知，不受
+  “前台静音”影响；可按 requestID 独立去抖。新增配置 `on_question`（默认开启）。
+- 设置页新增“需要回答时提醒”；菜单栏把待授权和待回答合并计数，提示中分别列出，
+  状态文字区分“等待授权 / 等待回答 / 等待处理”。
+- 侧栏会话行在等待回答时显示 question 指示，在等待授权时显示 shield 指示；窗口标题
+  分别显示“等待回答 / 需要授权”，不再只显示“执行中”。这些状态会随
+  `question.replied/rejected`、`permission.replied`、`session.idle` 或
+  `session.error` 清理。
+- 提醒范围复核：授权、提问、完成、失败和可选阶段推进都有系统通知；权限卡、问题面板、
+  未读会话、错误 toast、后端/更新提示条和菜单栏状态都有对应的应用内表现。工具增量、
+  diff、todo 等高频事件继续不通知，避免噪声。通知点击仍受 macOS/插件限制，只能聚焦窗口。
+
+验证：
+
+- Rust 112 项通过（1 ignored）；新增 question 分类、文案、前台提醒、独立去抖和菜单栏
+  混合计数测试。
+- 前端 11 项测试和 `npm --prefix ui run build` 通过；`cargo clippy --all-targets -- -D warnings`
+  通过。
+- `npm run check:selftest` 23/23 通过；新增“提问事件分类”“提问通知文案”和
+  “前台仍提醒提问 / 单项开关生效”检查。
+
+## 31. 自动 OAuth 回调生命周期
+
+现象：自动 OAuth 的 `/provider/{id}/oauth/callback` 会等待浏览器授权完成，但桌面端把它
+当作短请求并设置 60 秒超时；用户稍慢完成登录时，回调先被中断，单独的登录状态轮询无法
+完成凭据写入。
+
+实现：
+
+- 自动回调与轮询统一使用 10 分钟等待窗口；回调在打开浏览器前启动，不再因 `openUrl`
+  失败而完全没有执行。
+- 登录弹窗关闭、设置页卸载时调用 `POST /provider/{id}/oauth/cancel` 清掉在途流程；
+  每次登录带独立 flow token，关闭后迟到的回调错误不会写到新的登录会话。
+
+验证：
+
+- `npm --prefix ui test` 11 项、`npm --prefix ui run build`、`cargo fmt --check`、
+  `cargo test`（112 passed，1 ignored）、`cargo clippy --all-targets -- -D warnings`
+  均通过。
+- `npm run check:selftest` 23/23 通过。
+
+未验证：
+
+- 没有在真实华为账号上重新执行完整浏览器登录；取消接口通过 CLI 0.2.5 路由和实现核对，
+  未构造真实 OAuth 回调。

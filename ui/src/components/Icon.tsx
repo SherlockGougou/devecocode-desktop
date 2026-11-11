@@ -46,6 +46,7 @@ export type IconName =
   | "spark"
   | "branch"
   | "list"
+  | "question"
   | "undo"
   | "redo"
   | "scissors"
@@ -242,6 +243,13 @@ const ICONS: Record<IconName, ReactNode> = {
     <>
       <path d="M9 6.5h10M9 12h10M9 17.5h10" />
       <path d="m4.2 6.2.7.7 1.4-1.5M4.2 11.7l.7.7 1.4-1.5M4.2 17.2l.7.7 1.4-1.5" />
+    </>
+  ),
+  question: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M9.6 9.2a2.6 2.6 0 1 1 4.2 2.1c-.9.7-1.8 1.2-1.8 2.4" />
+      <path d="M12 16.8h.01" />
     </>
   ),
   undo: (

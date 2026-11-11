@@ -383,6 +383,13 @@ export default function Settings() {
               onChange={(on_permission) => patchNotifications({ on_permission })}
             />
             <Toggle
+              label="需要回答时提醒"
+              hint="Agent 提问后会等待输入，前台也提醒"
+              checked={notify.on_question}
+              disabled={!notify.enabled}
+              onChange={(on_question) => patchNotifications({ on_question })}
+            />
+            <Toggle
               label="任务完成时提醒"
               checked={notify.on_idle}
               disabled={!notify.enabled}
@@ -403,7 +410,7 @@ export default function Settings() {
             />
             <Toggle
               label="应用在前台时静音"
-              hint="授权提醒不受影响"
+              hint="授权和提问提醒不受影响"
               checked={notify.quiet_when_focused}
               disabled={!notify.enabled}
               onChange={(quiet_when_focused) =>

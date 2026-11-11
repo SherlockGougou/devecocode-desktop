@@ -30,6 +30,7 @@ impl Debouncer {
     pub fn key(notice: &Notice) -> Option<String> {
         match notice {
             Notice::Permission { request_id, .. } => Some(format!("permission:{request_id}")),
+            Notice::Question { request_id, .. } => Some(format!("question:{request_id}")),
             Notice::Idle { session_id } => Some(format!("idle:{session_id}")),
             Notice::Error { session_id, .. } => Some(format!("error:{session_id}")),
             Notice::Step { session_id } => Some(format!("step:{session_id}")),
@@ -50,22 +51,26 @@ impl Debouncer {
 
 /// 是否应该弹通知。
 ///
-/// 授权请求是「Agent 正卡在这里等用户」，即使应用在前台也照样提醒；
+/// 授权和提问都是「Agent 正卡在这里等用户」，即使应用在前台也照样提醒；
 /// 其余类别遵循 `quiet_when_focused`。
 pub fn should_notify(cfg: &Notifications, notice: &Notice, focused: bool) -> bool {
     if !cfg.enabled {
         return false;
     }
-    let permission = matches!(notice, Notice::Permission { .. });
-    if focused && cfg.quiet_when_focused && !permission {
+    let attention = matches!(notice, Notice::Permission { .. } | Notice::Question { .. });
+    if focused && cfg.quiet_when_focused && !attention {
         return false;
     }
     match notice {
         Notice::Permission { .. } => cfg.on_permission,
+        Notice::Question { .. } => cfg.on_question,
         Notice::Idle { .. } => cfg.on_idle,
         Notice::Error { .. } => cfg.on_error,
         Notice::Step { .. } => cfg.on_step,
-        Notice::Connected | Notice::PermissionResolved { .. } | Notice::Ignored => false,
+        Notice::Connected
+        | Notice::PermissionResolved { .. }
+        | Notice::QuestionResolved { .. }
+        | Notice::Ignored => false,
     }
 }
 
@@ -79,6 +84,16 @@ mod tests {
             session_id: "ses_1".into(),
             permission: "bash".into(),
             detail: String::new(),
+        }
+    }
+
+    fn question(id: &str) -> Notice {
+        Notice::Question {
+            request_id: id.to_string(),
+            session_id: "ses_1".into(),
+            header: "运行方式".into(),
+            detail: "请选择运行方式".into(),
+            total: 1,
         }
     }
 
@@ -116,6 +131,7 @@ mod tests {
             false
         ));
         assert!(should_notify(&cfg, &permission("per_2"), true));
+        assert!(should_notify(&cfg, &question("que_2"), true));
     }
 
     #[test]
@@ -142,5 +158,14 @@ mod tests {
         let now = Instant::now();
         assert!(deb.allow(&Debouncer::key(&permission("per_a")).unwrap(), now));
         assert!(deb.allow(&Debouncer::key(&permission("per_b")).unwrap(), now));
+    }
+
+    #[test]
+    fn 问题提醒按请求独立去抖() {
+        let mut deb = Debouncer::new(Duration::from_secs(10));
+        let now = Instant::now();
+        assert!(deb.allow(&Debouncer::key(&question("que_a")).unwrap(), now));
+        assert!(!deb.allow(&Debouncer::key(&question("que_a")).unwrap(), now));
+        assert!(deb.allow(&Debouncer::key(&question("que_b")).unwrap(), now));
     }
 }

@@ -43,6 +43,11 @@ import {
 import { ImageGroup } from "../imageViewer";
 import { AppIcon } from "./AppIcon";
 import MessageEditor from "./MessageEditor";
+import {
+  questionInputQuestions,
+  questionRequestMatchesPart,
+  questionResultAnswers,
+} from "../questions";
 
 const MAX_PREVIEW = 4000;
 const MAX_ATTACHMENT_PREVIEW = 120_000;
@@ -435,6 +440,209 @@ function AttachmentViewer({
   );
 }
 
+function questionErrorText(error: unknown): string {
+  if (error === undefined || error === null) return "";
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+/**
+ * `question` 是 CLI 的交互工具，不是普通 shell 工具。
+ * 请求通过 question.asked 单独到达，并带 messageID/callID 对回当前 tool part。
+ */
+function QuestionToolCard({ part }: { part: Part }) {
+  const requests = useApp((s) => s.questions);
+  const results = useApp((s) => s.questionResults);
+  const menu = useContextMenu();
+  const state = part.state ?? {};
+  const status = state.status ?? "pending";
+  const inputQuestions = useMemo(
+    () => questionInputQuestions(state.input),
+    [state.input],
+  );
+  const request = useMemo(
+    () =>
+      requests.find((item) =>
+        questionRequestMatchesPart(item, part),
+      ),
+    [requests, part.sessionID, part.messageID, part.callID],
+  );
+  const questions = request?.questions.length
+    ? request.questions
+    : inputQuestions;
+  const [seenRequestID, setSeenRequestID] = useState<string | null>(
+    request?.id ?? null,
+  );
+
+  useEffect(() => {
+    if (request) {
+      setSeenRequestID(request.id);
+    }
+  }, [request?.id]);
+
+  const result = seenRequestID ? results[seenRequestID] : undefined;
+  const answers = questionResultAnswers(result, state.metadata);
+  const error = questionErrorText(state.error);
+  const rejected =
+    result?.status === "rejected" ||
+    (status === "error" && /dismiss|rejected|取消|跳过/i.test(error));
+  const answered =
+    result?.status === "replied" ||
+    status === "completed" ||
+    answers.some((answer) => answer.length > 0);
+  const failed = status === "error" && !rejected;
+  const aborted = status === "interrupted" && !answered && !rejected;
+  const answeredCount = questions.reduce(
+    (count, _question, index) =>
+      count + ((answers[index]?.length ?? 0) > 0 ? 1 : 0),
+    0,
+  );
+  const waiting =
+    !request &&
+    !answered &&
+    !rejected &&
+    (status === "running" || status === "pending");
+
+  if (questions.length === 0) return <ToolCard part={part} />;
+  if (request || waiting) {
+    return (
+      <div className="question-inline-note">
+        <Icon name="question" size={13} />
+        <span>{request ? "请在下方回答问题" : "正在同步问题请求…"}</span>
+      </div>
+    );
+  }
+
+  const contextItems = [
+    copyItem(
+      "复制问题",
+      questions
+        .map(
+          (question) =>
+            `${question.header}\n${question.question}\n${question.options
+              .map((option) => `- ${option.label}${option.description ? `：${option.description}` : ""}`)
+              .join("\n")}`,
+        )
+        .join("\n\n"),
+      "问题已复制",
+    ),
+    ...(answers.some((answer) => answer.length > 0)
+      ? [
+          copyItem(
+            "复制回答",
+            questions
+              .map(
+                (question, index) =>
+                  `${question.header}：${answers[index]?.join("、") || "未回答"}`,
+              )
+              .join("\n"),
+            "回答已复制",
+          ),
+        ]
+      : []),
+  ];
+
+  const summary = failed
+    ? "问题失败"
+    : rejected
+      ? "已跳过"
+      : aborted
+        ? "已中止"
+        : answeredCount > 0
+          ? `${answeredCount}/${questions.length} 已回答`
+          : "已回答";
+  return (
+    <details
+      className={`question-card resolved${rejected ? " rejected" : ""}${failed ? " failed" : ""}`}
+      open={failed}
+      onContextMenu={(event) =>
+        menu.open(event, contextItems, { label: "问题菜单" })
+      }
+    >
+      <summary className="question-summary">
+        <span className="question-summary-state">
+          {failed ? (
+            <Icon name="alert" size={13} />
+          ) : rejected || aborted ? (
+            <Icon name="close" size={13} />
+          ) : (
+            <Icon name="check" size={13} strokeWidth={2.2} />
+          )}
+        </span>
+        <span className="question-summary-title">
+          {questions.length === 1
+            ? questions[0].question
+            : `${questions.length} 个问题`}
+        </span>
+        <span className="question-summary-meta">{summary}</span>
+        <Icon name="chevron-right" size={13} className="caret" />
+      </summary>
+      <div className="question-card-body resolved">
+        {failed && error && (
+          <div className="question-error">{error}</div>
+        )}
+        {questions.map((question, index) => {
+          const questionAnswers = answers[index] ?? [];
+          return (
+            <div className="question-item" key={`${part.id}-answer-${index}`}>
+              <div className="question-item-head">
+                <span className="question-item-header">
+                  {question.header}
+                </span>
+              </div>
+              <div className="question-item-question">
+                {question.question}
+              </div>
+              <div className="question-answers">
+                {questionAnswers.length > 0 ? (
+                  questionAnswers.map((answer) => {
+                    const option = question.options.find(
+                      (item) => item.label === answer,
+                    );
+                    return (
+                      <div className="question-answer" key={answer}>
+                        <span className="question-answer-check">
+                          <Icon name="check" size={10} strokeWidth={2.4} />
+                        </span>
+                        <span className="question-answer-copy">
+                          <span className="question-answer-label">
+                            {answer}
+                          </span>
+                          {option?.description && (
+                            <span className="question-answer-description">
+                              {option.description}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <span className="question-answer-empty">未回答</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {rejected && (
+          <div className="question-dismissed">
+            已跳过这个问题，Agent 会按未回答继续处理。
+          </div>
+        )}
+        {aborted && (
+          <div className="question-dismissed">
+            生成已停止，这个问题没有提交回答。
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
 function ToolCard({ part }: { part: Part }) {
   const menu = useContextMenu();
   const state = part.state ?? {};
@@ -689,7 +897,11 @@ function groupParts(parts: Part[]): Block[] {
   const blocks: Block[] = [];
   for (const part of parts) {
     if (part.synthetic) continue;
-    if (part.type === "subtask" || (part.type === "tool" && part.tool === "task")) {
+    if (
+      part.type === "subtask" ||
+      (part.type === "tool" &&
+        (part.tool === "task" || part.tool === "question"))
+    ) {
       blocks.push({ kind: "part", part });
       continue;
     }
@@ -729,6 +941,9 @@ function AssistantBlocks({
         const part = block.part;
         if (part.type === "subtask" || (part.type === "tool" && part.tool === "task")) {
           return <SubagentPartCard key={part.id} part={part} fallbackTime={fallbackTime} />;
+        }
+        if (part.type === "tool" && part.tool === "question") {
+          return <QuestionToolCard key={part.id} part={part} />;
         }
         if (part.type === "text") {
           return part.text ? (

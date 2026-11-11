@@ -106,6 +106,39 @@ export interface PermissionRequest {
   always?: string[];
 }
 
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface QuestionInfo {
+  question: string;
+  header: string;
+  options: QuestionOption[];
+  multiple?: boolean;
+  /** 默认允许；plan/enter 等工具会显式关闭 */
+  custom?: boolean;
+}
+
+export interface QuestionToolRef {
+  messageID: string;
+  callID?: string;
+}
+
+/** CLI 的待回答请求；按工作区广播，不跟随当前打开的会话。 */
+export interface QuestionRequest {
+  id: string;
+  sessionID: string;
+  questions: QuestionInfo[];
+  tool?: QuestionToolRef;
+}
+
+export interface QuestionResult {
+  status: "replied" | "rejected";
+  /** 每个问题对应一组已选标签或自定义文本 */
+  answers?: string[][];
+}
+
 export type PermissionAction = "allow" | "ask" | "deny";
 
 /** CLI 的会话权限规则：哪个工具、匹配什么资源、执行什么动作。 */
@@ -224,6 +257,7 @@ export type SettingsPage =
 export interface NotificationSettings {
   enabled: boolean;
   on_permission: boolean;
+  on_question: boolean;
   on_idle: boolean;
   on_error: boolean;
   on_step: boolean;

@@ -71,8 +71,8 @@ graph LR
 | `src/supervise.rs` | 后端自愈状态机与指数退避 |
 | `src/http.rs` | 访问本机 CLI 的 HTTP 客户端，主进程与自检共用 |
 | `src/sse.rs` | `text/event-stream` 解析与订阅 |
-| `src/events.rs` | 授权、完成、失败、阶段事件分类，全局事件解包与通知文案 |
-| `src/notify.rs` | 通知策略与按会话去抖 |
+| `src/events.rs` | 授权、提问、完成、失败、阶段事件分类，全局事件解包与通知文案 |
+| `src/notify.rs` | 通知策略、前台静音与按会话/请求去抖 |
 | `src/ipc.rs` | 前端与 CLI/系统之间的命令桥：代理、设置、设备、字体与窗口标题 |
 | `src/terminal.rs` | 底部终端：调用 `/pty` 创建/调整/关闭会话，维持 WebSocket，把输出转成 Tauri 事件 |
 | `src/cli_config.rs` | CLI 全局/项目配置路径解析、JSONC 校验、密钥脱敏、备份、原子写入与重载 |
@@ -104,7 +104,7 @@ graph LR
 | 概览与设置 | `components/TaskOverview.tsx`、`components/Settings.tsx`、`components/settings/*` |
 | 应用内更新 | `update.ts`、`components/UpdateBanner.tsx`、`components/settings/AboutPage.tsx` |
 | 交互基础 | `contextMenu.tsx`、`components/Shortcuts.tsx`、`components/Icon.tsx` |
-| 纯逻辑工具 | `attachments.ts`、`changes.ts`、`diff.ts`、`fileTree.ts`、`clipboard.ts`、`filePreview.ts`、`mentions.ts`、`messageStats.ts`、`models.ts`、`paths.ts`、`tasks.ts`、`theme.ts`、`uiPrefs.ts` |
+| 纯逻辑工具 | `attachments.ts`、`changes.ts`、`diff.ts`、`fileTree.ts`、`clipboard.ts`、`filePreview.ts`、`mentions.ts`、`messageStats.ts`、`models.ts`、`paths.ts`、`questions.ts`、`tasks.ts`、`theme.ts`、`uiPrefs.ts` |
 
 所有请求集中在 `ui/src/api.ts`，所有共享状态集中在 `ui/src/store.ts`。组件可以调用
 `api.ts` 或读取 store，但不直接创建 HTTP 连接。
@@ -240,6 +240,16 @@ stateDiagram-v2
     时显示为“自定义”，切换模式前确认。切换 Agent 时，桌面预设按模式追加规则，自定义
     会话只追加新 Agent 的硬限制；执行期间禁止切换 Agent，同步失败时恢复原 Agent。不要用
     修改 `deveco.jsonc` 实现会话内切换。
+18. **`question` 是等待用户输入的交互工具，不是普通工具输出。** 待答请求以
+    `question.asked` 广播，按 `sessionID` 归属会话，并可用 `tool.messageID/callID`
+    对回消息里的 `question` tool part；打开工作区、打开会话和断线重连时要从
+    `GET /question?directory=` 补齐。回答用
+    `POST /question/{requestID}/reply` 提交 `answers: string[][]`，每题按题目顺序给一组
+    标签或自定义文本；跳过用 `POST /question/{requestID}/reject`。不能只渲染
+    `part.state.input`，否则用户无法完成请求。待答状态下前端用问答面板替换 Composer，
+    Composer 只隐藏、不卸载，避免丢失未发送草稿；面板的“无偏好”把空答案填为
+    `["无偏好"]` 后提交，“停止生成”先调用 `session.abort`，再静默关闭仍存在的
+    question 请求。
 
 ## 数据与配置
 

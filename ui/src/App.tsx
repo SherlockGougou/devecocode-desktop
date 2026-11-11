@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { api } from "./api";
@@ -12,6 +12,7 @@ import type { BackendPhase } from "./types";
 import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import Composer from "./components/Composer";
+import QuestionDock from "./components/QuestionDock";
 import StatusBar from "./components/StatusBar";
 import RightPanel from "./components/RightPanel";
 import Settings from "./components/Settings";
@@ -33,6 +34,7 @@ export default function App() {
   const overviewOpen = useApp((s) => s.overviewOpen);
   const settingsOpen = useApp((s) => s.settingsOpen);
   const shortcutsOpen = useApp((s) => s.shortcutsOpen);
+  const questions = useApp((s) => s.questions);
   const sidebarWidth = useApp((s) => s.sidebarWidth);
   const rightWidth = useApp((s) => s.rightWidth);
   const sidebarOpen = useApp((s) => s.sidebarOpen);
@@ -42,7 +44,6 @@ export default function App() {
   const dismissError = useApp((s) => s.dismissError);
   const boot = useApp((s) => s.boot);
   const onSse = useApp((s) => s.onSse);
-
   useEffect(() => {
     if (booted.current) return;
     booted.current = true;
@@ -163,6 +164,21 @@ export default function App() {
   const sessions = useApp((s) => s.sessions);
   const directory = useApp((s) => s.directory);
   const sessionID = useApp((s) => s.sessionID);
+  const permissions = useApp((s) => s.permissions);
+  const activeQuestion = useMemo(
+    () =>
+      sessionID
+        ? questions.find((question) => question.sessionID === sessionID)
+        : undefined,
+    [questions, sessionID],
+  );
+  const activePermission = useMemo(
+    () =>
+      sessionID
+        ? permissions.find((permission) => permission.sessionID === sessionID)
+        : undefined,
+    [permissions, sessionID],
+  );
   const streaming = useApp((s) => s.streaming);
   const traySessionTitle = useApp((s) => {
     if (!s.sessionID) return null;
@@ -217,7 +233,18 @@ export default function App() {
         gridTemplateColumns: `${sidebarOpen ? sidebarWidth : 0}px minmax(0, 1fr) ${rightOpen ? `${rightWidth}px` : "0px"}`,
       }}
     >
-      <TitleBar sessionTitle={sessionTitle} project={projectTitle} streaming={streaming} />
+      <TitleBar
+        sessionTitle={sessionTitle}
+        project={projectTitle}
+        streaming={streaming}
+        attention={
+          activeQuestion
+            ? "question"
+            : activePermission
+              ? "permission"
+              : null
+        }
+      />
       <TaskOverview />
       <Sidebar />
       {sidebarOpen && (
@@ -247,7 +274,17 @@ export default function App() {
         <BackendBanner />
         <UpdateBanner />
         <ChatView />
-        <Composer />
+        <div
+          className={`composer-slot${activeQuestion ? " question-active" : ""}`}
+        >
+          <Composer />
+          {activeQuestion && (
+            <QuestionDock
+              key={activeQuestion.id}
+              request={activeQuestion}
+            />
+          )}
+        </div>
         <TerminalPanel />
         <StatusBar />
       </main>
@@ -379,10 +416,12 @@ function TitleBar({
   sessionTitle,
   project,
   streaming,
+  attention,
 }: {
   sessionTitle: string;
   project: string;
   streaming: boolean;
+  attention: "question" | "permission" | null;
 }) {
   const sidebarOpen = useApp((s) => s.sidebarOpen);
   const sidebarWidth = useApp((s) => s.sidebarWidth);
@@ -428,7 +467,13 @@ function TitleBar({
           <Icon name="folder" size={16} className="titlebar-icon" />
           <span className="titlebar-title-text">{sessionTitle || "DevEco Code"}</span>
           {!sessionTitle && <span className="brand-ver">v0.2</span>}
-          {streaming && <span className="titlebar-streaming">· 执行中</span>}
+          {attention === "question" ? (
+            <span className="titlebar-streaming">· 等待回答</span>
+          ) : attention === "permission" ? (
+            <span className="titlebar-streaming">· 需要授权</span>
+          ) : (
+            streaming && <span className="titlebar-streaming">· 执行中</span>
+          )}
         </div>
         <div className="titlebar-drag" />
       </div>

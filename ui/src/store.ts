@@ -40,6 +40,8 @@ import type {
   PermissionMode,
   PermissionRule,
   Project,
+  QuestionRequest,
+  QuestionResult,
   Session,
   SettingsPage,
   SessionStatus,
@@ -72,6 +74,12 @@ import {
   awaitPermissionPatch,
   type PermissionPatchResult,
 } from "./permissionGate";
+import {
+  mergeQuestionChanges,
+  normalizeQuestionAnswers,
+  normalizeQuestionRequest,
+  type QuestionChange,
+} from "./questions";
 
 export type RightTab = "changes" | "files" | "device" | "tasks";
 export type ChangeSource = "workspace" | "session";
@@ -696,6 +704,57 @@ function upsertSession(list: Session[], session: Session): Session[] {
   return next;
 }
 
+function upsertQuestion(
+  list: QuestionRequest[],
+  request: QuestionRequest,
+): QuestionRequest[] {
+  const index = list.findIndex((item) => item.id === request.id);
+  if (index === -1) return [...list, request];
+  const next = list.slice();
+  next[index] = request;
+  return next;
+}
+
+let questionChangeSequence = 0;
+const questionChanges: QuestionChange[] = [];
+
+function noteQuestionUpsert(request: QuestionRequest): void {
+  questionChangeSequence += 1;
+  questionChanges.push({
+    sequence: questionChangeSequence,
+    kind: "upsert",
+    request,
+  });
+}
+
+function noteQuestionRemove(id: string): void {
+  if (!id) return;
+  questionChangeSequence += 1;
+  questionChanges.push({
+    sequence: questionChangeSequence,
+    kind: "remove",
+    id,
+  });
+}
+
+function noteQuestionSessionClear(sessionID: string): void {
+  if (!sessionID) return;
+  questionChangeSequence += 1;
+  questionChanges.push({
+    sequence: questionChangeSequence,
+    kind: "session",
+    sessionID,
+  });
+}
+
+/** 快照只覆盖发起请求那一刻的状态，之后的 SSE/本地变更必须重新应用。 */
+function mergeQuestionSnapshot(
+  snapshot: QuestionRequest[],
+  since: number,
+): QuestionRequest[] {
+  return mergeQuestionChanges(snapshot, questionChanges, since);
+}
+
 /** 权限写入在途时，后续 prompt 必须等它完成，避免用旧规则启动新一轮。 */
 let permissionPatch: Promise<PermissionPatchResult> = Promise.resolve("ok");
 let permissionPatchToken = 0;
@@ -891,6 +950,12 @@ export interface AppState {
   sessionID: string | null;
   messages: Message[];
   permissions: PermissionRequest[];
+  /** 当前工作区所有待回答请求，按会话自行筛选展示 */
+  questions: QuestionRequest[];
+  /** 已回答/已跳过结果，客户端先于工具快照更新时保持卡片稳定 */
+  questionResults: Record<string, QuestionResult>;
+  /** 正在提交回答或跳过的请求，防止重复点击 */
+  questionBusy: Record<string, "reply" | "reject">;
   todos: TodoItem[];
   sessionChildren: Session[];
   childMessages: Record<string, Message[]>;
@@ -1046,6 +1111,10 @@ export interface AppState {
   resumeAllDelivery(): Promise<void>;
   stop(): Promise<void>;
   replyPermission(id: string, reply: "once" | "always" | "reject"): Promise<void>;
+  replyQuestion(id: string, answers: string[][]): Promise<boolean>;
+  rejectQuestion(id: string): Promise<boolean>;
+  /** 停止当前生成，并关闭仍挂起的 question 请求。 */
+  stopQuestion(id: string): Promise<void>;
   onSse(raw: string): void;
   onBackend(phase: BackendPhase): void;
   retryBackend(): Promise<void>;
@@ -1143,6 +1212,9 @@ export const useApp = create<AppState>()((set, get) => ({
   sessionID: null,
   messages: [],
   permissions: [],
+  questions: [],
+  questionResults: {},
+  questionBusy: {},
   todos: [],
   sessionChildren: [],
   childMessages: {},
@@ -1370,6 +1442,9 @@ export const useApp = create<AppState>()((set, get) => ({
         editing: null,
         editPhase: "idle",
         permissions: [],
+        questions: [],
+        questionResults: {},
+        questionBusy: {},
         todos: [],
         sessionChildren: [],
         childMessages: {},
@@ -1407,8 +1482,17 @@ export const useApp = create<AppState>()((set, get) => ({
       // 启动/切换工作区时补一次执行状态，已在跑的会话不必等下一次事件才显示
       void get().refreshBusySessions(directory);
       stopPermissionWatch();
-      const permissions = await api.permissions(directory, timeout).catch(() => []);
-      set({ permissions });
+      const questionMarker = questionChangeSequence;
+      const [permissions, questions] = await Promise.all([
+        api.permissions(directory, timeout).catch(() => []),
+        api.questions(directory, timeout).catch(() => null),
+      ]);
+      set({
+        permissions,
+        ...(questions
+          ? { questions: mergeQuestionSnapshot(questions, questionMarker) }
+          : {}),
+      });
       void get().loadMeta();
       if (!openRecent) {
         // 新会话草稿只加载工作区元数据，不能自动打开最近会话把它顶掉。
@@ -1485,10 +1569,12 @@ export const useApp = create<AppState>()((set, get) => ({
       });
     }
     try {
-      const [messages, statuses, detail] = await Promise.all([
+      const questionMarker = questionChangeSequence;
+      const [messages, statuses, detail, questions] = await Promise.all([
         api.messages(directory, id, timeout),
         api.sessionStatus(directory, timeout).catch(() => null),
         api.session(directory, id, timeout).catch(() => null),
+        api.questions(directory, timeout).catch(() => null),
       ]);
       // 打开会话期间可能已经有事件到达，合并而不是覆盖
       const merged = mergeMessages(messages, get().messages);
@@ -1501,6 +1587,9 @@ export const useApp = create<AppState>()((set, get) => ({
         messages: markInterruptedMessages(merged, active),
         streaming: active,
         error: null,
+        ...(questions
+          ? { questions: mergeQuestionSnapshot(questions, questionMarker) }
+          : {}),
         ...(detail
           ? {
               sessions: {
@@ -1684,6 +1773,9 @@ export const useApp = create<AppState>()((set, get) => ({
         directory: null,
         ...emptyConversationPatch(),
         permissions: [],
+        questions: [],
+        questionResults: {},
+        questionBusy: {},
         preview: null,
         workspaceDiff: [],
         sessionDiff: [],
@@ -2964,6 +3056,89 @@ export const useApp = create<AppState>()((set, get) => ({
     }
   },
 
+  async replyQuestion(id, answers) {
+    const { directory } = get();
+    if (!directory || get().questionBusy[id]) return false;
+    set({ questionBusy: { ...get().questionBusy, [id]: "reply" } });
+    try {
+      await api.replyQuestion(directory, id, answers);
+      noteQuestionRemove(id);
+      const questionBusy = { ...get().questionBusy };
+      delete questionBusy[id];
+      set({
+        questions: get().questions.filter((question) => question.id !== id),
+        questionResults: {
+          ...get().questionResults,
+          [id]: { status: "replied", answers },
+        },
+        questionBusy,
+      });
+      return true;
+    } catch (error) {
+      const questionBusy = { ...get().questionBusy };
+      delete questionBusy[id];
+      set({
+        questionBusy,
+        error: `提交回答失败：${String(error)}`,
+      });
+      return false;
+    }
+  },
+
+  async rejectQuestion(id) {
+    const { directory } = get();
+    if (!directory || get().questionBusy[id]) return false;
+    set({ questionBusy: { ...get().questionBusy, [id]: "reject" } });
+    try {
+      await api.rejectQuestion(directory, id);
+      noteQuestionRemove(id);
+      const questionBusy = { ...get().questionBusy };
+      delete questionBusy[id];
+      set({
+        questions: get().questions.filter((question) => question.id !== id),
+        questionResults: {
+          ...get().questionResults,
+          [id]: { status: "rejected" },
+        },
+        questionBusy,
+      });
+      return true;
+    } catch (error) {
+      const questionBusy = { ...get().questionBusy };
+      delete questionBusy[id];
+      set({
+        questionBusy,
+        error: `跳过问题失败：${String(error)}`,
+      });
+      return false;
+    }
+  },
+
+  async stopQuestion(id) {
+    await get().stop();
+    const { directory } = get();
+    if (!directory || !get().questions.some((question) => question.id === id)) {
+      return;
+    }
+    set({ questionBusy: { ...get().questionBusy, [id]: "reject" } });
+    try {
+      await api.rejectQuestion(directory, id);
+    } catch {
+      // session.abort 可能已经替 CLI 清掉请求；这里的目标是退出等待，而不是报错。
+    }
+    noteQuestionRemove(id);
+    const questionBusy = { ...get().questionBusy };
+    delete questionBusy[id];
+    set({
+      questions: get().questions.filter((question) => question.id !== id),
+      questionResults: {
+        ...get().questionResults,
+        [id]: { status: "rejected" },
+      },
+      questionBusy,
+    });
+  },
+
   onBackend(phase) {
     // 主进程刚启动时可能还没广播，忽略不完整载荷，保持启动态
     if (!phase || !phase.state) return;
@@ -3070,9 +3245,11 @@ export const useApp = create<AppState>()((set, get) => ({
       sessions.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
       set({ sessions: { ...get().sessions, [directory]: sessions } });
       if (sessionID) {
-        const [messages, permissions, statuses] = await Promise.all([
+        const questionMarker = questionChangeSequence;
+        const [messages, permissions, questions, statuses] = await Promise.all([
           api.messages(directory, sessionID),
           api.permissions(directory).catch(() => []),
+          api.questions(directory).catch(() => null),
           api.sessionStatus(directory).catch(() => null),
         ]);
         // 重连期间会丢失 status/idle 事件；用快照重新确认当前会话是否仍在运行。
@@ -3095,6 +3272,9 @@ export const useApp = create<AppState>()((set, get) => ({
           messages:
             editingSnapshot ?? markInterruptedMessages(messages, active),
           permissions,
+          ...(questions
+            ? { questions: mergeQuestionSnapshot(questions, questionMarker) }
+            : {}),
           streaming: active,
           ...(targetGone ? { editing: null, editPhase: "idle" as MessageEditPhase } : {}),
           ...(statuses
@@ -3143,6 +3323,19 @@ export const useApp = create<AppState>()((set, get) => ({
       (get().sessionChildren.some((child) => child.id === sessionID) ||
         Boolean(get().childMessages[sessionID]) ||
         Boolean(get().childTodos[sessionID]));
+    const clearSessionQuestions = (sessionID: string) => {
+      if (!sessionID) return {};
+      noteQuestionSessionClear(sessionID);
+      const pending = get().questions.filter(
+        (question) => question.sessionID === sessionID,
+      );
+      if (pending.length === 0) return {};
+      return {
+        questions: get().questions.filter(
+          (question) => question.sessionID !== sessionID,
+        ),
+      };
+    };
 
     switch (type) {
       case "server.connected":
@@ -3488,6 +3681,7 @@ export const useApp = create<AppState>()((set, get) => ({
       }
       case "session.idle": {
         if (eventSession) get().finishStopping(eventSession);
+        const clearedQuestions = clearSessionQuestions(eventSession);
         // session.idle 是整轮任务结束的权威事件：无论之前有没有收到 status 事件，
         // 都要清掉加载指示；非当前会话同时标记未读。
         const busySessions = { ...get().busySessions };
@@ -3503,6 +3697,7 @@ export const useApp = create<AppState>()((set, get) => ({
         }
         set({
           busySessions,
+          ...clearedQuestions,
           ...(markUnread ? { unreadSessions } : {}),
         });
         if (eventSession === currentSession) {
@@ -3550,7 +3745,10 @@ export const useApp = create<AppState>()((set, get) => ({
         if (eventSession) get().finishStopping(eventSession);
         const busySessions = { ...get().busySessions };
         delete busySessions[eventSession];
-        set({ busySessions });
+        set({
+          busySessions,
+          ...clearSessionQuestions(eventSession),
+        });
         if (eventSession === currentSession) {
           const message = props.error?.data?.message ?? props.error?.name ?? "未知错误";
           set({
@@ -3599,6 +3797,43 @@ export const useApp = create<AppState>()((set, get) => ({
         if (!get().permissions.some((p) => p.id === request.id)) {
           set({ permissions: [...get().permissions, request] });
         }
+        break;
+      }
+      case "question.asked": {
+        const request = normalizeQuestionRequest(props);
+        if (request) {
+          noteQuestionUpsert(request);
+          set({ questions: upsertQuestion(get().questions, request) });
+        }
+        break;
+      }
+      case "question.replied": {
+        const requestID =
+          typeof props.requestID === "string" ? props.requestID : "";
+        if (!requestID) break;
+        noteQuestionRemove(requestID);
+        const answers = normalizeQuestionAnswers(props.answers);
+        set({
+          questions: get().questions.filter((question) => question.id !== requestID),
+          questionResults: {
+            ...get().questionResults,
+            [requestID]: { status: "replied", answers },
+          },
+        });
+        break;
+      }
+      case "question.rejected": {
+        const requestID =
+          typeof props.requestID === "string" ? props.requestID : "";
+        if (!requestID) break;
+        noteQuestionRemove(requestID);
+        set({
+          questions: get().questions.filter((question) => question.id !== requestID),
+          questionResults: {
+            ...get().questionResults,
+            [requestID]: { status: "rejected" },
+          },
+        });
         break;
       }
       case "session.next.step.started":
@@ -4361,10 +4596,12 @@ export const useApp = create<AppState>()((set, get) => ({
       const unreadSessions = { ...get().unreadSessions };
       delete unreadSessions[id];
       rememberUnreadSessions(unreadSessions);
+      noteQuestionSessionClear(id);
       set({
         sessions: { ...get().sessions, [directory]: list.filter((item) => item.id !== id) },
         busySessions,
         unreadSessions,
+        questions: get().questions.filter((question) => question.sessionID !== id),
       });
       if (get().directory === directory && get().sessionID === id) {
         cancelBtwPending();
@@ -4374,6 +4611,7 @@ export const useApp = create<AppState>()((set, get) => ({
           editing: null,
           editPhase: "idle",
           permissions: [],
+          questions: get().questions.filter((question) => question.sessionID !== id),
           todos: [],
           sessionChildren: [],
           childMessages: {},

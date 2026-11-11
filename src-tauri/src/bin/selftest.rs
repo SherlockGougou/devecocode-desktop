@@ -793,6 +793,50 @@ fn self_check_notifications(report: &mut Report) {
         format!("focused={focused_allowed} disabled_blocked={disabled_blocked}"),
     );
 
+    let question_raw = r#"{"type":"question.asked","properties":{"id":"que_selftest","sessionID":"ses_selftest","questions":[{"header":"运行方式","question":"请选择运行方式"}]}}"#;
+    let question = classify(&SseEvent {
+        event: None,
+        id: None,
+        data: question_raw.to_string(),
+    });
+    let question_classified = matches!(
+        &question,
+        Notice::Question {
+            request_id,
+            session_id,
+            header,
+            detail,
+            total,
+        } if request_id == "que_selftest"
+            && session_id == "ses_selftest"
+            && header == "运行方式"
+            && detail == "请选择运行方式"
+            && *total == 1
+    );
+    report.check("提问事件分类", question_classified, format!("{question:?}"));
+
+    let question_text = render(&question, "DevEcoCodeDesktop");
+    report.check(
+        "提问通知文案",
+        question_text
+            .as_ref()
+            .map(|text| text.title.contains("回答") && text.body.contains("运行方式"))
+            .unwrap_or(false),
+        question_text
+            .map(|text| format!("{} / {}", text.title, text.body.replace('\n', " ")))
+            .unwrap_or_else(|| "未生成文案".into()),
+    );
+
+    let mut question_cfg = Config::default().notifications;
+    let question_focused = should_notify(&question_cfg, &question, true);
+    question_cfg.on_question = false;
+    let question_disabled = !should_notify(&question_cfg, &question, true);
+    report.check(
+        "通知策略（前台仍提醒提问 / 单项开关生效）",
+        question_focused && question_disabled,
+        format!("focused={question_focused} disabled={question_disabled}"),
+    );
+
     let mut debouncer = Debouncer::new(DEBOUNCE_WINDOW);
     let key = Debouncer::key(&notice).unwrap_or_default();
     let now = Instant::now();

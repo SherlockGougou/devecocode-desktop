@@ -10,6 +10,7 @@
     "src/sessionPermission.ts",
     "src/permissionGate.ts",
     "src/filePreview.ts",
+    "src/questions.ts",
     "src/types.ts"
   ]
 }

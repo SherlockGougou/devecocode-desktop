@@ -46,6 +46,7 @@ function ChatRow({
   active,
   running,
   unread,
+  attention,
   onOpen,
 }: {
   session: Session;
@@ -55,6 +56,8 @@ function ChatRow({
   running: boolean;
   /** 执行已结束但尚未打开查看：标题前显示未读圆点 */
   unread: boolean;
+  /** Agent 正在等待这个会话回答或授权 */
+  attention: "question" | "permission" | null;
   onOpen: () => void;
 }) {
   const renameSession = useApp((s) => s.renameSession);
@@ -134,7 +137,25 @@ function ChatRow({
           title={session.title ?? session.id}
           aria-current={active ? "true" : undefined}
         >
-          {running ? (
+          {attention === "question" ? (
+            <span
+              className="chat-question"
+              role="img"
+              title="需要回答"
+              aria-label="需要回答"
+            >
+              <Icon name="question" size={11} />
+            </span>
+          ) : attention === "permission" ? (
+            <span
+              className="chat-permission"
+              role="img"
+              title="需要授权"
+              aria-label="需要授权"
+            >
+              <Icon name="shield" size={11} />
+            </span>
+          ) : running ? (
             <span className="chat-spinner" title="正在执行" aria-label="正在执行" />
           ) : (
             unread && (
@@ -219,6 +240,8 @@ export default function Sidebar() {
   const sessionPreview = useApp((s) => s.sessionPreview);
   const busySessions = useApp((s) => s.busySessions);
   const unreadSessions = useApp((s) => s.unreadSessions);
+  const questions = useApp((s) => s.questions);
+  const permissions = useApp((s) => s.permissions);
   const streaming = useApp((s) => s.streaming);
   const setSessionSort = useApp((s) => s.setSessionSort);
   const setSessionPreview = useApp((s) => s.setSessionPreview);
@@ -237,6 +260,20 @@ export default function Sidebar() {
   /** 正在等待二次确认移除的工作区。 */
   const [removing, setRemoving] = useState<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
+  const questionSessions = useMemo(
+    () => new Set(questions.map((question) => question.sessionID)),
+    [questions],
+  );
+  const permissionSessions = useMemo(
+    () => new Set(permissions.map((permission) => permission.sessionID)),
+    [permissions],
+  );
+  const sessionAttention = (id: string): "question" | "permission" | null =>
+    questionSessions.has(id)
+      ? "question"
+      : permissionSessions.has(id)
+        ? "permission"
+        : null;
   const [dropTarget, setDropTarget] = useState<{ dir: string; after: boolean } | null>(
     null,
   );
@@ -633,6 +670,7 @@ export default function Sidebar() {
                 active={isCurrent && session.id === sessionID}
                 running={isRunning(session.id)}
                 unread={unreadSessions[session.id] ?? false}
+                attention={sessionAttention(session.id)}
                 onOpen={() => void openSessionIn(dir, session.id)}
               />
             ))}
@@ -848,6 +886,7 @@ export default function Sidebar() {
                       active={session.id === sessionID && dir === directory}
                       running={isRunning(session.id)}
                       unread={unreadSessions[session.id] ?? false}
+                      attention={sessionAttention(session.id)}
                       onOpen={() => void openSessionIn(dir, session.id)}
                     />
                   ))}

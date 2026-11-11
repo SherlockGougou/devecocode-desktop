@@ -31,6 +31,7 @@ import type {
   ProviderOverview,
   Project,
   PtySession,
+  QuestionRequest,
   RuntimeInfo,
   Session,
   SessionStatus,
@@ -288,6 +289,12 @@ export const api = {
     request<PermissionRequest[]>("GET", "/permission", { directory }, undefined, timeoutMs),
   replyPermission: (directory: string, id: string, reply: "once" | "always" | "reject") =>
     request<boolean>("POST", `/permission/${id}/reply`, { directory }, { reply }),
+  questions: (directory: string, timeoutMs?: number) =>
+    request<QuestionRequest[]>("GET", "/question", { directory }, undefined, timeoutMs),
+  replyQuestion: (directory: string, id: string, answers: string[][]) =>
+    request<boolean>("POST", `/question/${id}/reply`, { directory }, { answers }),
+  rejectQuestion: (directory: string, id: string) =>
+    request<boolean>("POST", `/question/${id}/reject`, { directory }),
   diff: (directory: string, sessionID: string, timeoutMs?: number) =>
     request<FileDiff[]>("GET", `/session/${sessionID}/diff`, { directory }, undefined, timeoutMs),
   vcsDiff: (directory: string) =>
@@ -402,13 +409,22 @@ export const api = {
     providerID: string,
     method: number,
     code?: string,
+    timeoutMs = 60_000,
   ) =>
     request<boolean>(
       "POST",
       `/provider/${encodeURIComponent(providerID)}/oauth/callback`,
       undefined,
       code ? { method, code } : { method },
-      60_000,
+      timeoutMs,
+    ),
+  providerOAuthCancel: (providerID: string) =>
+    request<boolean>(
+      "POST",
+      `/provider/${encodeURIComponent(providerID)}/oauth/cancel`,
+      undefined,
+      undefined,
+      30_000,
     ),
   deleteProvider: (providerID: string, directory?: string) =>
     request<boolean>("DELETE", `/provider/${encodeURIComponent(providerID)}`, {

@@ -2,7 +2,7 @@
 //!
 //! 托盘图标不只是「显示 / 退出」的入口：它同时承担轻量状态面板的职责。
 //! 这里用 template 单色图标适配浅色 / 深色菜单栏，并展示后端、当前会话和
-//! 等待授权数量。所有纯展示逻辑与图标生成都在本模块内，便于单测。
+//! 等待授权/回答数量。所有纯展示逻辑与图标生成都在本模块内，便于单测。
 
 use crate::ipc::{self, BackendCtl, SettingsState};
 use deveco_desktop::config::{Config, MenuBarCfg, MenuBarIconStyle};
@@ -77,6 +77,7 @@ struct TrayInner {
     context: TrayContext,
     preferences: TrayPreferences,
     pending_permissions: HashMap<String, String>,
+    pending_questions: HashMap<String, String>,
     applied: TrayView,
 }
 
@@ -209,7 +210,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         ],
     )?;
 
-    let view = view_for(&Phase::Starting, &TrayContext::default(), 0, preferences);
+    let view = view_for(&Phase::Starting, &TrayContext::default(), 0, 0, preferences);
     let tray = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip(&view.tooltip)
         .menu(&menu)
@@ -231,6 +232,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             context: TrayContext::default(),
             preferences,
             pending_permissions: HashMap::new(),
+            pending_questions: HashMap::new(),
             applied: view,
         }),
     });
@@ -251,6 +253,7 @@ pub fn set_phase(app: &AppHandle, phase: Phase) {
         inner.phase = phase;
         if should_clear {
             inner.pending_permissions.clear();
+            inner.pending_questions.clear();
         }
     });
 }
@@ -261,7 +264,7 @@ pub fn sync_tray_context(state: tauri::State<'_, TrayState>, context: TrayContex
     state.set_context(context);
 }
 
-/// 权限事件来自全局 SSE：这里维护跨工作区的待处理数量。
+/// 授权/回答事件来自全局 SSE：这里维护跨工作区的待处理数量。
 pub fn observe_notice(app: &AppHandle, notice: &deveco_desktop::events::Notice) {
     use deveco_desktop::events::Notice;
 
@@ -279,8 +282,17 @@ pub fn observe_notice(app: &AppHandle, notice: &deveco_desktop::events::Notice) 
             session_id,
             ..
         } => state.resolve_permission(request_id, session_id),
+        Notice::Question {
+            request_id,
+            session_id,
+            ..
+        } => state.set_question(request_id, session_id, true),
+        Notice::QuestionResolved {
+            request_id,
+            session_id,
+        } => state.resolve_question(request_id, session_id),
         Notice::Idle { session_id } | Notice::Error { session_id, .. } => {
-            state.clear_session_permissions(session_id)
+            state.clear_session_attention(session_id)
         }
         _ => {}
     }
@@ -311,6 +323,21 @@ impl TrayState {
         });
     }
 
+    fn set_question(&self, request_id: &str, session_id: &str, pending: bool) {
+        if request_id.trim().is_empty() {
+            return;
+        }
+        let request_id = request_id.to_string();
+        let session_id = session_id.to_string();
+        self.update(|inner| {
+            if pending {
+                inner.pending_questions.insert(request_id, session_id);
+            } else {
+                inner.pending_questions.remove(&request_id);
+            }
+        });
+    }
+
     fn resolve_permission(&self, request_id: &str, session_id: &str) {
         self.update(|inner| {
             if request_id.trim().is_empty() {
@@ -323,13 +350,28 @@ impl TrayState {
         });
     }
 
-    fn clear_session_permissions(&self, session_id: &str) {
+    fn resolve_question(&self, request_id: &str, session_id: &str) {
+        self.update(|inner| {
+            if request_id.trim().is_empty() {
+                inner
+                    .pending_questions
+                    .retain(|_, owner| owner != session_id);
+            } else {
+                inner.pending_questions.remove(request_id);
+            }
+        });
+    }
+
+    fn clear_session_attention(&self, session_id: &str) {
         if session_id.trim().is_empty() {
             return;
         }
         self.update(|inner| {
             inner
                 .pending_permissions
+                .retain(|_, owner| owner != session_id);
+            inner
+                .pending_questions
                 .retain(|_, owner| owner != session_id);
         });
     }
@@ -419,6 +461,7 @@ impl TrayState {
                 &inner.phase,
                 &inner.context,
                 inner.pending_permissions.len(),
+                inner.pending_questions.len(),
                 inner.preferences,
             );
             if view == inner.applied {
@@ -635,10 +678,12 @@ fn copy_diagnostics(app: &AppHandle) {
 fn view_for(
     phase: &Phase,
     context: &TrayContext,
-    pending: usize,
+    pending_permissions: usize,
+    pending_questions: usize,
     preferences: TrayPreferences,
 ) -> TrayView {
     let service = service_label(phase);
+    let pending = pending_permissions + pending_questions;
     let status = match phase {
         Phase::Failed { .. } => TrayStatus::Error,
         _ if pending > 0 => TrayStatus::Attention,
@@ -651,7 +696,13 @@ fn view_for(
     let status_label = match status {
         TrayStatus::Idle => "就绪".to_string(),
         TrayStatus::Working => "正在生成".to_string(),
-        TrayStatus::Attention => format!("等待授权 · {pending}"),
+        TrayStatus::Attention if pending_questions > 0 && pending_permissions == 0 => {
+            format!("等待回答 · {pending_questions}")
+        }
+        TrayStatus::Attention if pending_permissions > 0 && pending_questions == 0 => {
+            format!("等待授权 · {pending_permissions}")
+        }
+        TrayStatus::Attention => format!("等待处理 · {pending}"),
         TrayStatus::Connecting => service.clone(),
         TrayStatus::Error => "本地服务不可用".to_string(),
     };
@@ -684,8 +735,11 @@ fn view_for(
     if let Some(detail) = phase.reason() {
         tooltip.push(compact(detail, 140));
     }
-    if pending > 0 {
-        tooltip.push(format!("{pending} 个授权请求等待处理"));
+    if pending_permissions > 0 {
+        tooltip.push(format!("{pending_permissions} 个授权请求等待处理"));
+    }
+    if pending_questions > 0 {
+        tooltip.push(format!("{pending_questions} 个问题等待回答"));
     }
 
     TrayView {
@@ -921,7 +975,7 @@ mod tests {
     #[test]
     fn 菜单栏状态按后端与授权优先级变化() {
         let preferences = TrayPreferences::from(MenuBarCfg::default());
-        let idle = view_for(&Phase::Ready, &TrayContext::default(), 0, preferences);
+        let idle = view_for(&Phase::Ready, &TrayContext::default(), 0, 0, preferences);
         assert_eq!(idle.status, TrayStatus::Idle);
         assert_eq!(idle.header, "DevEco Code · 就绪");
 
@@ -931,6 +985,7 @@ mod tests {
                 streaming: true,
                 ..Default::default()
             },
+            0,
             0,
             preferences,
         );
@@ -943,6 +998,7 @@ mod tests {
                 ..Default::default()
             },
             2,
+            0,
             preferences,
         );
         assert_eq!(attention.status, TrayStatus::Attention);
@@ -955,10 +1011,27 @@ mod tests {
             },
             &TrayContext::default(),
             2,
+            0,
             preferences,
         );
         assert_eq!(failed.status, TrayStatus::Error);
         assert_eq!(failed.title.as_deref(), Some("!"));
+    }
+
+    #[test]
+    fn 菜单栏区分等待授权与等待回答() {
+        let preferences = TrayPreferences::from(MenuBarCfg::default());
+        let question = view_for(&Phase::Ready, &TrayContext::default(), 0, 2, preferences);
+        assert_eq!(question.status, TrayStatus::Attention);
+        assert_eq!(question.title.as_deref(), Some("2"));
+        assert!(question.header.contains("等待回答"));
+        assert!(question.tooltip.contains("2 个问题等待回答"));
+
+        let mixed = view_for(&Phase::Ready, &TrayContext::default(), 1, 2, preferences);
+        assert!(mixed.header.contains("等待处理"));
+        assert_eq!(mixed.title.as_deref(), Some("3"));
+        assert!(mixed.tooltip.contains("1 个授权请求等待处理"));
+        assert!(mixed.tooltip.contains("2 个问题等待回答"));
     }
 
     #[test]
@@ -971,6 +1044,7 @@ mod tests {
                 session_title: Some(format!("  {}  ", "很长的会话标题".repeat(12))),
                 streaming: false,
             },
+            0,
             0,
             preferences,
         );

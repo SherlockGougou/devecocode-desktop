@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
 import { applyConfigChanges, asArray, asRecord, asString } from "../../cliConfig";
 import { modelKey } from "../../models";
@@ -32,6 +32,9 @@ import {
 import type { CliConfigEditor } from "./useCliConfigEditor";
 
 type LoadState = "loading" | "ready" | "error";
+
+/** 自动 OAuth 要等待用户在浏览器完成授权；轮询与回调共用同一等待窗口。 */
+const AUTO_OAUTH_WAIT_MS = 10 * 60_000;
 
 const SOURCE_LABELS: Record<string, string> = {
   config: "配置",
@@ -133,6 +136,8 @@ export default function AccountModelsPage({
   const [authAuthorization, setAuthAuthorization] =
     useState<ProviderAuthAuthorization | null>(null);
   const [authCode, setAuthCode] = useState("");
+  const authFlowToken = useRef(0);
+  const pendingAuthProvider = useRef<string | null>(null);
   const [providerDraft, setProviderDraft] = useState<ProviderDraft | null>(null);
   const [providerEditing, setProviderEditing] = useState<string | null>(null);
   const [providerSaving, setProviderSaving] = useState(false);
@@ -146,6 +151,19 @@ export default function AccountModelsPage({
   useEffect(() => {
     void loadModels();
   }, [loadModels]);
+
+  useEffect(
+    () => () => {
+      const providerID = pendingAuthProvider.current;
+      if (!providerID) return;
+      authFlowToken.current += 1;
+      pendingAuthProvider.current = null;
+      void api.providerOAuthCancel(providerID).catch(() => {
+        // 页面已经离开；后台流程清理失败不影响主界面。
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -196,6 +214,9 @@ export default function AccountModelsPage({
       try {
         const entries = await api.authEntries();
         if (!cancelled && entries.some((entry) => entry.providerID === authDialog)) {
+          authFlowToken.current += 1;
+          pendingAuthProvider.current = null;
+          setAuthBusy(null);
           setAuthDialog(null);
           setAuthAuthorization(null);
           await refreshAuth();
@@ -207,7 +228,7 @@ export default function AccountModelsPage({
     }, 2000);
     const timeout = window.setTimeout(() => {
       if (!cancelled) setActionError("登录等待超时，可以在浏览器完成后再刷新账号。");
-    }, 120_000);
+    }, AUTO_OAUTH_WAIT_MS);
     return () => {
       cancelled = true;
       window.clearInterval(poll);
@@ -242,9 +263,13 @@ export default function AccountModelsPage({
     setAuthMethods(nextMethods);
     setAgreement(nextAgreement);
     setProviders(nextProviders);
+    return nextAuth;
   };
 
   const beginAuth = (providerID: string) => {
+    authFlowToken.current += 1;
+    pendingAuthProvider.current = null;
+    setAuthBusy(null);
     setAuthDialog(providerID);
     setAuthMethodIndex(0);
     setAuthInputs({});
@@ -259,6 +284,8 @@ export default function AccountModelsPage({
 
   const submitAuth = async () => {
     if (!loginProvider || !loginMethod) return;
+    const flow = ++authFlowToken.current;
+    pendingAuthProvider.current = null;
     setAuthBusy(loginProvider);
     setActionError(null);
     try {
@@ -281,18 +308,70 @@ export default function AccountModelsPage({
           authMethodIndex,
           authInputs,
         );
+        if (flow !== authFlowToken.current) {
+          void api.providerOAuthCancel(loginProvider).catch(() => {});
+          return;
+        }
+        pendingAuthProvider.current = loginProvider;
         setAuthAuthorization(result);
-        await api.openUrl(result.url);
+        if (result.method === "auto") {
+          void api
+            .providerOAuthCallback(
+              loginProvider,
+              authMethodIndex,
+              undefined,
+              AUTO_OAUTH_WAIT_MS,
+            )
+            .then(() => {
+              if (authFlowToken.current === flow) {
+                pendingAuthProvider.current = null;
+              }
+            })
+            .catch((error) => {
+              if (authFlowToken.current !== flow) return;
+              setActionError(String(error));
+            });
+        }
+        if (result.url.trim()) {
+          await api.openUrl(result.url);
+        }
       }
     } catch (error) {
-      setActionError(String(error));
+      if (flow === authFlowToken.current) setActionError(String(error));
     } finally {
+      if (flow === authFlowToken.current) setAuthBusy(null);
+    }
+  };
+
+  const checkAutoAuth = async () => {
+    if (!loginProvider) return;
+    const flow = authFlowToken.current;
+    setAuthBusy(loginProvider);
+    setActionError(null);
+    try {
+      const nextAuth = await refreshAuth();
+      if (!nextAuth.some((entry) => entry.providerID === loginProvider)) {
+        if (flow === authFlowToken.current) {
+          setActionError("尚未检测到登录完成，请先在浏览器中完成授权。");
+        }
+        return;
+      }
       setAuthBusy(null);
+      authFlowToken.current += 1;
+      pendingAuthProvider.current = null;
+      setAuthDialog(null);
+      setAuthAuthorization(null);
+      await loadModels(true);
+    } catch (error) {
+      if (flow === authFlowToken.current) setActionError(String(error));
+    } finally {
+      if (flow === authFlowToken.current) setAuthBusy(null);
     }
   };
 
   const submitAuthCode = async () => {
     if (!loginProvider || !loginMethod) return;
+    const flow = authFlowToken.current;
     setAuthBusy(loginProvider);
     setActionError(null);
     try {
@@ -303,14 +382,17 @@ export default function AccountModelsPage({
           authCode.trim() || undefined,
         );
       }
+      setAuthBusy(null);
+      authFlowToken.current += 1;
+      pendingAuthProvider.current = null;
       setAuthDialog(null);
       setAuthAuthorization(null);
       await refreshAuth();
       await loadModels(true);
     } catch (error) {
-      setActionError(String(error));
+      if (flow === authFlowToken.current) setActionError(String(error));
     } finally {
-      setAuthBusy(null);
+      if (flow === authFlowToken.current) setAuthBusy(null);
     }
   };
 
@@ -916,15 +998,36 @@ export default function AccountModelsPage({
         <FormModal
           title={`${providerLabel(loginProvider)} 登录`}
           onClose={() => {
+            const providerID =
+              pendingAuthProvider.current ??
+              (authAuthorization ? loginProvider : null);
+            authFlowToken.current += 1;
+            pendingAuthProvider.current = null;
+            if (providerID) {
+              void api.providerOAuthCancel(providerID).catch(() => {
+                // 关闭弹窗时尽力清理；CLI 可能已经结束该流程。
+              });
+            }
+            setAuthBusy(null);
             setAuthDialog(null);
             setAuthAuthorization(null);
             setAuthCode("");
           }}
           onSave={() =>
-            authAuthorization ? void submitAuthCode() : void submitAuth()
+            authAuthorization
+              ? authAuthorization.method === "auto"
+                ? void checkAutoAuth()
+                : void submitAuthCode()
+              : void submitAuth()
           }
           saving={authBusy === loginProvider}
-          saveLabel={authAuthorization ? "完成登录" : "继续"}
+          saveLabel={
+            authAuthorization
+              ? authAuthorization.method === "auto"
+                ? "检查登录状态"
+                : "完成登录"
+              : "继续"
+          }
           error={actionError}
         >
           {!authAuthorization ? (
@@ -997,14 +1100,20 @@ export default function AccountModelsPage({
           ) : (
             <>
               <p className="settings-note">{authAuthorization.instructions}</p>
-              <div className="settings-actions">
-                <button
-                  className="ghost-btn"
-                  onClick={() => void api.openUrl(authAuthorization.url)}
-                >
-                  重新打开浏览器
-                </button>
-              </div>
+              {authAuthorization.url.trim() ? (
+                <div className="settings-actions">
+                  <button
+                    className="ghost-btn"
+                    onClick={() => void api.openUrl(authAuthorization.url)}
+                  >
+                    重新打开浏览器
+                  </button>
+                </div>
+              ) : (
+                <p className="settings-note">
+                  登录流程已在后台启动；若浏览器没有自动打开，请关闭此窗口后重新点击“登录华为账号”。
+                </p>
+              )}
               {authAuthorization.method === "code" ? (
                 <TextField
                   label="授权码"
@@ -1014,7 +1123,7 @@ export default function AccountModelsPage({
                 />
               ) : (
                 <p className="settings-note">
-                  浏览器完成登录后，应用会自动轮询账号状态；也可以直接点击“完成登录”。
+                  浏览器完成登录后，应用会自动刷新账号；也可以点击“检查登录状态”。
                 </p>
               )}
             </>

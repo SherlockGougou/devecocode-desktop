@@ -1,6 +1,6 @@
 //! 事件分类与通知文案。
 //!
-//! 只关心四类语义事件：需要授权、任务结束、执行失败、阶段推进。其余一律
+//! 只关心需要授权、需要回答、任务结束、执行失败、阶段推进这几类语义事件。其余一律
 //! `Ignored`——上游新增事件类型时不会打断通知链路，这是「跟随官方更新」的关键。
 
 use crate::sse::SseEvent;
@@ -19,6 +19,17 @@ pub enum Notice {
         request_id: String,
         session_id: String,
         reply: String,
+    },
+    Question {
+        request_id: String,
+        session_id: String,
+        header: String,
+        detail: String,
+        total: usize,
+    },
+    QuestionResolved {
+        request_id: String,
+        session_id: String,
     },
     Idle {
         session_id: String,
@@ -62,6 +73,19 @@ fn list_at(v: &Value, pointer: &str) -> String {
                 .join(", ")
         })
         .unwrap_or_default()
+}
+
+fn question_summary(props: &Value) -> (String, String, usize) {
+    let questions = props.get("questions").and_then(Value::as_array);
+    let total = questions.map_or(0, Vec::len);
+    let first = questions.and_then(|items| items.first());
+    let header = first
+        .and_then(|item| str_at(item, "/header"))
+        .unwrap_or_else(|| "确认".to_string());
+    let detail = first
+        .and_then(|item| str_at(item, "/question"))
+        .unwrap_or_default();
+    (header, detail, total)
 }
 
 /// 在任意深度的错误对象里找第一个可读文本，用于 `session.error`。
@@ -117,6 +141,20 @@ pub fn classify(ev: &SseEvent) -> Notice {
             session_id: str_at(&props, "/sessionID").unwrap_or_default(),
             reply: str_at(&props, "/reply").unwrap_or_else(|| "resolved".into()),
         },
+        "question.asked" => {
+            let (header, detail, total) = question_summary(&props);
+            Notice::Question {
+                request_id: str_at(&props, "/id").unwrap_or_default(),
+                session_id: str_at(&props, "/sessionID").unwrap_or_default(),
+                header,
+                detail,
+                total,
+            }
+        }
+        "question.replied" | "question.rejected" => Notice::QuestionResolved {
+            request_id: str_at(&props, "/requestID").unwrap_or_default(),
+            session_id: str_at(&props, "/sessionID").unwrap_or_default(),
+        },
         "session.idle" => Notice::Idle {
             session_id: str_at(&props, "/sessionID").unwrap_or_default(),
         },
@@ -169,6 +207,27 @@ pub fn render(notice: &Notice, project: &str) -> Option<NoticeText> {
                 body: with_project(&body, project),
             })
         }
+        Notice::Question {
+            header,
+            detail,
+            total,
+            ..
+        } => {
+            let prefix = if *total > 1 {
+                format!("{header}（共 {total} 个问题）")
+            } else {
+                header.clone()
+            };
+            let body = if detail.is_empty() {
+                truncate(&prefix, 120)
+            } else {
+                truncate(&format!("{prefix}：{detail}"), 140)
+            };
+            Some(NoticeText {
+                title: "DevEco Code 等待你的回答".into(),
+                body: with_project(&body, project),
+            })
+        }
         Notice::Idle { .. } => Some(NoticeText {
             title: "任务完成".into(),
             body: with_project("本轮执行已结束", project),
@@ -181,7 +240,10 @@ pub fn render(notice: &Notice, project: &str) -> Option<NoticeText> {
             title: "阶段推进".into(),
             body: with_project("Agent 进入下一步", project),
         }),
-        Notice::Connected | Notice::PermissionResolved { .. } | Notice::Ignored => None,
+        Notice::Connected
+        | Notice::PermissionResolved { .. }
+        | Notice::QuestionResolved { .. }
+        | Notice::Ignored => None,
     }
 }
 
@@ -257,6 +319,41 @@ mod tests {
                 request_id: "per_9".into(),
                 session_id: "ses_9".into(),
                 reply: "once".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn 识别提问与关闭事件() {
+        let asked = classify(&ev(
+            r#"{"type":"question.asked","properties":{"id":"que_1","sessionID":"ses_1","questions":[{"header":"运行方式","question":"请选择运行方式"}]}}"#,
+        ));
+        assert_eq!(
+            asked,
+            Notice::Question {
+                request_id: "que_1".into(),
+                session_id: "ses_1".into(),
+                header: "运行方式".into(),
+                detail: "请选择运行方式".into(),
+                total: 1,
+            }
+        );
+        assert_eq!(
+            classify(&ev(
+                r#"{"type":"question.replied","properties":{"requestID":"que_1","sessionID":"ses_1","answers":[["真机"]]}}"#,
+            )),
+            Notice::QuestionResolved {
+                request_id: "que_1".into(),
+                session_id: "ses_1".into(),
+            }
+        );
+        assert_eq!(
+            classify(&ev(
+                r#"{"type":"question.rejected","properties":{"requestID":"que_1","sessionID":"ses_1"}}"#,
+            )),
+            Notice::QuestionResolved {
+                request_id: "que_1".into(),
+                session_id: "ses_1".into(),
             }
         );
     }
@@ -339,6 +436,22 @@ mod tests {
     }
 
     #[test]
+    fn 提问通知包含题数与第一题() {
+        let notice = Notice::Question {
+            request_id: "que_1".into(),
+            session_id: "ses_1".into(),
+            header: "运行方式".into(),
+            detail: "请选择接下来的运行方式".into(),
+            total: 2,
+        };
+        let text = render(&notice, "JellyCube").unwrap();
+        assert_eq!(text.title, "DevEco Code 等待你的回答");
+        assert!(text.body.contains("共 2 个问题"));
+        assert!(text.body.contains("请选择接下来的运行方式"));
+        assert!(text.body.ends_with("JellyCube"));
+    }
+
+    #[test]
     fn 连接与已解决事件不产生通知() {
         assert!(render(&Notice::Connected, "p").is_none());
         assert!(render(
@@ -346,6 +459,14 @@ mod tests {
                 request_id: "per".into(),
                 session_id: "s".into(),
                 reply: "once".into()
+            },
+            "p"
+        )
+        .is_none());
+        assert!(render(
+            &Notice::QuestionResolved {
+                request_id: "que".into(),
+                session_id: "s".into()
             },
             "p"
         )

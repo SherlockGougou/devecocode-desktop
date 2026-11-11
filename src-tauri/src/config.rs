@@ -31,6 +31,7 @@ pub struct Config {
 pub struct Notifications {
     pub enabled: bool,
     pub on_permission: bool,
+    pub on_question: bool,
     pub on_idle: bool,
     pub on_error: bool,
     pub on_step: bool,
@@ -89,6 +90,7 @@ impl Default for Notifications {
         Self {
             enabled: true,
             on_permission: true,
+            on_question: true,
             on_idle: true,
             on_error: true,
             on_step: false,
@@ -304,6 +306,7 @@ mod tests {
         assert_eq!(cfg.server.preferred_port, 5000);
         assert_eq!(cfg.server.hostname, "127.0.0.1");
         assert!(cfg.notifications.enabled);
+        assert!(cfg.notifications.on_question);
         assert!(cfg.use_bundled_cli);
         assert_eq!(cfg.menu_bar.icon_style, MenuBarIconStyle::Monochrome);
         assert!(cfg.menu_bar.always_visible);
