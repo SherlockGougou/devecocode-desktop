@@ -12,6 +12,9 @@ export interface QuestionDraft {
   customActive: boolean;
 }
 
+const MULTIPLE_CHOICE_MARKER =
+  /(?:[（(\[【]\s*(?:可多选|多选|选择多个|选择多项|select multiple|multiple select)\s*[）)\]】]|(?:可多选|选择多个|选择多项)\s*[。.!！?？]?\s*$)/i;
+
 export type QuestionChange =
   | { sequence: number; kind: "upsert"; request: QuestionRequest }
   | { sequence: number; kind: "remove"; id: string }
@@ -51,7 +54,9 @@ export function normalizeQuestionInfo(value: unknown): QuestionInfo | null {
     question,
     header,
     options,
-    ...(record.multiple === true ? { multiple: true } : {}),
+    ...(typeof record.multiple === "boolean"
+      ? { multiple: record.multiple }
+      : {}),
     ...(record.custom === false ? { custom: false } : {}),
   };
 }
@@ -131,6 +136,17 @@ export function allowsCustomQuestionAnswer(question: QuestionInfo): boolean {
   return question.custom !== false;
 }
 
+/**
+ * 兼容模型只在题干里写“（可多选）”却没有提交 `multiple` 的情况。
+ * 显式的 `multiple` 字段始终优先，文本只作为缺失字段时的兜底。
+ */
+export function questionAllowsMultipleAnswers(
+  question: QuestionInfo,
+): boolean {
+  if (question.multiple !== undefined) return question.multiple;
+  return MULTIPLE_CHOICE_MARKER.test(question.question);
+}
+
 export function emptyQuestionDrafts(questions: QuestionInfo[]): QuestionDraft[] {
   return questions.map(() => ({
     selected: [],
@@ -144,7 +160,9 @@ export function answerForDraft(
   draft: QuestionDraft | undefined,
 ): string[] {
   if (!draft) return [];
-  const selected = question.multiple ? [...draft.selected] : draft.selected.slice(0, 1);
+  const selected = questionAllowsMultipleAnswers(question)
+    ? [...draft.selected]
+    : draft.selected.slice(0, 1);
   const custom = draft.custom.trim();
   return Array.from(new Set(custom ? [...selected, custom] : selected));
 }
@@ -172,6 +190,22 @@ export function questionDraftsComplete(
   return questions.every(
     (question, index) => answerForDraft(question, drafts[index]).length > 0,
   );
+}
+
+/** 单选后自动前进一题；多选、末题和单题请求都停留在当前页。 */
+export function questionPageAfterSelection(
+  page: number,
+  questions: QuestionInfo[],
+): number {
+  const question = questions[page];
+  if (
+    !question ||
+    questionAllowsMultipleAnswers(question) ||
+    page >= questions.length - 1
+  ) {
+    return page;
+  }
+  return page + 1;
 }
 
 /**

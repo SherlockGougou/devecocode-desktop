@@ -4,7 +4,9 @@ import {
   buildQuestionAnswers,
   emptyQuestionDrafts,
   questionDraftsComplete,
+  questionAllowsMultipleAnswers,
   questionAnswersWithNoPreference,
+  questionPageAfterSelection,
   type QuestionDraft,
 } from "../questions";
 import { useApp } from "../store";
@@ -74,6 +76,9 @@ export default function QuestionDock({ request }: { request: QuestionRequest }) 
   const disabled = Boolean(busy) || stopping;
   const customAllowed =
     question && allowsCustomQuestionAnswer(question);
+  const multiple = question
+    ? questionAllowsMultipleAnswers(question)
+    : false;
 
   useEffect(() => {
     if (draft.customActive) customRef.current?.focus();
@@ -89,7 +94,7 @@ export default function QuestionDock({ request }: { request: QuestionRequest }) 
 
   const selectOption = (value: QuestionInfo, label: string) => {
     updateDraft((current) => {
-      if (value.multiple) {
+      if (questionAllowsMultipleAnswers(value)) {
         const selected = current.selected.includes(label)
           ? current.selected.filter((item) => item !== label)
           : [...current.selected, label];
@@ -97,11 +102,14 @@ export default function QuestionDock({ request }: { request: QuestionRequest }) 
       }
       return { selected: [label], custom: "", customActive: false };
     });
+    setPage((current) =>
+      questionPageAfterSelection(current, questions),
+    );
   };
 
   const toggleCustom = () => {
     updateDraft((current) => {
-      if (question.multiple) {
+      if (multiple) {
         return {
           ...current,
           customActive: !current.customActive,
@@ -187,11 +195,11 @@ export default function QuestionDock({ request }: { request: QuestionRequest }) 
 
         <div className="question-dock-body">
           <div className="question-dock-hint">
-            {question.multiple ? "可选择多个回答" : "选择一个回答"}
+            {multiple ? "可选择多个回答" : "选择一个回答"}
           </div>
           <div
-            className={`question-dock-options ${question.multiple ? "multiple" : "single"}`}
-            role={question.multiple ? "group" : "radiogroup"}
+            className={`question-dock-options ${multiple ? "multiple" : "single"}`}
+            role={multiple ? "group" : "radiogroup"}
             aria-label={question.header}
           >
             {question.options.map((option) => {
@@ -201,7 +209,7 @@ export default function QuestionDock({ request }: { request: QuestionRequest }) 
                   type="button"
                   key={option.label}
                   className={`question-dock-option${selected ? " selected" : ""}`}
-                  role={question.multiple ? "checkbox" : "radio"}
+                  role={multiple ? "checkbox" : "radio"}
                   aria-checked={selected}
                   disabled={disabled}
                   onClick={() => selectOption(question, option.label)}
@@ -226,7 +234,7 @@ export default function QuestionDock({ request }: { request: QuestionRequest }) 
               <button
                 type="button"
                 className={`question-dock-option question-dock-custom-toggle${draft.customActive ? " selected" : ""}`}
-                role={question.multiple ? "checkbox" : "radio"}
+                role={multiple ? "checkbox" : "radio"}
                 aria-checked={draft.customActive}
                 disabled={disabled}
                 onClick={toggleCustom}

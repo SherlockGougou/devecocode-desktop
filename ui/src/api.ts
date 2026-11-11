@@ -44,6 +44,7 @@ import type {
   VcsFileStatus,
   VcsInfo,
 } from "./types";
+import { productAgreementAcceptancePayload } from "./productAgreement";
 
 type Query = Record<string, string | number | boolean | undefined>;
 
@@ -438,8 +439,13 @@ export const api = {
     ),
   productAgreement: () =>
     request<ProductAgreement>("GET", "/global/product-agreement"),
-  acceptProductAgreement: () =>
-    request<ProductAgreement>("POST", "/global/product-agreement", undefined, {}),
+  acceptProductAgreement: (agreement: ProductAgreement) =>
+    request<ProductAgreement>(
+      "POST",
+      "/global/product-agreement",
+      undefined,
+      productAgreementAcceptancePayload(agreement),
+    ),
   retryAgreementUpload: () =>
     request<ProductAgreement>("POST", "/global/product-agreement/retry", undefined, {}),
   upgradeCli: (target?: string) =>

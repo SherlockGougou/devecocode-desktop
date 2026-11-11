@@ -23,6 +23,10 @@ import UpdateBanner from "./components/UpdateBanner";
 import { Icon } from "./components/Icon";
 import { AppIcon } from "./components/AppIcon";
 import { checkForUpdates, configureAutoCheck } from "./update";
+import {
+  PRODUCT_AGREEMENT_CHANGED_GUIDANCE,
+  isProductAgreementError,
+} from "./productAgreement";
 
 export default function App() {
   const booted = useRef(false);
@@ -42,8 +46,10 @@ export default function App() {
   const setRightWidth = useApp((s) => s.setRightWidth);
   const setTerminalHeight = useApp((s) => s.setTerminalHeight);
   const dismissError = useApp((s) => s.dismissError);
+  const openSettings = useApp((s) => s.openSettings);
   const boot = useApp((s) => s.boot);
   const onSse = useApp((s) => s.onSse);
+  const agreementError = isProductAgreementError(error);
   useEffect(() => {
     if (booted.current) return;
     booted.current = true;
@@ -317,11 +323,32 @@ export default function App() {
       )}
       {settingsOpen && <Settings />}
       {shortcutsOpen && <Shortcuts />}
-      {error && (
+      {error && agreementError ? (
+        <div className="toast toast-guidance" role="alert">
+          <div className="toast-guidance-copy">
+            <strong>需要重新同意服务协议</strong>
+            <span>{PRODUCT_AGREEMENT_CHANGED_GUIDANCE}</span>
+          </div>
+          <div className="toast-guidance-actions">
+            <button
+              className="primary-btn small"
+              onClick={() => {
+                dismissError();
+                openSettings("account");
+              }}
+            >
+              查看并同意
+            </button>
+            <button className="ghost-btn small" onClick={dismissError}>
+              稍后处理
+            </button>
+          </div>
+        </div>
+      ) : error ? (
         <div className="toast" onClick={dismissError} title="点击关闭">
           {error}
         </div>
-      )}
+      ) : null}
       {notice && <div className="toast ok">{notice}</div>}
     </div>
   );

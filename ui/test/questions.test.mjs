@@ -10,6 +10,8 @@ import {
   questionAnswersWithNoPreference,
   questionDraftsComplete,
   questionInputQuestions,
+  questionAllowsMultipleAnswers,
+  questionPageAfterSelection,
   questionRequestMatchesPart,
 } from "../test-dist/questions.js";
 
@@ -78,6 +80,39 @@ test("单选、多选和自定义回答按问题顺序组装", () => {
     ["模拟器运行", "真机运行", "继续使用现有签名"],
   ]);
   assert.equal(questionDraftsComplete(questions, drafts), true);
+});
+
+test("题干标记兜底多选，并保留显式字段优先级", () => {
+  const inferred = {
+    ...single,
+    question: "鸿蒙端缺少这些 Android 已有能力，本次要补哪些？（可多选）",
+  };
+  assert.equal(questionAllowsMultipleAnswers(inferred), true);
+  assert.equal(
+    questionAllowsMultipleAnswers({ ...inferred, multiple: false }),
+    false,
+  );
+  assert.equal(
+    questionAllowsMultipleAnswers({ ...single, multiple: true }),
+    true,
+  );
+  assert.equal(questionAllowsMultipleAnswers(single), false);
+
+  const draft = emptyQuestionDrafts([inferred])[0];
+  draft.selected = ["备份", "通知"];
+  assert.deepEqual(answerForDraft(inferred, draft), ["备份", "通知"]);
+});
+
+test("单选后自动前进，多选和最后一题保持当前页", () => {
+  const questions = [
+    single,
+    { ...single, header: "附加项", multiple: true },
+    { ...single, header: "备注" },
+  ];
+  assert.equal(questionPageAfterSelection(0, questions), 1);
+  assert.equal(questionPageAfterSelection(1, questions), 1);
+  assert.equal(questionPageAfterSelection(2, questions), 2);
+  assert.equal(questionPageAfterSelection(0, [single]), 0);
 });
 
 test("空答案不完整，异常答案矩阵会被清理", () => {

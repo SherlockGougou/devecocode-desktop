@@ -22,6 +22,7 @@ export default function MessageEditor({
   const [uploads, setUploads] = useState(seed.uploads);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const cancelConfirmRef = useRef<HTMLButtonElement>(null);
   // reverted 是等待重试的稳定状态，不能把编辑器和取消按钮一起锁死。
@@ -52,8 +53,13 @@ export default function MessageEditor({
   useEffect(() => {
     const area = areaRef.current;
     if (!area) return;
-    area.focus();
+    // 聚焦时先不要由浏览器滚到 textarea 上沿，否则底部的操作按钮仍会落在视口外。
+    area.focus({ preventScroll: true });
     area.setSelectionRange(area.value.length, area.value.length);
+    const frame = requestAnimationFrame(() => {
+      editorRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
   }, []);
 
   useEffect(() => {
@@ -95,6 +101,7 @@ export default function MessageEditor({
 
   return (
     <div
+      ref={editorRef}
       className="bubble-wrap message-editor"
       aria-label="编辑历史消息"
       onKeyDown={(event) => {

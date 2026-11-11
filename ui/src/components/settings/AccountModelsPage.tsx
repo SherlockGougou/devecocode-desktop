@@ -2,6 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
 import { applyConfigChanges, asArray, asRecord, asString } from "../../cliConfig";
 import { modelKey } from "../../models";
+import {
+  PRODUCT_AGREEMENT_REVIEW_REQUIRED,
+  productAgreementNeedsAcceptance,
+  productAgreementUploadLabel,
+} from "../../productAgreement";
 import { useApp } from "../../store";
 import type {
   AuthEntry,
@@ -127,6 +132,7 @@ export default function AccountModelsPage({
   const [usage, setUsage] = useState<StatsUsage | null>(null);
   const [authMethods, setAuthMethods] = useState<ProviderAuthMethods>({});
   const [agreement, setAgreement] = useState<ProductAgreement | null>(null);
+  const [agreementBusy, setAgreementBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState<string | null>(null);
@@ -411,11 +417,36 @@ export default function AccountModelsPage({
   };
 
   const acceptAgreement = async () => {
+    if (!agreement || agreementBusy) return;
+    setAgreementBusy(true);
     setActionError(null);
     try {
-      setAgreement(await api.acceptProductAgreement());
+      const next = await api.acceptProductAgreement(agreement);
+      setAgreement(next);
+      if (next.upload?.state === PRODUCT_AGREEMENT_REVIEW_REQUIRED) {
+        setActionError("协议同意已保存，但服务端仍在等待同步。请稍后刷新账号状态。");
+      } else {
+        useApp.getState().showNotice("已同意更新后的产品协议");
+      }
     } catch (error) {
-      setActionError(String(error));
+      console.error("保存产品协议同意状态失败", error);
+      setActionError("未能保存协议同意状态，请检查网络后重试。");
+    } finally {
+      setAgreementBusy(false);
+    }
+  };
+
+  const retryAgreementUpload = async () => {
+    if (agreementBusy) return;
+    setAgreementBusy(true);
+    setActionError(null);
+    try {
+      setAgreement(await api.retryAgreementUpload());
+    } catch (error) {
+      console.error("同步产品协议同意状态失败", error);
+      setActionError("协议状态同步失败，请检查网络后重试。");
+    } finally {
+      setAgreementBusy(false);
     }
   };
 
@@ -587,6 +618,11 @@ export default function AccountModelsPage({
     return [...rows.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   }, [editor.value.provider, providers]);
 
+  const agreementNeedsAcceptance = productAgreementNeedsAcceptance(agreement);
+  const agreementReviewRequired =
+    agreement?.upload?.state === PRODUCT_AGREEMENT_REVIEW_REQUIRED;
+  const agreementUploadLabel = productAgreementUploadLabel(agreement?.upload?.state);
+
   return (
     <>
       <SettingsSection
@@ -598,15 +634,19 @@ export default function AccountModelsPage({
             <div className="settings-entity-main">
               <div className="settings-entity-title">
                 <span>产品协议</span>
-                <Tag tone={agreement.accepted ? "ok" : "warn"}>
-                  {agreement.accepted ? "已接受" : "未接受"}
+                <Tag tone={agreementReviewRequired || !agreement.accepted ? "warn" : "ok"}>
+                  {agreementReviewRequired
+                    ? "需重新同意"
+                    : agreement.accepted
+                      ? "已接受"
+                      : "未接受"}
                 </Tag>
                 <Tag tone="muted">版本 {agreement.version}</Tag>
               </div>
               <div className="settings-entity-meta">
-                {agreement.upload?.state
-                  ? `上传状态：${agreement.upload.state}`
-                  : "接受后才能使用内置模型与云端能力"}
+                {agreementNeedsAcceptance
+                  ? "DevEco Code 的服务协议已更新。请阅读并同意后，再继续发送请求。"
+                  : agreementUploadLabel ?? "接受后才能使用内置模型与云端能力"}
               </div>
             </div>
             <div className="settings-entity-actions">
@@ -616,21 +656,28 @@ export default function AccountModelsPage({
               <button className="ghost-btn" onClick={() => void api.openUrl(agreement.privacyUrl)}>
                 隐私
               </button>
-              {!agreement.accepted && (
-                <button className="ghost-btn" onClick={() => void acceptAgreement()}>
-                  接受
-                </button>
-              )}
-              {agreement.accepted && agreement.upload?.state !== "uploaded" && (
+              {agreementNeedsAcceptance && (
                 <button
                   className="ghost-btn"
-                  onClick={() =>
-                    void api.retryAgreementUpload().then(setAgreement).catch((error) =>
-                      setActionError(String(error)),
-                    )
-                  }
+                  disabled={agreementBusy}
+                  onClick={() => void acceptAgreement()}
                 >
-                  重试上传
+                  {agreementBusy
+                    ? "正在保存…"
+                    : agreementReviewRequired
+                      ? "重新阅读并同意"
+                      : "接受协议"}
+                </button>
+              )}
+              {agreement.accepted &&
+                !agreementNeedsAcceptance &&
+                agreement.upload?.state !== "uploaded" && (
+                <button
+                  className="ghost-btn"
+                  disabled={agreementBusy}
+                  onClick={() => void retryAgreementUpload()}
+                >
+                  {agreementBusy ? "正在同步…" : "重试同步"}
                 </button>
               )}
             </div>
