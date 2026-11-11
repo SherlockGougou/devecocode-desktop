@@ -2719,3 +2719,20 @@ Read/截图工具返回的图片附件在助手消息里也不显示。补上渲
 - 发布后按仓库策略删除旧 Release `v0.2.5`，保留 tag；GitHub Releases 仅保留 `v0.2.6`。
 - 同一发布提交的 CI、CodeQL、Security audit 和 Pages 分别由 run `42973751974`、
   `42973752010`、`42973752072`、`42973752206` 验证通过。
+
+## 33. v0.2.7 发布
+
+- 功能提交 `0c70175`：服务协议更新后的重新同意、同步状态与错误引导；问答多选文字兜底、
+  单选自动翻页；历史消息编辑滚动和短消息操作按钮稳定性。
+- 发布提交：`9981d6c`；标签：`v0.2.7`。
+- `Release readiness` run `43027031200` 通过；同一提交的 CI、CodeQL、Security audit 和
+  Pages 分别由 run `43027014376`、`43027014603`、`43027015001`、`43027014481` 验证通过。
+- Release run `43027752717` 完成双架构普通版、双架构 Offline、两套更新清单、双语正文和
+  draft-first 发布；共 17 个资产，`isDraft=false`、`isImmutable=true`。
+- `gh release verify v0.2.7` 通过；下载 `SHA256SUMS.txt` 后校验 aarch64 普通版 DMG 通过，
+  并单独执行 `gh attestation verify`。`latest.json` / `latest-offline.json` 的版本均为
+  `0.2.7`，各包含四个平台条目。
+- Homebrew tap run `43030583117` 成功，tap commit `4cec09d` 的两个 cask 已更新到
+  `0.2.7`；tap CI run `43030609356` 通过，本机 `brew fetch` 验证两个 cask 的下载和
+  SHA-256 通过。
+- 发布后按仓库策略删除旧 Release `v0.2.6`，保留 tag；GitHub Releases 仅保留 `v0.2.7`。
