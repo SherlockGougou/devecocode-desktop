@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { dockBadgeLabel } from "./dockBadge";
 import type {
   AgentInfo,
   AppConfig,
@@ -41,6 +43,9 @@ import type {
   StatsUsage,
   TrayContext,
   TodoItem,
+  VoiceLocale,
+  VoiceStartResult,
+  VoiceStatus,
   VcsFileStatus,
   VcsInfo,
 } from "./types";
@@ -207,6 +212,8 @@ async function providerOverview(directory?: string): Promise<ProviderOverview> {
 }
 
 export const api = {
+  setDockBadge: (count: number) =>
+    getCurrentWindow().setBadgeLabel(dockBadgeLabel(count)),
   health: () => request<{ healthy: boolean }>("GET", "/api/health"),
   projects: (timeoutMs?: number) =>
     request<Project[]>("GET", "/project", undefined, undefined, timeoutMs),
@@ -330,6 +337,13 @@ export const api = {
     invoke<string | null>("device_save_screenshot", { path, defaultName }),
   listFontFamilies: () => invoke<string[]>("list_font_families"),
   getSettings: () => invoke<{ config: AppConfig; runtime: RuntimeInfo }>("get_settings"),
+  voiceStatus: () => invoke<VoiceStatus>("voice_status"),
+  voiceLocales: () => invoke<VoiceLocale[]>("voice_locales"),
+  voiceStart: () => invoke<VoiceStartResult>("voice_start"),
+  voiceStop: () => invoke<void>("voice_stop"),
+  voiceCancel: () => invoke<void>("voice_cancel"),
+  voiceOpenPrivacySettings: (kind: "microphone" | "speech") =>
+    invoke<void>("voice_open_privacy_settings", { kind }),
   syncTrayContext: (context: TrayContext) =>
     invoke<void>("sync_tray_context", { context }),
   saveSettings: (config: AppConfig) =>

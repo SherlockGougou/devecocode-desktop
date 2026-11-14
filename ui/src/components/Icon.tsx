@@ -31,6 +31,7 @@ export type IconName =
   | "check"
   | "stop"
   | "paperclip"
+  | "microphone"
   | "image"
   | "zoom-in"
   | "zoom-out"
@@ -152,6 +153,12 @@ const ICONS: Record<IconName, ReactNode> = {
   stop: <rect x="7" y="7" width="10" height="10" rx="2.2" fill="currentColor" stroke="none" />,
   paperclip: (
     <path d="M20 11.6 12.5 19a4.4 4.4 0 0 1-6.2-6.2l7.6-7.6a3 3 0 0 1 4.2 4.2l-7.6 7.6a1.5 1.5 0 1 1-2.1-2.1l6.9-6.9" />
+  ),
+  microphone: (
+    <>
+      <rect x="8.8" y="3.4" width="6.4" height="11.2" rx="3.2" />
+      <path d="M5.8 11.6a6.2 6.2 0 0 0 12.4 0M12 17.8v2.8M8.8 20.6h6.4" />
+    </>
   ),
   image: (
     <>

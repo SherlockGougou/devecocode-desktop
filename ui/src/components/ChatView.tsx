@@ -14,6 +14,7 @@ import {
 import type { Message, Part } from "../types";
 import { matchMentionFiles, type InlineFileRef } from "../mentions";
 import { copyText } from "../clipboard";
+import { onAppEvent } from "../appEvents";
 import {
   copyItem,
   referenceItem,
@@ -1084,6 +1085,7 @@ function SessionTaskBar() {
 export default function ChatView() {
   const messages = useApp((s) => s.messages);
   const sessionID = useApp((s) => s.sessionID);
+  const sessionLoading = useApp((s) => s.sessionLoading);
   const sessions = useApp((s) => s.sessions);
   const directory = useApp((s) => s.directory);
   const permissions = useApp((s) => s.permissions);
@@ -1115,6 +1117,9 @@ export default function ChatView() {
   const [restoreConfirming, setRestoreConfirming] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
   const [activeTurn, setActiveTurn] = useState(0);
+  const [historyLimit, setHistoryLimit] = useState(100);
+  const pendingJump = useRef<string | null>(null);
+  const previousHeight = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -1130,6 +1135,17 @@ export default function ChatView() {
   const closeFind = useApp((s) => s.closeFind);
   const setFindQuery = useApp((s) => s.setFindQuery);
   const stepFind = useApp((s) => s.stepFind);
+
+  useEffect(() => onAppEvent("message-submitted", (target) => {
+    if (target.directory !== directory || target.sessionID !== sessionID) return;
+    stickToBottom.current = true;
+    userScrolled.current = false;
+    closeFind();
+    setAtBottom(true);
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ block: "end" });
+    });
+  }), [directory, sessionID, closeFind]);
 
   const title = useMemo(() => {
     if (!directory || !sessionID) return "";
@@ -1160,6 +1176,7 @@ export default function ChatView() {
     stickToBottom.current = true;
     userScrolled.current = false;
     setAtBottom(true);
+    setHistoryLimit(100);
   }, [sessionID]);
 
   useEffect(() => {
@@ -1304,6 +1321,12 @@ export default function ChatView() {
 
   const jumpToTurn = (messageID: string) => {
     userScrolled.current = true;
+    const index = visibleBase.findIndex((message) => message.info.id === messageID);
+    if (index >= 0 && visibleBase.length - index > historyLimit) {
+      pendingJump.current = messageID;
+      setHistoryLimit(visibleBase.length - index);
+      return;
+    }
     document
       .getElementById(`msg-${messageID}`)
       ?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -1379,6 +1402,10 @@ export default function ChatView() {
     () => new Map(displayMessages.map((message, index) => [message.info.id, index])),
     [displayMessages],
   );
+  const fullIndices = useMemo(
+    () => new Map(messages.map((message, index) => [message.info.id, index])),
+    [messages],
+  );
   const displayGroups = useMemo(() => {
     const groups: {
       messages: Message[];
@@ -1386,7 +1413,14 @@ export default function ChatView() {
       meta?: MessageMetaOverride;
     }[] = [];
     const groupByMinute = !findQuery.trim();
-    for (const message of displayMessages) {
+    const editingIndex = editing?.sessionID === sessionID
+      ? displayMessages.findIndex((message) => message.info.id === editing.messageID)
+      : -1;
+    const start = editingIndex < 0
+      ? Math.max(0, displayMessages.length - historyLimit)
+      : Math.min(editingIndex, Math.max(0, displayMessages.length - historyLimit));
+    const rendered = findQuery.trim() ? displayMessages : displayMessages.slice(start);
+    for (const message of rendered) {
       if (!messageHasContent(message) && message.info.id !== liveMessageId) continue;
       const previousGroup = groups[groups.length - 1];
       const previous = previousGroup?.messages[previousGroup.messages.length - 1];
@@ -1417,7 +1451,17 @@ export default function ChatView() {
         },
       };
     });
-  }, [continued, displayMessages, findQuery, liveMessageId]);
+  }, [continued, displayMessages, editing, findQuery, liveMessageId, historyLimit, sessionID]);
+
+  useLayoutEffect(() => {
+    if (pendingJump.current) {
+      document.getElementById(`msg-${pendingJump.current}`)?.scrollIntoView({ block: "start" });
+      pendingJump.current = null;
+    } else if (previousHeight.current !== null && scrollRef.current) {
+      scrollRef.current.scrollTop += scrollRef.current.scrollHeight - previousHeight.current;
+      previousHeight.current = null;
+    }
+  }, [historyLimit]);
 
   useEffect(() => {
     if (!findQuery.trim() || matches.length === 0) return;
@@ -1541,6 +1585,12 @@ export default function ChatView() {
           scheduleActiveTurn();
         }}
       >
+        {sessionLoading && (
+          <div className="chat-loading" role="status" aria-live="polite">
+            <span className="panel-spinner small" aria-hidden="true" />
+            正在加载会话…
+          </div>
+        )}
         {!sessionID && (
           <div className="welcome">
             <AppIcon size={44} className="welcome-icon" />
@@ -1553,6 +1603,16 @@ export default function ChatView() {
           </div>
         )}
 
+        {!sessionLoading && !findQuery.trim() && displayMessages.length > historyLimit && (
+          <button type="button" className="history-load" onClick={() => {
+            previousHeight.current = scrollRef.current?.scrollHeight ?? null;
+            userScrolled.current = true;
+            stickToBottom.current = false;
+            setHistoryLimit((limit) => limit + 100);
+          }}>
+            加载更早的消息（剩余 {displayMessages.length - historyLimit} 条）
+          </button>
+        )}
         {displayGroups.map((group) => (
           <div
             key={group.messages[0].info.id}
@@ -1560,9 +1620,7 @@ export default function ChatView() {
           >
             {group.messages.map((message, groupIndex) => {
               const index = displayIndex.get(message.info.id) ?? 0;
-              const fullIndex = messages.findIndex(
-                (item) => item.info.id === message.info.id,
-              );
+              const fullIndex = fullIndices.get(message.info.id) ?? -1;
               const laterCount =
                 fullIndex === -1 ? 0 : messages.length - fullIndex - 1;
               const editReason = busy

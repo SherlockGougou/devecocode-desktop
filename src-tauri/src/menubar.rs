@@ -533,6 +533,7 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
     match id {
         "tray_show" => crate::focus_main(app),
         "tray_hide" => {
+            app.state::<crate::voice::VoiceState>().cancel();
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.hide();
             }

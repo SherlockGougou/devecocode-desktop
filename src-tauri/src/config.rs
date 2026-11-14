@@ -1,4 +1,4 @@
-//! 本地配置：CLI 路径、通知开关、服务端口。
+//! 本地配置：CLI 路径、通知、菜单栏、语音输入与服务端口。
 //!
 //! 配置只存用户偏好，不存任何 CLI 凭据——认证信息仍由 deveco 自己管理。
 
@@ -17,6 +17,7 @@ pub struct Config {
     pub notifications: Notifications,
     pub server: ServerCfg,
     pub menu_bar: MenuBarCfg,
+    pub voice: VoiceCfg,
     pub updates: Updates,
     /// 有内置 CLI 时是否优先使用它；没有内置资源时仍会回退系统 CLI。
     #[serde(default = "default_true")]
@@ -73,6 +74,15 @@ pub struct MenuBarCfg {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct VoiceCfg {
+    /// `None` 跟随 macOS 当前语言；具体值使用 Speech 框架返回的 locale 标识。
+    pub locale: Option<String>,
+    /// 仅在 Composer 聚焦时生效，长按左 Option 开始、松开结束。
+    pub hold_option: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Updates {
     /// 启动后是否静默检查桌面端更新
     pub auto_check: bool,
@@ -106,6 +116,7 @@ impl Default for Config {
             notifications: Notifications::default(),
             server: ServerCfg::default(),
             menu_bar: MenuBarCfg::default(),
+            voice: VoiceCfg::default(),
             updates: Updates::default(),
             use_bundled_cli: true,
             bundled_cli: None,
@@ -138,6 +149,15 @@ impl Default for MenuBarCfg {
         Self {
             icon_style: MenuBarIconStyle::Monochrome,
             always_visible: true,
+        }
+    }
+}
+
+impl Default for VoiceCfg {
+    fn default() -> Self {
+        Self {
+            locale: None,
+            hold_option: true,
         }
     }
 }
@@ -238,6 +258,8 @@ mod tests {
         assert_eq!(cfg.server.preferred_port, 0);
         assert_eq!(cfg.menu_bar.icon_style, MenuBarIconStyle::Monochrome);
         assert!(cfg.menu_bar.always_visible);
+        assert_eq!(cfg.voice.locale, None);
+        assert!(cfg.voice.hold_option);
         assert!(cfg.updates.auto_check);
         assert!(cfg.use_bundled_cli);
     }
@@ -259,6 +281,10 @@ mod tests {
             menu_bar: MenuBarCfg {
                 icon_style: MenuBarIconStyle::Color,
                 always_visible: false,
+            },
+            voice: VoiceCfg {
+                locale: Some("zh-CN".into()),
+                hold_option: false,
             },
             updates: Updates { auto_check: false },
             ..Default::default()
@@ -282,6 +308,8 @@ mod tests {
         assert_eq!(value["menu_bar"]["icon_style"], "color");
         assert_eq!(value["menu_bar"]["always_visible"], false);
         assert_eq!(value["updates"]["auto_check"], true);
+        assert_eq!(value["voice"]["locale"], serde_json::Value::Null);
+        assert_eq!(value["voice"]["hold_option"], true);
     }
 
     #[test]
@@ -310,6 +338,7 @@ mod tests {
         assert!(cfg.use_bundled_cli);
         assert_eq!(cfg.menu_bar.icon_style, MenuBarIconStyle::Monochrome);
         assert!(cfg.menu_bar.always_visible);
+        assert!(cfg.voice.hold_option);
         assert!(cfg.updates.auto_check);
     }
 

@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { memo, useMemo, useRef } from "react";
 import ReactMarkdown, {
   defaultUrlTransform,
   type Components,
@@ -53,7 +53,7 @@ function linkMenu(href: string | undefined) {
   ];
 }
 
-export default function Markdown({
+function Markdown({
   text,
   directory,
 }: {
@@ -146,3 +146,5 @@ export default function Markdown({
     </div>
   );
 }
+
+export default memo(Markdown);

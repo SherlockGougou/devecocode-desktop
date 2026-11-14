@@ -17,11 +17,13 @@ use deveco_desktop::{
 use serde::Serialize;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_notification::NotificationExt;
 
 mod ipc;
 mod menubar;
 mod terminal;
+mod voice;
 mod windrag;
 
 #[derive(Clone, Serialize)]
@@ -46,6 +48,7 @@ fn main() {
         .manage(ipc::BackendCtl::default())
         .manage(ipc::DeviceAwakeState::default())
         .manage(terminal::TerminalManager::default())
+        .manage(voice::VoiceState::default())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -82,6 +85,12 @@ fn main() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
+            voice::voice_status,
+            voice::voice_locales,
+            voice::voice_start,
+            voice::voice_stop,
+            voice::voice_cancel,
+            voice::voice_open_privacy_settings,
             ipc::device_probe,
             ipc::device_capture,
             ipc::device_awake_status,
@@ -123,11 +132,9 @@ fn main() {
             }
         })
         .on_window_event(|window, event| {
-            // 关窗不退进程：托盘常驻，避免每次唤起都重启 161MB 的服务
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.hide();
-                menubar::sync_tray_visibility_soon(window.app_handle());
+                confirm_quit(window.app_handle());
             } else if let tauri::WindowEvent::Focused(_) = event {
                 // 非常驻模式跟随窗口的真实可见状态：隐藏 / 最小化时显示入口，
                 // 重新出现在前台后收起。仅失焦但窗口仍可见时不应误显示。
@@ -138,15 +145,49 @@ fn main() {
         .expect("Tauri 构建失败");
 
     app.run(|handle, event| {
+        if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
+            if *code != Some(tauri::RESTART_EXIT_CODE)
+                && !QUIT_APPROVED.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                api.prevent_exit();
+                confirm_quit(handle);
+            }
+        }
         // 应用退出（含 Cmd+Q / AppleScript quit）时兜底回收 serve 进程组，
         // 这类退出路径不会走到 Rust 的 Drop。
         if let tauri::RunEvent::Exit = event {
             SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
             handle.state::<ipc::DeviceAwakeState>().shutdown_blocking();
             handle.state::<terminal::TerminalManager>().shutdown_all();
+            handle.state::<voice::VoiceState>().cancel();
             shutdown_server(handle);
         }
     });
+}
+
+static QUIT_DIALOG_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static QUIT_APPROVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn confirm_quit(app: &AppHandle) {
+    use std::sync::atomic::Ordering;
+    if QUIT_DIALOG_OPEN.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let handle = app.clone();
+    app.dialog()
+        .message("确定退出 DevEco Code 吗？退出后本地服务也会停止。")
+        .title("退出 DevEco Code")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "退出".into(),
+            "取消".into(),
+        ))
+        .show(move |confirmed| {
+            QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
+            if confirmed {
+                QUIT_APPROVED.store(true, Ordering::SeqCst);
+                handle.exit(0);
+            }
+        });
 }
 
 /// 后端主循环：自愈 + 事件流。

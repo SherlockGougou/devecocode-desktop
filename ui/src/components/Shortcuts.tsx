@@ -11,6 +11,7 @@ const GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
       ["⌘Enter", "执行中作为引导发送"],
       ["⇧Enter", "换行"],
       ["@", "引用工作区文件"],
+      ["⌥", "长按左 ⌥：输入框聚焦时语音输入"],
     ],
   },
   {

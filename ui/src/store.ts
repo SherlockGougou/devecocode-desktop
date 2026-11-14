@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api } from "./api";
+import { reconcileSessionMessages, SessionCache } from "./sessionCache";
 import {
   MAX_QUEUE_ATTACHMENT_BYTES,
   MAX_QUEUE_ITEMS,
@@ -148,6 +149,17 @@ const BOOT_LOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const BTW_TIMEOUT_MS = 90_000;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let previewRequest = 0;
+let sessionOpenRequest = 0;
+const sessionCache = new SessionCache();
+
+function rememberCurrentSession(state: AppState): void {
+  const { directory, sessionID, sessionLoading, messages } = state;
+  if (!directory || !sessionID || sessionLoading) return;
+  // 只有已成功读取过的快照可以复用，避免把失败请求的部分事件当成完整历史。
+  if (sessionCache.get(directory, sessionID) !== undefined) {
+    sessionCache.set(directory, sessionID, messages);
+  }
+}
 let permissionWatchTimer: ReturnType<typeof setTimeout> | null = null;
 let permissionWatchToken = 0;
 let tasksRequest = 0;
@@ -509,6 +521,31 @@ function rememberUnreadSessions(sessions: Record<string, boolean>) {
   else localStorage.setItem(UNREAD_SESSIONS, JSON.stringify(ids));
 }
 
+/** 会话被删除或工作区被移除后，未读标记不能继续留在 Dock 角标里。 */
+function withoutUnread(
+  sessions: Record<string, boolean>,
+  ids: Iterable<string>,
+): Record<string, boolean> {
+  let next: Record<string, boolean> | null = null;
+  for (const id of ids) {
+    if (!sessions[id]) continue;
+    next ??= { ...sessions };
+    delete next[id];
+  }
+  return next ?? sessions;
+}
+
+function removedSessionIds(
+  previous: Session[] | undefined,
+  next: Session[],
+): string[] {
+  if (!previous || previous.length === 0) return [];
+  const keep = new Set(next.map((session) => session.id));
+  return previous
+    .filter((session) => !keep.has(session.id))
+    .map((session) => session.id);
+}
+
 function readRightTabOrder(): RightTab[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(RIGHT_TAB_ORDER) ?? "[]");
@@ -856,17 +893,23 @@ function upsertPart(list: Message[], part: Part, observedAt?: number): Message[]
 /** 用事件流里的增量覆盖快照，同一条消息按 part id 合并，避免刷新时丢掉刚到的活动。 */
 function mergeMessages(base: Message[], overlay: Message[]): Message[] {
   const merged = base.slice();
+  const indices = new Map(merged.map((message, index) => [message.info.id, index]));
   for (const message of overlay) {
-    const index = merged.findIndex((item) => item.info.id === message.info.id);
-    if (index === -1) {
+    const index = indices.get(message.info.id);
+    if (index === undefined) {
+      indices.set(message.info.id, merged.length);
       merged.push(message);
       continue;
     }
     const current = merged[index];
     const parts = current.parts.slice();
+    const partIndices = new Map(parts.map((part, i) => [part.id, i]));
     for (const part of message.parts) {
-      const partIndex = parts.findIndex((item) => item.id === part.id);
-      if (partIndex === -1) parts.push(part);
+      const partIndex = partIndices.get(part.id);
+      if (partIndex === undefined) {
+        partIndices.set(part.id, parts.length);
+        parts.push(part);
+      }
       else parts[partIndex] = { ...parts[partIndex], ...part };
     }
     merged[index] = {
@@ -881,6 +924,7 @@ function mergeMessages(base: Message[], overlay: Message[]): Message[] {
 function emptyConversationPatch() {
   return {
     sessionID: null,
+    sessionLoading: false,
     messages: [],
     todos: [],
     sessionChildren: [],
@@ -948,6 +992,7 @@ export interface AppState {
   preview: FilePreview | null;
   directory: string | null;
   sessionID: string | null;
+  sessionLoading: boolean;
   messages: Message[];
   permissions: PermissionRequest[];
   /** 当前工作区所有待回答请求，按会话自行筛选展示 */
@@ -1069,6 +1114,8 @@ export interface AppState {
   addWorkspace(directory: string): Promise<void>;
   /** 从侧栏隐藏工作区；不删除目录、CLI 注册表或历史会话。 */
   removeWorkspace(directory: string): Promise<void>;
+  /** 清理指向已不存在会话的未读标记 */
+  reconcileUnreadSessions(): Promise<void>;
   /** 把工作区拖到 target 的前/后，并持久化自定义顺序。 */
   moveWorkspace(source: string, target: string, after: boolean): void;
   pickWorkspaceFolder(): Promise<void>;
@@ -1210,6 +1257,7 @@ export const useApp = create<AppState>()((set, get) => ({
   preview: null,
   directory: null,
   sessionID: null,
+  sessionLoading: false,
   messages: [],
   permissions: [],
   questions: [],
@@ -1405,6 +1453,7 @@ export const useApp = create<AppState>()((set, get) => ({
           bootMessage: "",
           ...(get().overviewPinned && get().sessionID ? { overviewOpen: true } : {}),
         });
+        void get().reconcileUnreadSessions();
         if (get().overviewOpen) void get().refreshOverview();
       } finally {
         clearTimeout(hintTimer);
@@ -1424,6 +1473,7 @@ export const useApp = create<AppState>()((set, get) => ({
     if (retry && get().directory === directory) {
       set({ expanded: { ...get().expanded, [directory]: true } });
     } else {
+      rememberCurrentSession(get());
       previewRequest += 1;
       changesRequest += 1;
       fileStatusRequest += 1;
@@ -1438,6 +1488,7 @@ export const useApp = create<AppState>()((set, get) => ({
         directory,
         expanded: { ...get().expanded, [directory]: true },
         sessionID: null,
+        sessionLoading: false,
         messages: [],
         editing: null,
         editPhase: "idle",
@@ -1472,11 +1523,20 @@ export const useApp = create<AppState>()((set, get) => ({
       });
     }
     try {
+      const previousSessions = get().sessions[directory] ?? [];
       const sessions = await api.sessions(directory, timeout);
       sessions.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
+      const unreadSessions = withoutUnread(
+        get().unreadSessions,
+        removedSessionIds(previousSessions, sessions),
+      );
+      if (unreadSessions !== get().unreadSessions) {
+        rememberUnreadSessions(unreadSessions);
+      }
       set({
         sessions: { ...get().sessions, [directory]: sessions },
         loadedDirs: { ...get().loadedDirs, [directory]: true },
+        unreadSessions,
         error: null,
       });
       // 启动/切换工作区时补一次执行状态，已在跑的会话不必等下一次事件才显示
@@ -1527,6 +1587,9 @@ export const useApp = create<AppState>()((set, get) => ({
     const timeout = patient ? BOOT_LOAD_TIMEOUT_MS : undefined;
     const directory = get().directory;
     if (!directory) return;
+    const request = ++sessionOpenRequest;
+    rememberCurrentSession(get());
+    const cached = sessionCache.get(directory, id);
     // 打开会话即视为已读：清掉侧栏的未读圆点。
     if (get().unreadSessions[id]) {
       const unreadSessions = { ...get().unreadSessions };
@@ -1537,13 +1600,14 @@ export const useApp = create<AppState>()((set, get) => ({
     localStorage.setItem(`${LAST_SESSION}.${directory}`, id);
     if (!retry) stopPermissionWatch();
     if (retry && get().sessionID === id) {
-      set({ streaming: false });
+      set({ sessionLoading: cached === undefined });
     } else {
       cancelBtwPending();
       changesRequest += 1;
       set({
         sessionID: id,
-        messages: [],
+        sessionLoading: cached === undefined,
+        messages: cached ?? [],
         todos: [],
         sessionChildren: [],
         childMessages: {},
@@ -1551,7 +1615,7 @@ export const useApp = create<AppState>()((set, get) => ({
         sessionStatuses: {},
         selectedTaskID: null,
         tasksLoading: true,
-        streaming: false,
+        streaming: get().busySessions[id] === true,
         editing: null,
         editPhase: "idle",
         sessionDiff: [],
@@ -1568,6 +1632,8 @@ export const useApp = create<AppState>()((set, get) => ({
         ...(retry ? {} : { error: null }),
       });
     }
+    const baseline = get().messages;
+    const baselineStreaming = get().streaming;
     try {
       const questionMarker = questionChangeSequence;
       const [messages, statuses, detail, questions] = await Promise.all([
@@ -1576,15 +1642,22 @@ export const useApp = create<AppState>()((set, get) => ({
         api.session(directory, id, timeout).catch(() => null),
         api.questions(directory, timeout).catch(() => null),
       ]);
-      // 打开会话期间可能已经有事件到达，合并而不是覆盖
-      const merged = mergeMessages(messages, get().messages);
+      if (request !== sessionOpenRequest || get().directory !== directory || get().sessionID !== id) return;
+      // 只保留请求期间发生的变化，避免旧缓存覆盖服务端的更新或删除。
+      const currentMessages = get().messages;
+      const merged = reconcileSessionMessages(messages, baseline, currentMessages);
       // 进程被异常结束时 CLI 不会补写工具终态；以 /session/status 为准校正展示。
-      const active = statuses
-        ? isBusyStatus(statuses[id])
-        : get().busySessions[id] === true || get().streaming;
+      const active = get().streaming !== baselineStreaming
+        ? get().streaming
+        : statuses
+          ? isBusyStatus(statuses[id])
+          : get().busySessions[id] === true || get().streaming;
       stopPermissionWatch();
+      const refreshed = markInterruptedMessages(merged, active);
+      sessionCache.set(directory, id, refreshed);
       set({
-        messages: markInterruptedMessages(merged, active),
+        sessionLoading: false,
+        messages: refreshed,
         streaming: active,
         error: null,
         ...(questions
@@ -1601,7 +1674,7 @@ export const useApp = create<AppState>()((set, get) => ({
               },
             }
           : {}),
-        ...(statuses
+        ...(statuses && get().streaming === baselineStreaming
           ? {
               sessionStatuses: statuses,
               busySessions: mergeBusySessions(
@@ -1612,6 +1685,31 @@ export const useApp = create<AppState>()((set, get) => ({
             }
           : {}),
       });
+      if (currentMessages !== baseline) {
+        // 流式增量可能从旧缓存继续追加；等消息安静后再读取权威快照补齐缺口。
+        const reconcileWhenQuiet = (expected: Message[]) => {
+          window.setTimeout(() => {
+            if (request !== sessionOpenRequest || get().directory !== directory || get().sessionID !== id) return;
+            if (get().editing) return;
+            if (get().messages !== expected) {
+              reconcileWhenQuiet(get().messages);
+              return;
+            }
+            void api.messages(directory, id).then((latest) => {
+              if (request !== sessionOpenRequest || get().directory !== directory || get().sessionID !== id) return;
+              if (get().editing) return;
+              if (get().messages !== expected) {
+                reconcileWhenQuiet(get().messages);
+                return;
+              }
+              const reconciled = markInterruptedMessages(latest, get().streaming || get().busySessions[id] === true);
+              sessionCache.set(directory, id, reconciled);
+              set({ messages: reconciled });
+            }).catch((error) => console.warn("会话后台校对失败", error));
+          }, 1500);
+        };
+        reconcileWhenQuiet(refreshed);
+      }
       if (
         !isSessionBusy(get(), id) &&
         ((get().queuedMessages[id]?.length ?? 0) > 0 ||
@@ -1625,14 +1723,17 @@ export const useApp = create<AppState>()((set, get) => ({
         void get().refreshChanges();
       }
     } catch (error) {
+      if (request !== sessionOpenRequest || get().directory !== directory || get().sessionID !== id) return;
+      set({ sessionLoading: false });
       set({ tasksLoading: false });
-      set({ error: workspaceLoadError(error, patient) });
+      set({ error: cached === undefined ? workspaceLoadError(error, patient) : `刷新会话失败，当前显示缓存：${String(error)}` });
       if (isRetryableWorkspaceError(error, patient || retry)) watchPermission(directory);
     }
   },
 
   async newSession() {
     const directory = get().directory;
+    rememberCurrentSession(get());
     cancelBtwPending();
     set({
       ...emptyConversationPatch(),
@@ -1649,6 +1750,7 @@ export const useApp = create<AppState>()((set, get) => ({
   async newSessionIn(directory) {
     if (!directory) return;
     const target = normalizeWorkspace(directory);
+    rememberCurrentSession(get());
     if (get().directory !== target) {
       await get().selectProject(target, { openRecent: false });
     }
@@ -1734,6 +1836,10 @@ export const useApp = create<AppState>()((set, get) => ({
         .map(([id]) => id),
     ]);
     for (const id of deliveryIds) get().clearSessionDelivery(id);
+    const unreadSessions = withoutUnread(state.unreadSessions, deliveryIds);
+    if (unreadSessions !== state.unreadSessions) {
+      rememberUnreadSessions(unreadSessions);
+    }
     delete sessions[target];
     delete loadedDirs[target];
     delete searchResults[target];
@@ -1747,9 +1853,11 @@ export const useApp = create<AppState>()((set, get) => ({
       loadedDirs,
       searchResults,
       expanded,
+      unreadSessions,
       error: null,
     });
     rememberWorkspaceOrder(remaining);
+    void get().reconcileUnreadSessions();
 
     const label = workspaceLabel(target);
     if (state.directory !== target) {
@@ -1839,6 +1947,7 @@ export const useApp = create<AppState>()((set, get) => ({
           permission.length > 0 ? { permission } : undefined,
         );
         sessionID = session.id;
+        sessionCache.set(directory, sessionID, []);
         const list = get().sessions[directory] ?? [];
         set({
           sessions: { ...get().sessions, [directory]: upsertSession(list, session) },
@@ -2253,6 +2362,10 @@ export const useApp = create<AppState>()((set, get) => ({
     const directory = state.directory;
     const files = attachments ?? [];
     const mentions = refs ?? [];
+    if (state.sessionLoading) {
+      get().showNotice("会话正在加载，请稍候");
+      return false;
+    }
     if (!directory || (!text.trim() && files.length === 0 && mentions.length === 0)) {
       return false;
     }
@@ -3241,9 +3354,18 @@ export const useApp = create<AppState>()((set, get) => ({
     const { directory, sessionID } = get();
     if (!directory) return;
     try {
+      const previousSessions = get().sessions[directory] ?? [];
       const sessions = await api.sessions(directory);
+      if (get().directory !== directory) return;
       sessions.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
-      set({ sessions: { ...get().sessions, [directory]: sessions } });
+      const unreadSessions = withoutUnread(
+        get().unreadSessions,
+        removedSessionIds(previousSessions, sessions),
+      );
+      if (unreadSessions !== get().unreadSessions) {
+        rememberUnreadSessions(unreadSessions);
+      }
+      set({ sessions: { ...get().sessions, [directory]: sessions }, unreadSessions });
       if (sessionID) {
         const questionMarker = questionChangeSequence;
         const [messages, permissions, questions, statuses] = await Promise.all([
@@ -3252,6 +3374,7 @@ export const useApp = create<AppState>()((set, get) => ({
           api.questions(directory).catch(() => null),
           api.sessionStatus(directory).catch(() => null),
         ]);
+        if (get().directory !== directory || get().sessionID !== sessionID) return;
         // 重连期间会丢失 status/idle 事件；用快照重新确认当前会话是否仍在运行。
         const active = statuses
           ? isBusyStatus(statuses[sessionID])
@@ -4585,10 +4708,33 @@ export const useApp = create<AppState>()((set, get) => ({
     set({ sessionPreview });
   },
 
+  async reconcileUnreadSessions() {
+    const unread = get().unreadSessions;
+    const ids = Object.keys(unread).filter((id) => unread[id]);
+    const projects = get().projects;
+    if (ids.length === 0 || projects.length === 0) return;
+    try {
+      // 任一路径读取失败就无法证明会话不存在，整体放弃，避免误删未读标记。
+      const lists = await Promise.all(
+        projects.map((project) => api.sessions(project.worktree)),
+      );
+      const existing = new Set(lists.flat().map((session) => session.id));
+      const stale = ids.filter((id) => !existing.has(id));
+      if (stale.length === 0) return;
+      const unreadSessions = { ...get().unreadSessions };
+      for (const id of stale) delete unreadSessions[id];
+      rememberUnreadSessions(unreadSessions);
+      set({ unreadSessions });
+    } catch (error) {
+      console.warn("清理未读标记失败", error);
+    }
+  },
+
   async deleteSession(directory, id) {
     if (!directory) return;
     try {
       await api.deleteSession(directory, id);
+      sessionCache.delete(directory, id);
       get().clearSessionDelivery(id);
       const list = get().sessions[directory] ?? [];
       const busySessions = { ...get().busySessions };
@@ -4607,6 +4753,7 @@ export const useApp = create<AppState>()((set, get) => ({
         cancelBtwPending();
         set({
           sessionID: null,
+          sessionLoading: false,
           messages: [],
           editing: null,
           editPhase: "idle",

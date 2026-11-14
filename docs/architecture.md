@@ -24,6 +24,7 @@ graph LR
   IPC -- "HTTP" --> CLI["deveco serve<br/>127.0.0.1:随机端口"]
   MAIN -- "SSE /global/event" --> CLI
   MAIN -- "WebSocket /pty" --> CLI
+  MAIN -- "Speech / AVFAudio" --> VOICE["macOS 本地语音识别"]
   MAIN -- "HTTPS 更新清单与包" --> GH["GitHub Releases"]
   MAIN -- "系统通知" --> N["macOS 通知中心"]
   CLI <--> DATA["CLI 配置与会话数据<br/>~/.config/deveco<br/>~/.local/share/deveco"]
@@ -75,6 +76,7 @@ graph LR
 | `src/notify.rs` | 通知策略、前台静音与按会话/请求去抖 |
 | `src/ipc.rs` | 前端与 CLI/系统之间的命令桥：代理、设置、设备、字体与窗口标题 |
 | `src/terminal.rs` | 底部终端：调用 `/pty` 创建/调整/关闭会话，维持 WebSocket，把输出转成 Tauri 事件 |
+| `src/voice.rs` | 本地语音输入：权限、语言、AVAudioEngine 采集、SFSpeechRecognizer 工作线程与事件 |
 | `src/cli_config.rs` | CLI 全局/项目配置路径解析、JSONC 校验、密钥脱敏、备份、原子写入与重载 |
 | `src/menubar.rs` | macOS 菜单栏状态项、动态图标与菜单动作 |
 | `src/windrag.rs` | 自绘标题栏的窗口拖动 |
@@ -86,7 +88,7 @@ graph LR
 | `src/config.rs` | 应用配置：CLI 路径、通知、菜单栏、端口与可选本地口令 |
 | `src/bin/selftest.rs` | 不打开窗口的端到端自检；由 `selftest` feature 启用，默认不进入应用包 |
 
-`main.rs` 只声明 `ipc`、`menubar`、`terminal`、`windrag` 四个主进程模块；其余模块位于库层，
+`main.rs` 只声明 `ipc`、`menubar`、`terminal`、`voice`、`windrag` 五个主进程模块；其余模块位于库层，
 由主进程和 `deveco-selftest` 共用。
 
 ### React 前端
@@ -96,7 +98,7 @@ graph LR
 | 应用骨架 | `ui/src/App.tsx`、`ui/src/main.tsx`、`ui/src/styles.css` |
 | 状态与数据 | `ui/src/store.ts`、`ui/src/api.ts`、`ui/src/types.ts`、`ui/src/appEvents.ts` |
 | 配置编辑 | `ui/src/cliConfig.ts`、`components/settings/CliConfigPage.tsx`、`components/settings/useCliConfigEditor.ts` |
-| 对话体验 | `components/ChatView.tsx`、`components/Composer.tsx`、`components/Markdown.tsx` |
+| 对话体验 | `components/ChatView.tsx`、`components/Composer.tsx`、`composerDrafts.ts`、`components/VoiceBar.tsx`、`components/useVoiceInput.ts`、`components/Markdown.tsx` |
 | 图片查看 | `components/InlineImage.tsx`、`imageViewer.tsx`、`imageActions.ts` |
 | 导航与工作区 | `components/Sidebar.tsx`、`components/StatusBar.tsx` |
 | 底部终端 | `components/TerminalPanel.tsx` |
@@ -104,7 +106,7 @@ graph LR
 | 概览与设置 | `components/TaskOverview.tsx`、`components/Settings.tsx`、`components/settings/*` |
 | 应用内更新 | `update.ts`、`components/UpdateBanner.tsx`、`components/settings/AboutPage.tsx` |
 | 交互基础 | `contextMenu.tsx`、`components/Shortcuts.tsx`、`components/Icon.tsx` |
-| 纯逻辑工具 | `attachments.ts`、`changes.ts`、`diff.ts`、`fileTree.ts`、`clipboard.ts`、`filePreview.ts`、`mentions.ts`、`messageStats.ts`、`models.ts`、`paths.ts`、`questions.ts`、`tasks.ts`、`theme.ts`、`uiPrefs.ts` |
+| 纯逻辑工具 | `attachments.ts`、`changes.ts`、`diff.ts`、`fileTree.ts`、`clipboard.ts`、`filePreview.ts`、`mentions.ts`、`messageStats.ts`、`models.ts`、`paths.ts`、`questions.ts`、`tasks.ts`、`theme.ts`、`uiPrefs.ts`、`voice.ts` |
 
 所有请求集中在 `ui/src/api.ts`，所有共享状态集中在 `ui/src/store.ts`。组件可以调用
 `api.ts` 或读取 store，但不直接创建 HTTP 连接。
@@ -129,6 +131,8 @@ graph LR
 8. 退出或崩溃时按进程组停止 serve；异常断开进入自愈状态机。
 9. 应用内更新由 Tauri updater 读取 GitHub 的 `latest.json` 或 `latest-offline.json`，
    校验 Ed25519 签名和签名中的版本号；用户确认后替换 `.app`，重启由用户触发。
+10. 语音输入由 Rust 工作线程调用 macOS Speech 与 AVFAudio，部分结果经
+    `deveco://voice` 交给前端；音频不经过 CLI、不写入磁盘。
 
 前端在打开会话、后端恢复或收到 `session.idle`/`session.error` 后，会用
 `/session/status` 与消息快照校准执行态。空闲会话里残留的 `running`/`pending` 工具和未结束的
@@ -251,6 +255,10 @@ stateDiagram-v2
     `["无偏好"]` 后提交，“停止生成”先调用 `session.abort`，再静默关闭仍存在的
     question 请求。`multiple` 缺失时，如果题干使用“（可多选）”等明确标记，前端按多选
     处理；单选题选中后移动到下一题，但无论题数多少都不自动提交。
+19. **语音输入只在 Rust 侧采集和识别。** `requiresOnDeviceRecognition` 必须为 true，
+    `supportsOnDeviceRecognition` 不可用时明确报错，不自动回退 Apple 在线识别。ObjC 对象
+    只能由语音工作线程持有；前端只接收拥有所有权的字符串事件。任意取消、切换草稿或隐藏
+    窗口都要停止音频与识别任务，录音和部分转写不得写日志或独立持久化。
 
 ## 数据与配置
 
@@ -259,7 +267,7 @@ stateDiagram-v2
 | `~/.config/deveco/` | CLI | CLI 配置、AGENTS.md、Skills；桌面端可经确认写入 `deveco.jsonc`，并安装带管理标记的 `deveco-desktop-device` |
 | `~/.local/share/deveco/` | CLI | 会话数据库与认证信息；桌面端不解析 SQLite |
 | `<workspace>/.deveco/deveco.jsonc` | 项目 | 项目级 CLI 配置；首次保存时由桌面端创建，项目规则覆盖全局 |
-| `~/Library/Application Support/DevEco Code Desktop/config.json` | 桌面端 | CLI 路径、通知、菜单栏、端口与可选本地口令 |
+| `~/Library/Application Support/DevEco Code Desktop/config.json` | 桌面端 | CLI 路径、通知、菜单栏、语音语言/快捷键、端口与可选本地口令 |
 | `~/Library/Application Support/DevEco Code Desktop/cli-config-backups/` | 桌面端 | CLI 配置写入前备份，按配置文件路径隔离并保留最近 10 份，权限 `0600` |
 | `~/Library/Application Support/DevEco Code Desktop/server-cwd/` | 桌面端 | serve 的中性工作目录，避免 CLI 扫描根目录或用户主目录 |
 | `~/Library/Application Support/DevEco Code Desktop/device-shots/` | 桌面端 | HDC 设备截图 |

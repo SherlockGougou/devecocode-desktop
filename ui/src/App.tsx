@@ -22,7 +22,7 @@ import TerminalPanel from "./components/TerminalPanel";
 import UpdateBanner from "./components/UpdateBanner";
 import { Icon } from "./components/Icon";
 import { AppIcon } from "./components/AppIcon";
-import { checkForUpdates, configureAutoCheck } from "./update";
+import { checkForUpdates, configureAutoCheck, useUpdate } from "./update";
 import {
   PRODUCT_AGREEMENT_CHANGED_GUIDANCE,
   isProductAgreementError,
@@ -49,7 +49,15 @@ export default function App() {
   const openSettings = useApp((s) => s.openSettings);
   const boot = useApp((s) => s.boot);
   const onSse = useApp((s) => s.onSse);
+  const unreadCount = useApp(
+    (s) => Object.values(s.unreadSessions).filter(Boolean).length,
+  );
   const agreementError = isProductAgreementError(error);
+  useEffect(() => {
+    void api.setDockBadge(unreadCount).catch((error: unknown) => {
+      console.error("更新 Dock 未读数量失败", error);
+    });
+  }, [unreadCount]);
   useEffect(() => {
     if (booted.current) return;
     booted.current = true;
@@ -98,8 +106,12 @@ export default function App() {
           window.location.reload();
           break;
         case "check_updates":
-          state.openSettings("about");
-          void checkForUpdates();
+          state.showNotice("正在检查更新…");
+          void checkForUpdates().then(() => {
+            if (useUpdate.getState().status === "up-to-date") {
+              state.showNotice("已是最新版本");
+            }
+          });
           break;
         default:
           break;

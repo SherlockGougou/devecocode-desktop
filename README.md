@@ -42,11 +42,13 @@ HarmonyOS 定制分支）的 HTTP + SSE 契约，提供自研三栏界面、系�
 - **跟随 CLI 契约。** 普通版驱动本机 CLI；Offline 版内置固定版本 CLI。两者都不解析 CLI
   数据库，Offline 版升级 CLI 需要更新桌面端。
 - **macOS 优先。** 当前覆盖窗口、菜单栏、通知、Quick Look、HDC 截图和自绘标题栏拖动。
+- 长会话默认显示最近 100 条消息，可继续加载更早的历史；关闭窗口或从托盘退出前会确认。
 
 ## 主要能力
 
 - 工作区与会话：多工作区侧栏（独立展开/收起）、懒加载、搜索、排序、归档、重命名和删除；
-  执行中的会话显示加载指示，执行结束未查看的会话显示未读圆点。
+  执行中的会话显示加载指示，执行结束未查看的会话显示未读圆点；Dock 图标显示未读会话
+  数量，打开全部未读会话后清除。
 - 对话体验：流式 Markdown、思考折叠、工具调用聚合、子代理/待办进度、权限审批卡片、
   Agent 提问时用底部问答面板替换输入框（翻页、单选/多选/自定义答案、无偏好或停止生成）、
   会话内查找、向上翻看时一键回到最新消息和停止生成；执行中 Enter 排队、`⌘Enter` 引导，
@@ -67,8 +69,8 @@ HarmonyOS 定制分支）的 HTTP + SSE 契约，提供自研三栏界面、系�
   确认影响范围，外部 revert 状态会在会话底部提供恢复入口。
 - 状态栏：轮次、Token 总量与缓存命中、上下文占用和输出速度（TPS）；悬浮查看未缓存
   输入、输出、推理与缓存明细。
-- Composer：模型、Agent、推理档位、斜杠命令、`@` 文件引用、文件附件、剪贴板截图，
-  以及执行中的排队/引导消息托盘。
+- Composer：模型、Agent、推理档位、斜杠命令、`@` 文件引用、文件附件、剪贴板截图、
+  macOS 本地语音输入，按工作区与会话保存未发送文字草稿，以及执行中的排队/引导消息托盘。
 - 右栏：工作区/会话双来源 diff、目录分组与统一 diff 查看器、懒加载文件树、搜索与系统预览、
   任务详情、HarmonyOS 设备截图。
 - 底部终端：标题栏终端按钮或 `⌘J` 展开，当前工作区启动本地 Shell；支持输入、滚动、
@@ -79,7 +81,8 @@ HarmonyOS 定制分支）的 HTTP + SSE 契约，提供自研三栏界面、系�
   权限、Skills、Plugins、运行参数和高级 JSONC；保存后重载 CLI，失败自动回滚。
 - 任务概览：分支、ahead/behind、文件统计、Token/费用，以及显式提交和推送。
 - 应用内更新：启动后自动检查 GitHub Releases，发现新版本后由用户确认下载安装；
-  普通版与 Offline 版各自使用独立更新清单，Offline 版更新会同时替换内置 CLI。
+  菜单中的“检查更新…”直接后台检查，不跳转设置；普通版与 Offline 版各自使用独立更新清单，
+  Offline 版更新会同时替换内置 CLI。
 - macOS 集成：菜单栏常驻、原生菜单、授权/提问/完成/失败系统通知、窗口状态恢复和全局右键菜单。
 - 可靠性：实时后端监管、崩溃自愈、进程组回收、代理健康检查和 `/global/event` 订阅。
 
@@ -175,7 +178,7 @@ npm run check:selftest
 - `.github/workflows/dependabot-automerge.yml` 对 patch/minor 更新在 7 项必需检查通过后
   自动 squash 合并；major 和未知类型继续人工处理。
 - `.github/workflows/release-check.yml` 手动检查版本一致性、双语 Release notes 和占位符；
-  `npm run release:prepare -- 0.2.7` 同步四个版本文件。
+  `npm run release:prepare -- 0.2.8` 同步四个版本文件。
 - `.github/workflows/release.yml` 在推送 `v*` 标签或手动触发时构建 Apple Silicon 与 Intel
   两种 DMG，并额外构建包含固定 CLI 的 Offline 版本。发布使用 draft-first：普通版、
   Offline 版、双语 notes、`SHA256SUMS.txt` 和两套 updater 清单全部完成后才公开。

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>用于把语音转成输入框中的文字。音频只在本机识别，不会上传或保存。</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>用于把语音转成输入框中的文字。语音识别强制在本机完成。</string>
+</dict>
+</plist>

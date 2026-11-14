@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
-import { onAppEvent } from "../appEvents";
+import { emitAppEvent, onAppEvent } from "../appEvents";
 import { useApp } from "../store";
 import { configureAutoCheck } from "../update";
 import type {
@@ -20,6 +20,7 @@ import AboutPage from "./settings/AboutPage";
 import CliServicePage from "./settings/CliServicePage";
 import CliConfigPage from "./settings/CliConfigPage";
 import ExtensionsPage from "./settings/ExtensionsPage";
+import VoicePage from "./settings/VoicePage";
 import { Row, Toggle } from "./settings/SettingsPrimitives";
 import {
   useCliConfigEditor,
@@ -34,6 +35,7 @@ type Status =
 
 const PAGES: Array<{ id: SettingsPage; label: string; icon: IconName }> = [
   { id: "appearance", label: "外观", icon: "appearance" },
+  { id: "voice", label: "语音", icon: "microphone" },
   { id: "account", label: "账号与模型", icon: "account" },
   { id: "agent", label: "Agent 与权限", icon: "branch" },
   { id: "extensions", label: "扩展", icon: "puzzle" },
@@ -209,6 +211,8 @@ export default function Settings() {
     setDraft({ ...draft, use_bundled_cli });
   const patchMenuBar = (patch: Partial<AppConfig["menu_bar"]>) =>
     setDraft({ ...draft, menu_bar: { ...draft.menu_bar, ...patch } });
+  const patchVoice = (patch: Partial<AppConfig["voice"]>) =>
+    setDraft({ ...draft, voice: { ...draft.voice, ...patch } });
 
   const save = async () => {
     setStatus({ kind: "saving" });
@@ -218,6 +222,7 @@ export default function Settings() {
       setDraft(result.config);
       setRestartRequired(result.restartRequired);
       configureAutoCheck(result.config.updates.auto_check);
+      emitAppEvent("settings-saved", result.config);
       setStatus({ kind: "saved" });
     } catch (err) {
       setStatus({ kind: "error", message: String(err) });
@@ -313,6 +318,8 @@ export default function Settings() {
             onMenuBarChange={patchMenuBar}
           />
         );
+      case "voice":
+        return <VoicePage draft={draft} onVoiceChange={patchVoice} />;
       case "account":
         return (
           <AccountModelsPage

@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+} from "react";
 import type { Attachment, MentionRef } from "../types";
 import { api } from "../api";
 import { revertedCount, useApp } from "../store";
 import { MAX_REFS, parseMentions } from "../mentions";
-import { onAppEvent } from "../appEvents";
+import { emitAppEvent, onAppEvent } from "../appEvents";
 import { copyItem, revealItem, useContextMenu } from "../contextMenu";
 import { absoluteWorkspacePath, relativeWorkspacePath } from "../paths";
 import { highestModelVariant, modelKey } from "../models";
@@ -25,7 +32,15 @@ import {
   displayedPermissionMode,
   hasCustomSessionPermission,
 } from "../sessionPermission";
+import {
+  readComposerDraft,
+  writeComposerDraft,
+  type ComposerDraftScope,
+} from "../composerDrafts";
+import { insertVoiceTranscript, type VoiceSelection } from "../voice";
 import { Icon } from "./Icon";
+import VoiceBar from "./VoiceBar";
+import { useVoiceInput } from "./useVoiceInput";
 
 /** 弹层最多展示多少条候选 */
 const MAX_MENTION_ITEMS = 8;
@@ -86,6 +101,7 @@ export default function Composer() {
   const sessionID = useApp((s) => s.sessionID);
   const sessions = useApp((s) => s.sessions);
   const creatingSession = useApp((s) => s.creatingSession);
+  const sessionLoading = useApp((s) => s.sessionLoading);
   const draftPermissionMode = useApp((s) => s.draftPermissionMode);
   const permissionUpdating = useApp((s) => s.permissionUpdating);
   const setPermissionMode = useApp((s) => s.setPermissionMode);
@@ -128,6 +144,9 @@ export default function Composer() {
   const editing = useApp((s) => s.editing);
   const cancelEditMessage = useApp((s) => s.cancelEditMessage);
   const messages = useApp((s) => s.messages);
+  const settingsOpen = useApp((s) => s.settingsOpen);
+  const shortcutsOpen = useApp((s) => s.shortcutsOpen);
+  const openSettings = useApp((s) => s.openSettings);
   const [text, setText] = useState("");
   /** @ 引用：始终与 text 同步，见 applyText 的注释 */
   const [refs, setRefs] = useState<MentionRef[]>([]);
@@ -143,6 +162,9 @@ export default function Composer() {
   const [workspacePicking, setWorkspacePicking] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [revertConfirm, setRevertConfirm] = useState(false);
+  const textRef = useRef("");
+  const draftScopeRef = useRef<ComposerDraftScope | null>(null);
+  const draftSaveErrorRef = useRef(false);
   const revertDeliveryRef = useRef<"queue" | "steer">("queue");
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
@@ -154,6 +176,7 @@ export default function Composer() {
   /** 上次发送的附件：失败恢复原文时一并还原 */
   const lastSentAttachments = useRef<Attachment[]>([]);
   const [keyword, setKeyword] = useState("");
+  const composerRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const agentPickerRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
@@ -278,9 +301,72 @@ export default function Composer() {
    * 手动删掉文本里的 @token 后 chip 会跟着消失，不需要另存一份状态去对齐。
    */
   const applyText = (next: string, nextRefs?: MentionRef[]) => {
+    textRef.current = next;
     setText(next);
     setRefs(nextRefs ?? parseMentions(next));
+    const scope = draftScopeRef.current;
+    if (!scope) return;
+    try {
+      writeComposerDraft(localStorage, scope, next);
+      draftSaveErrorRef.current = false;
+    } catch (error) {
+      if (draftSaveErrorRef.current) return;
+      draftSaveErrorRef.current = true;
+      showNotice(`草稿保存失败：${String(error)}`);
+    }
   };
+
+  const getVoiceSelection = (): VoiceSelection => {
+    const area = areaRef.current;
+    const start = area?.selectionStart ?? textRef.current.length;
+    const end = area?.selectionEnd ?? start;
+    return { start, end };
+  };
+
+  const insertVoiceText = (transcript: string, selection: VoiceSelection) => {
+    const insertion = insertVoiceTranscript(textRef.current, transcript, selection);
+    if (!insertion) return null;
+    applyText(insertion.afterText);
+    requestAnimationFrame(() => {
+      const area = areaRef.current;
+      area?.focus();
+      area?.setSelectionRange(insertion.caret, insertion.caret);
+    });
+    return insertion;
+  };
+
+  const undoVoiceText = (insertion: {
+    beforeText: string;
+    beforeStart: number;
+    beforeEnd: number;
+  }) => {
+    applyText(insertion.beforeText);
+    requestAnimationFrame(() => {
+      const area = areaRef.current;
+      area?.focus();
+      area?.setSelectionRange(insertion.beforeStart, insertion.beforeEnd);
+    });
+  };
+
+  const voice = useVoiceInput({
+    composerRef,
+    enabled: Boolean(directory) && !editingActive,
+    currentText: text,
+    getSelection: getVoiceSelection,
+    onInsert: insertVoiceText,
+    onUndo: undoVoiceText,
+    onNotice: showNotice,
+  });
+
+  useEffect(() => {
+    if (!voice.busy) return;
+    setMention(null);
+    setAgentOpen(false);
+    setModelOpen(false);
+    setVariantOpen(false);
+    setWorkspaceOpen(false);
+    setPermissionOpen(false);
+  }, [voice.busy]);
 
   // 发送失败时把原文还回输入框，引用 chip 也要一起恢复
   useEffect(() => {
@@ -300,15 +386,63 @@ export default function Composer() {
     // 只在失败文本变化时触发；text 取当前渲染值即可
   }, [failedText, clearFailedText]);
 
-  // 切换工作区后旧引用路径全部失效：草稿与 chip 一起清空，
-  // 避免把上一个工作区的 file:// 路径发给模型
-  const lastDirectoryRef = useRef(directory);
-  useEffect(() => {
-    if (lastDirectoryRef.current === directory) return;
-    lastDirectoryRef.current = directory;
-    applyText("", []);
+  // 切换工作区或会话时先保存上一处草稿，再恢复当前上下文自己的草稿。
+  // 新会话使用 sessionID=null 的独立槽位，首条消息建会话后不会串到已有会话。
+  useLayoutEffect(() => {
+    const previous = draftScopeRef.current;
+    const next = directory ? { directory, sessionID } : null;
+    const scopeChanged =
+      Boolean(previous) &&
+      (!next ||
+        previous?.directory !== next?.directory ||
+        previous?.sessionID !== next?.sessionID);
+    if (scopeChanged && voice.phase !== "idle") {
+      voice.cancel();
+    }
+    if (
+      previous &&
+      (!next ||
+        previous.directory !== next.directory ||
+        previous.sessionID !== next.sessionID)
+    ) {
+      try {
+        writeComposerDraft(localStorage, previous, textRef.current);
+        draftSaveErrorRef.current = false;
+      } catch (error) {
+        if (!draftSaveErrorRef.current) {
+          draftSaveErrorRef.current = true;
+          showNotice(`草稿保存失败：${String(error)}`);
+        }
+      }
+    }
+
+    draftScopeRef.current = next;
     setMention(null);
-  }, [directory]);
+    if (!next) {
+      textRef.current = "";
+      setText("");
+      setRefs([]);
+      return;
+    }
+
+    try {
+      const saved = readComposerDraft(localStorage, next);
+      applyText(saved?.text ?? "");
+      draftSaveErrorRef.current = false;
+    } catch (error) {
+      applyText("");
+      if (!draftSaveErrorRef.current) {
+        draftSaveErrorRef.current = true;
+        showNotice(`草稿读取失败：${String(error)}`);
+      }
+    }
+  }, [directory, sessionID]);
+
+  useEffect(() => {
+    if ((settingsOpen || shortcutsOpen) && voice.phase !== "idle") {
+      voice.cancel();
+    }
+  }, [settingsOpen, shortcutsOpen, voice.phase, voice.cancel]);
 
   // @ 引用：输入 @ 后按关键字搜索工作区文件（空关键字返回工作区文件列表）
   useEffect(() => {
@@ -557,6 +691,10 @@ export default function Composer() {
   const performSubmit = (delivery: "queue" | "steer") => {
     const value = text.trim();
     if ((!value && attachments.length === 0) || !directory) return;
+    if (voice.busy) {
+      showNotice("正在语音输入，请先停止录音");
+      return;
+    }
     if (editingActive) {
       showNotice("正在编辑历史消息，请先完成或取消编辑");
       return;
@@ -565,6 +703,7 @@ export default function Composer() {
     // 位置按真正发出去的文本重算（trim 会挪动下标），保证 source.text 与 text part 对得上
     const mentioned = parseMentions(value);
     if (!submitMessage(value, files, mentioned, delivery)) return;
+    emitAppEvent("message-submitted", { directory, sessionID });
     lastSentRefs.current = mentioned;
     lastSentAttachments.current = files;
     applyText("", []);
@@ -575,6 +714,10 @@ export default function Composer() {
   const submit = (delivery: "queue" | "steer") => {
     const value = text.trim();
     if ((!value && attachments.length === 0) || !directory) return;
+    if (voice.busy) {
+      showNotice("正在语音输入，请先停止录音");
+      return;
+    }
     if (editingActive) {
       showNotice("正在编辑历史消息，请先完成或取消编辑");
       return;
@@ -712,7 +855,7 @@ export default function Composer() {
   };
 
   return (
-    <div className="composer">
+    <div className="composer" ref={composerRef}>
       {editingActive && (
         <div className="composer-edit-banner">
           <Icon name="pencil" size={14} />
@@ -984,6 +1127,24 @@ export default function Composer() {
             ))}
           </div>
         )}
+        <VoiceBar
+          phase={voice.phase}
+          transcript={voice.transcript}
+          error={voice.error}
+          elapsedMs={voice.elapsedMs}
+          maxDurationMs={voice.maxDurationMs}
+          limitWarning={voice.limitWarning}
+          undoAvailable={voice.undoAvailable}
+          holdOption={voice.holdOption}
+          onStop={voice.stop}
+          onCancel={voice.cancel}
+          onRetry={voice.retry}
+          onInsertDraft={voice.insertDraft}
+          onUndo={voice.undoInsertion}
+          onDismiss={voice.dismissError}
+          onOpenPrivacy={(kind) => void voice.openPrivacySettings(kind)}
+          onOpenVoiceSettings={() => openSettings("voice")}
+        />
         {refs.length > 0 && (
           <div className="ref-row">
             {refs.map((ref) => (
@@ -1132,6 +1293,10 @@ export default function Composer() {
           onKeyDown={(event) => {
             // IME 组字过程中的按键交给输入法：否则中文/日文候选词会被当成快捷键吞掉
             if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (voice.busy) {
+              if (event.key === "Enter") event.preventDefault();
+              return;
+            }
             if (slashMatches.length > 0) {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
@@ -1198,6 +1363,7 @@ export default function Composer() {
               : "请先在左侧选择工作区"
           }
           rows={2}
+          readOnly={voice.busy}
           disabled={!directory}
         />
         <div className="composer-actions">
@@ -1211,6 +1377,39 @@ export default function Composer() {
               disabled={!directory}
             >
               <Icon name="paperclip" size={17} />
+            </button>
+            <button
+              type="button"
+              className={`toolbar-icon-btn voice-mic-btn ${
+                voice.recording ? "recording" : ""
+              } ${voice.starting ? "starting" : ""}`}
+              onClick={() => {
+                if (voice.recording) voice.stop();
+                else if (voice.phase !== "starting" && voice.phase !== "finalizing") {
+                  void voice.start("button");
+                }
+              }}
+              title={
+                voice.recording
+                  ? "停止语音输入"
+                  : voice.starting
+                    ? "正在启动语音输入…"
+                    : voice.finalizing
+                      ? "正在识别语音…"
+                      : voice.holdOption
+                        ? "语音输入（点击或长按左 ⌥）"
+                        : "语音输入"
+              }
+              aria-label={voice.recording ? "停止语音输入" : "开始语音输入"}
+              aria-pressed={voice.recording}
+              disabled={
+                !directory ||
+                editingActive ||
+                voice.starting ||
+                voice.finalizing
+              }
+            >
+              <Icon name="microphone" size={17} />
             </button>
             <div className="toolbar-picker agent-picker" ref={agentPickerRef}>
               <button
@@ -1557,10 +1756,14 @@ export default function Composer() {
                   disabled={
                     (!text.trim() && attachments.length === 0) ||
                     !directory ||
-                    editingActive
+                    sessionLoading ||
+                    editingActive ||
+                    voice.busy
                   }
                   title={
-                    editingActive
+                    voice.busy
+                      ? "请先结束语音输入"
+                      : editingActive
                       ? "请先完成或取消历史消息编辑"
                       : revertCount > 0
                         ? "发送前会确认是否丢弃回滚消息"
@@ -1591,10 +1794,14 @@ export default function Composer() {
                 disabled={
                   (!text.trim() && attachments.length === 0) ||
                   !directory ||
-                  editingActive
+                  sessionLoading ||
+                  editingActive ||
+                  voice.busy
                 }
                 title={
-                  editingActive
+                  voice.busy
+                    ? "请先结束语音输入"
+                    : editingActive
                     ? "请先完成或取消历史消息编辑"
                     : revertCount > 0
                       ? "发送前会确认是否丢弃回滚消息"

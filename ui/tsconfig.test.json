@@ -12,6 +12,10 @@
     "src/filePreview.ts",
     "src/productAgreement.ts",
     "src/questions.ts",
+    "src/sessionCache.ts",
+    "src/composerDrafts.ts",
+    "src/voice.ts",
+    "src/dockBadge.ts",
     "src/types.ts"
   ]
 }

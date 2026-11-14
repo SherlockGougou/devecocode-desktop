@@ -1,9 +1,11 @@
-import type { Attachment } from "./types";
+import type { AppConfig, Attachment } from "./types";
 
 type AppEventMap = {
   "reference-file": { directory: string; path: string };
   "settings-save": undefined;
+  "settings-saved": AppConfig;
   "attach-device-screenshot": Attachment;
+  "message-submitted": { directory: string; sessionID: string | null };
 };
 
 type AppEventName = keyof AppEventMap;

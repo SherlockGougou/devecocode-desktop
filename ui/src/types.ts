@@ -246,6 +246,7 @@ export interface McpServerInfo {
 
 export type SettingsPage =
   | "appearance"
+  | "voice"
   | "account"
   | "agent"
   | "extensions"
@@ -283,6 +284,13 @@ export interface MenuBarSettings {
   always_visible: boolean;
 }
 
+export interface VoiceSettings {
+  /** Speech 框架返回的 locale 标识；null 表示跟随系统语言。 */
+  locale: string | null;
+  /** 仅在 Composer 聚焦时生效。 */
+  hold_option: boolean;
+}
+
 export interface UpdateSettings {
   /** 启动后静默检查桌面端更新 */
   auto_check: boolean;
@@ -294,8 +302,69 @@ export interface AppConfig {
   notifications: NotificationSettings;
   server: ServerSettings;
   menu_bar: MenuBarSettings;
+  voice: VoiceSettings;
   updates: UpdateSettings;
 }
+
+export type VoicePermissionState =
+  | "not_determined"
+  | "authorized"
+  | "denied"
+  | "restricted";
+
+export interface VoiceStatus {
+  microphone: VoicePermissionState;
+  speech: VoicePermissionState;
+  active: boolean;
+  starting: boolean;
+  sessionId: number | null;
+  locale: string | null;
+  systemLocale: string;
+  onDevice: boolean;
+}
+
+export interface VoiceLocale {
+  id: string;
+  label: string;
+}
+
+export interface VoiceStartResult {
+  sessionId: number;
+  locale: string;
+  maxDurationMs: number;
+}
+
+export interface VoiceCommandError {
+  code: string;
+  message: string;
+}
+
+export type VoiceFinishReason = "manual" | "limit" | "silence";
+
+export type VoiceEvent =
+  | {
+      type: "partial";
+      sessionId: number;
+      text: string;
+    }
+  | {
+      type: "finalizing";
+      sessionId: number;
+      reason: VoiceFinishReason;
+    }
+  | {
+      type: "final";
+      sessionId: number;
+      text: string;
+      reason: VoiceFinishReason;
+    }
+  | {
+      type: "error";
+      sessionId: number;
+      code: string;
+      message: string;
+      lastPartial?: string;
+    };
 
 export interface TrayContext {
   project: string | null;
