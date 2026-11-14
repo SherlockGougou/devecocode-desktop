@@ -130,8 +130,8 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY \
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
 grep 'DevEco.Code_.*aarch64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
-gh release verify v0.2.7 -R SherlockGougou/devecocode-desktop
-gh attestation verify "DevEco.Code_0.2.7_aarch64.dmg" -R SherlockGougou/devecocode-desktop
+gh release verify v0.2.8 -R SherlockGougou/devecocode-desktop
+gh attestation verify "DevEco.Code_0.2.8_aarch64.dmg" -R SherlockGougou/devecocode-desktop
 brew trust sherlockgougou/tap
 brew info --cask sherlockgougou/tap/devecocode-desktop
 brew fetch --cask sherlockgougou/tap/devecocode-desktop

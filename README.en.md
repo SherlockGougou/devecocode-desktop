@@ -204,7 +204,7 @@ Read [Development](docs/development.md) (Chinese) before publishing or opening a
 - `.github/workflows/dependabot-automerge.yml` enables squash auto-merge for patch/minor
   updates after the 7 required checks pass. Major and unknown update types stay manual.
 - `.github/workflows/release-check.yml` manually validates version consistency, bilingual
-  release notes, and placeholders. `npm run release:prepare -- 0.2.7` updates all four
+  release notes, and placeholders. `npm run release:prepare -- 0.2.8` updates all four
   version files.
 - `.github/workflows/release.yml` builds Apple Silicon and Intel DMGs plus the Offline
   build on a `v*` tag or manual run. Publishing is draft-first: the Standard build, Offline

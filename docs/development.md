@@ -51,6 +51,10 @@ npm --prefix ui install
 打包后必须退出旧进程再重新打开，托盘“退出”是干净退出路径。源码构建不会热更新已运行
 的 `.app`。
 
+语音输入需要 `src-tauri/Info.plist` 的隐私文案和 `src-tauri/Entitlements.plist` 的
+`com.apple.security.device.audio-input`。调试语音时必须运行 `npm run build:debug` 生成的
+`.app`，不要只用 `npm run dev` 或纯 Vite；ad-hoc 签名变化后 macOS 可能重新询问权限。
+
 离线版默认构建当前架构；跨架构时查看[离线版打包](offline-packaging.md)的
 `--platform-source` 说明。
 
@@ -106,6 +110,7 @@ npm run check:selftest
 - 空态和失败态；
 - 窄窗口与右栏展开/收起；
 - 底部终端展开、输入命令、拖高、重开和关闭后 PTY 回收；
+- 语音输入的成功、取消、权限拒绝、语言不可用和撤销路径；
 - 亮色和暗色主题（改动 CSS 时）。
 
 测试数据请使用临时工作区或脱敏样例，不要提交真实会话标题、路径、设备截图和通知内容。
@@ -245,13 +250,13 @@ force push。规则里的 `bypass_actors` 只允许仓库所有者绕过。
 准备新版本时，先用脚本同步四处版本号：
 
 ```bash
-npm run release:prepare -- 0.2.7
+npm run release:prepare -- 0.2.8
 ```
 
-然后编写 `docs/releases/v0.2.7.md`、更新 CHANGELOG 和官网页脚。推送前在 Actions 中手动
-运行 `Release readiness`，输入 `v0.2.7`；它会校验版本一致性、双语正文和占位符。
+然后编写 `docs/releases/v0.2.8.md`、更新 CHANGELOG 和官网页脚。推送前在 Actions 中手动
+运行 `Release readiness`，输入 `v0.2.8`；它会校验版本一致性、双语正文和占位符。
 
-手动发布时，在 Actions 中选择 `Release`，填写与项目版本一致的 tag（例如 `v0.2.7`）。
+手动发布时，在 Actions 中选择 `Release`，填写与项目版本一致的 tag（例如 `v0.2.8`）。
 同一 workflow 的 `offline` job 还会构建包含固定 CLI 的离线版；其资源准备、体积和验收见
 [离线版打包](offline-packaging.md)。
 
@@ -260,7 +265,7 @@ Release 正文读取 `docs/releases/vX.Y.Z.md`，必须同时包含中英文段�
 
 Release 成功后，`update-homebrew.yml` 会用 `HOMEBREW_TAP_TOKEN` 把两个 cask 更新到
 `SherlockGougou/homebrew-tap`；失败时用 `workflow_dispatch` 输入同一个 tag 重跑。可以用
-`npm run homebrew:render -- --version v0.2.7 --sums SHA256SUMS.txt --out-dir /tmp/casks`
+`npm run homebrew:render -- --version v0.2.8 --sums SHA256SUMS.txt --out-dir /tmp/casks`
 在本地预览生成结果，再运行 `brew style`。
 
 官网由 `.github/workflows/pages.yml` 部署到 GitHub Pages；本地预览方式见

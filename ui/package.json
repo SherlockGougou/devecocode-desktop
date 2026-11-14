@@ -1,7 +1,7 @@
 {
   "name": "deveco-code-desktop-ui",
   "private": true,
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "DevEco Code Desktop 的 React 前端",
   "license": "MIT",
   "type": "module",

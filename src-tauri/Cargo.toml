@@ -1,6 +1,6 @@
 [package]
 name = "deveco-desktop"
-version = "0.2.7"
+version = "0.2.8"
 description = "DevEco Code 的 macOS 桌面客户端"
 license = "MIT"
 publish = false
@@ -55,3 +55,9 @@ percent-encoding = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSLocale", "NSError", "NSOperation", "NSSet", "NSString"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat", "block2"] }
+objc2-avf-audio = { version = "0.3.2", default-features = false, features = ["std", "AVAudioBuffer", "AVAudioEngine", "AVAudioFormat", "AVAudioIONode", "AVAudioNode", "AVAudioTime", "AVAudioTypes", "block2"] }
+objc2-speech = "0.3.2"
