@@ -2457,6 +2457,66 @@ details[open] > summary .caret {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.task-detail-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 2px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--panel-2);
+}
+.task-detail-tabs button {
+  flex: 1;
+  height: 24px;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.task-detail-tabs button:hover {
+  color: var(--text-dim);
+}
+.task-detail-tabs button.active {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(var(--shadow-rgb), 0.12);
+}
+.task-transcript-section {
+  padding: 8px 6px 2px;
+}
+.task-transcript {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.task-transcript .msg-group {
+  min-width: 0;
+}
+.task-transcript .row {
+  max-width: none;
+  margin-right: 0;
+  margin-left: 0;
+  padding-bottom: 16px;
+}
+.task-transcript .row.user {
+  padding-top: 4px;
+}
+.task-transcript .row.assistant.minute-continues {
+  padding-bottom: 10px;
+}
+.task-transcript .row:last-child {
+  padding-bottom: 4px;
+}
+.task-transcript .bubble {
+  max-width: 92%;
+}
+.task-transcript-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 12px 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
 .task-activity-section {
   display: flex;
   flex-direction: column;

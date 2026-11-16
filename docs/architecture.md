@@ -259,6 +259,11 @@ stateDiagram-v2
     `supportsOnDeviceRecognition` 不可用时明确报错，不自动回退 Apple 在线识别。ObjC 对象
     只能由语音工作线程持有；前端只接收拥有所有权的字符串事件。任意取消、切换草稿或隐藏
     窗口都要停止音频与识别任务，录音和部分转写不得写日志或独立持久化。
+20. **子代理会话不进入工作区会话列表。** `/session?roots=true` 只用于初始列表，实时
+    `session.created`/`session.updated` 仍可能带来子会话；前端以 `parentID` 和 CLI 的
+    `(@agent subagent)` 标题兜底，过滤根会话列表并避免给子会话标记未读。子会话仍保留在
+    父会话的 `sessionChildren` 中，任务详情按需读取完整消息，复用主对话的消息、工具卡片、
+    图片和附件渲染；任务列表只预取最近消息做摘要，不能把完整历史反复拉回侧栏。
 
 ## 数据与配置
 

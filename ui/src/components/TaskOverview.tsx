@@ -4,7 +4,7 @@ import { useApp } from "../store";
 import { buildSubagentTasks, todoProgress } from "../tasks";
 import type { Message } from "../types";
 import { Icon } from "./Icon";
-import { TaskProgressBar } from "./TasksPanel";
+import { TaskProgressBar } from "./TaskStatus";
 
 function formatNumber(value: number) {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;

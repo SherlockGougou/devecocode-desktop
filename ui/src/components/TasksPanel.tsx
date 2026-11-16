@@ -6,64 +6,15 @@ import {
   taskActivities,
   todoProgress,
   type TaskActivityItem,
-  type TodoProgress,
 } from "../tasks";
 import type { SubagentTask, TodoItem } from "../types";
 import { Icon } from "./Icon";
-
-const STATUS_LABEL: Record<SubagentTask["status"], string> = {
-  pending: "等待",
-  running: "执行中",
-  completed: "完成",
-  error: "失败",
-  interrupted: "已中断",
-};
-
-export function TaskStatusBadge({ status }: { status: SubagentTask["status"] }) {
-  return (
-    <span className={`task-status ${status}`}>
-      {status === "running" && <span className="tool-spinner" />}
-      {status === "completed" && <Icon name="check" size={11} strokeWidth={2.2} />}
-      {status === "error" && <Icon name="alert" size={11} />}
-      {status === "interrupted" && <Icon name="stop" size={11} />}
-      {status === "pending" && <span className="todo-pending-dot" />}
-      {STATUS_LABEL[status]}
-    </span>
-  );
-}
-
-export function TaskProgressBar({ progress }: { progress: TodoProgress }) {
-  return (
-    <div
-      className="task-progress"
-      role="progressbar"
-      aria-label="任务完成进度"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={progress.percent}
-      title={`${progress.resolved}/${progress.total} 已结束`}
-    >
-      <span style={{ width: `${progress.percent}%` }} />
-    </div>
-  );
-}
-
-export function formatTaskDuration(
-  task: Pick<SubagentTask, "startedAt" | "endedAt" | "status">,
-  now = Date.now(),
-) {
-  if (!task.startedAt) return "";
-  const end = task.endedAt ?? (task.status === "running" ? now : undefined);
-  if (!end || end < task.startedAt) return "";
-  const seconds = Math.max(0, Math.round((end - task.startedAt) / 1000));
-  if (seconds < 60) return `${seconds} 秒`;
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds % 60;
-  if (minutes < 60) return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分`;
-  const hours = Math.floor(minutes / 60);
-  const minuteRest = minutes % 60;
-  return minuteRest ? `${hours} 小时 ${minuteRest} 分` : `${hours} 小时`;
-}
+import {
+  formatTaskDuration,
+  TaskProgressBar,
+  TaskStatusBadge,
+} from "./TaskStatus";
+import TaskTranscript from "./TaskTranscript";
 
 function useNow(active: boolean) {
   const [now, setNow] = useState(Date.now());
@@ -305,6 +256,13 @@ function TaskDetail({
     : parentActive && task.status === "running";
   const waitingForParent =
     task.status === "running" && status?.type === "idle" && Boolean(task.sessionID);
+  const [detailView, setDetailView] = useState<"conversation" | "activity">(
+    "conversation",
+  );
+
+  useEffect(() => {
+    setDetailView("conversation");
+  }, [task.id]);
 
   return (
     <div className="task-detail">
@@ -356,23 +314,61 @@ function TaskDetail({
           <pre>{task.prompt}</pre>
         </details>
       )}
-      <section className="task-section task-activity-section">
-        <div className="task-section-head">
-          <span className="task-section-title">最近活动</span>
-          {task.sessionID && <span className="task-section-meta">{task.sessionID}</span>}
-        </div>
-        {activities.length > 0 ? (
-          <div className="task-activity-list">
-            {activities.map((item) => (
-              <ActivityRow key={`${item.id}-${item.title}`} item={item} />
-            ))}
-          </div>
+      <div className="task-detail-tabs" role="tablist" aria-label="子任务详情视图">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={detailView === "conversation"}
+          className={detailView === "conversation" ? "active" : ""}
+          onClick={() => setDetailView("conversation")}
+        >
+          对话
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={detailView === "activity"}
+          className={detailView === "activity" ? "active" : ""}
+          onClick={() => setDetailView("activity")}
+        >
+          活动
+        </button>
+      </div>
+      {detailView === "conversation" ? (
+        task.sessionID ? (
+          <section className="task-section task-transcript-section">
+            <div className="task-section-head">
+              <span className="task-section-title">完整对话</span>
+              <span className="task-section-meta">与主会话相同的消息界面</span>
+            </div>
+            <TaskTranscript
+              key={task.sessionID}
+              sessionID={task.sessionID}
+              active={childActive}
+            />
+          </section>
         ) : (
-          <div className="empty-line">
-            {task.status === "running" ? "等待子代理输出…" : "没有可读取的活动记录"}
+          <div className="empty-line">该任务还没有关联子会话</div>
+        )
+      ) : (
+        <section className="task-section task-activity-section">
+          <div className="task-section-head">
+            <span className="task-section-title">最近活动</span>
+            {task.sessionID && <span className="task-section-meta">{task.sessionID}</span>}
           </div>
-        )}
-      </section>
+          {activities.length > 0 ? (
+            <div className="task-activity-list">
+              {activities.map((item) => (
+                <ActivityRow key={`${item.id}-${item.title}`} item={item} />
+              ))}
+            </div>
+          ) : (
+            <div className="empty-line">
+              {task.status === "running" ? "等待子代理输出…" : "没有可读取的活动记录"}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

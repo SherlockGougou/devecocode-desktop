@@ -29,7 +29,11 @@ import {
 import Markdown from "./Markdown";
 import InlineImage from "./InlineImage";
 import { Icon } from "./Icon";
-import { TaskProgressBar, TaskStatusBadge, formatTaskDuration } from "./TasksPanel";
+import {
+  formatTaskDuration,
+  TaskProgressBar,
+  TaskStatusBadge,
+} from "./TaskStatus";
 import {
   buildSubagentTasks,
   latestTaskActivity,
@@ -58,14 +62,14 @@ function formatTime(ms?: number) {
   return new Date(ms).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
-type MessageMetaOverride = {
+export type MessageMetaOverride = {
   text: string;
   time: string;
   count: number;
 };
 
 /** 同一分钟内的连续助手步骤视为一组，共用一个操作行。 */
-function inSameMinute(left: Message, right: Message) {
+export function inSameMinute(left: Message, right: Message) {
   if (
     left.info.parentID &&
     right.info.parentID &&
@@ -151,7 +155,7 @@ function toolImageAttachments(part: Part): ToolImagePreview[] {
 }
 
 /** 消息是否有可展示内容；与 MessageRow 的提前返回保持一致，避免把空消息算成一次步骤。 */
-function messageHasContent(message: Message) {
+export function messageHasContent(message: Message) {
   if (message.info.role === "user") {
     const text = messageText(message.parts);
     return (
@@ -340,7 +344,7 @@ function attachmentText(part: Part) {
     : text;
 }
 
-function AttachmentViewer({
+export function AttachmentViewer({
   part,
   directory,
   onClose,
@@ -1821,7 +1825,7 @@ export default function ChatView() {
   );
 }
 
-function MessageRow({
+export function MessageRow({
   message,
   continued,
   live,

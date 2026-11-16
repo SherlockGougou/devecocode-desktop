@@ -16,6 +16,7 @@
     "src/composerDrafts.ts",
     "src/voice.ts",
     "src/dockBadge.ts",
+    "src/sessionTree.ts",
     "src/types.ts"
   ]
 }

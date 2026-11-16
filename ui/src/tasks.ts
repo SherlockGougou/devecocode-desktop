@@ -8,6 +8,7 @@ import type {
   TodoPriority,
   TodoStatus,
 } from "./types";
+import { isSubagentSession, stripSubagentTitle } from "./sessionTree";
 
 const MAX_ACTIVITY_PREVIEW = 1200;
 const TODO_STATUSES = new Set<TodoStatus>([
@@ -263,14 +264,6 @@ function orphanTask(child: Session, parentSessionID: string, statuses: Record<st
     endedAt: status === "running" ? undefined : child.time?.updated,
     child,
   };
-}
-
-export function stripSubagentTitle(title: string) {
-  return title.replace(/\s*\(@[^)]+\s+subagent\)\s*$/i, "").trim();
-}
-
-function isSubagentSession(child: Session) {
-  return /\(@[^)]+\s+subagent\)/i.test(child.title ?? "");
 }
 
 /**

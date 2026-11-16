@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp, type SessionSort } from "../store";
 import type { Session } from "../types";
+import { rootSessions } from "../sessionTree";
 import { copyItem, openPathItem, useContextMenu } from "../contextMenu";
 import { Icon } from "./Icon";
 
@@ -292,7 +293,7 @@ export default function Sidebar() {
     if (!keyword) return projects;
     return projects.filter((project) => {
       if (project.worktree.toLowerCase().includes(keyword)) return true;
-      return (sessions[project.worktree] ?? []).some((session) =>
+      return rootSessions(sessions[project.worktree] ?? []).some((session) =>
         (session.title ?? "").toLowerCase().includes(keyword),
       );
     });
@@ -300,7 +301,8 @@ export default function Sidebar() {
 
   const orderedSessions = useMemo(() => {
     const result: Record<string, Session[]> = {};
-    for (const [dir, list] of Object.entries(sessions)) {
+    for (const [dir, all] of Object.entries(sessions)) {
+      const list = rootSessions(all);
       const filtered = showArchived
         ? list
         : list.filter((item) => !item.time?.archived);
@@ -311,7 +313,8 @@ export default function Sidebar() {
 
   const orderedSearchResults = useMemo(() => {
     const result: Record<string, Session[]> = {};
-    for (const [dir, list] of Object.entries(searchResults)) {
+    for (const [dir, all] of Object.entries(searchResults)) {
+      const list = rootSessions(all);
       const filtered = showArchived
         ? list
         : list.filter((item) => !item.time?.archived);

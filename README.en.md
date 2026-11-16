@@ -58,7 +58,9 @@ paths.
   a spinner; finished sessions that have not been opened show an unread dot.
 - **Conversation experience:** streaming Markdown, collapsible reasoning, grouped tool
   calls, subagent/todo progress, permission cards, in-session search, and stop
-  generation. Local images in Markdown and image attachments returned by tools render
+  generation. Subagent sessions stay out of the workspace session list; their full
+  transcript opens from the parent session's task detail with the same message UI.
+  Local images in Markdown and image attachments returned by tools render
   inline, with image reads shown as a "已查看 N 张图像" row and a clickable thumbnail;
   failures fall back to readable placeholders. Clicking an image opens a large viewer
   with zoom, pan, multi-image navigation, and a shared-element transition; the context

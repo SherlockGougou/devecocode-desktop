@@ -49,6 +49,7 @@ import type {
   TodoItem,
   VcsFileStatus,
 } from "./types";
+import { isSubagentSession, rootSessions } from "./sessionTree";
 import { newMessageID } from "./ids";
 import {
   buildSubagentTasks,
@@ -741,6 +742,13 @@ function upsertSession(list: Session[], session: Session): Session[] {
   return next;
 }
 
+/** 根会话列表不接受子会话；迟到的子会话详情只更新任务面板数据。 */
+function upsertRootSession(list: Session[], session: Session): Session[] {
+  return isSubagentSession(session)
+    ? list.filter((item) => item.id !== session.id)
+    : upsertSession(list, session);
+}
+
 function upsertQuestion(
   list: QuestionRequest[],
   request: QuestionRequest,
@@ -930,6 +938,7 @@ function emptyConversationPatch() {
     sessionChildren: [],
     childMessages: {},
     childTodos: {},
+    childTranscripts: {},
     sessionStatuses: {},
     selectedTaskID: null,
     tasksLoading: false,
@@ -1005,6 +1014,13 @@ export interface AppState {
   sessionChildren: Session[];
   childMessages: Record<string, Message[]>;
   childTodos: Record<string, TodoItem[]>;
+  /** 子任务详情按需加载的完整对话；任务面板默认只取最近消息做摘要。 */
+  childTranscripts: Record<
+    string,
+    { loading: boolean; loaded: boolean; error: string | null }
+  >;
+  /** 全局已知子会话，避免别的父会话下面的子事件被误标未读。 */
+  knownChildSessions: Record<string, boolean>;
   sessionStatuses: Record<string, SessionStatus>;
   /** 所有工作区里正在执行的会话（跨目录），仅用于侧栏标题前的加载指示 */
   busySessions: Record<string, boolean>;
@@ -1188,6 +1204,8 @@ export interface AppState {
   openTasks(taskID?: string | null): void;
   closeTaskDetail(): void;
   refreshTasks(): Promise<void>;
+  /** 任务详情按需读取子会话完整历史；任务列表仍只拉最近消息。 */
+  loadTaskTranscript(sessionID: string): Promise<void>;
   setFilter(value: string): void;
   runSearch(query: string): Promise<void>;
   openSessionIn(directory: string, id: string): Promise<void>;
@@ -1267,6 +1285,8 @@ export const useApp = create<AppState>()((set, get) => ({
   sessionChildren: [],
   childMessages: {},
   childTodos: {},
+  childTranscripts: {},
+  knownChildSessions: {},
   sessionStatuses: {},
   busySessions: {},
   unreadSessions: readUnreadSessions(),
@@ -1500,6 +1520,7 @@ export const useApp = create<AppState>()((set, get) => ({
         sessionChildren: [],
         childMessages: {},
         childTodos: {},
+        childTranscripts: {},
         sessionStatuses: {},
         selectedTaskID: null,
         tasksLoading: false,
@@ -1524,7 +1545,7 @@ export const useApp = create<AppState>()((set, get) => ({
     }
     try {
       const previousSessions = get().sessions[directory] ?? [];
-      const sessions = await api.sessions(directory, timeout);
+      const sessions = rootSessions(await api.sessions(directory, timeout));
       sessions.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
       const unreadSessions = withoutUnread(
         get().unreadSessions,
@@ -1612,6 +1633,7 @@ export const useApp = create<AppState>()((set, get) => ({
         sessionChildren: [],
         childMessages: {},
         childTodos: {},
+        childTranscripts: {},
         sessionStatuses: {},
         selectedTaskID: null,
         tasksLoading: true,
@@ -1667,7 +1689,7 @@ export const useApp = create<AppState>()((set, get) => ({
           ? {
               sessions: {
                 ...get().sessions,
-                [directory]: upsertSession(
+                [directory]: upsertRootSession(
                   get().sessions[directory] ?? [],
                   detail,
                 ),
@@ -1957,6 +1979,7 @@ export const useApp = create<AppState>()((set, get) => ({
           sessionChildren: [],
           childMessages: {},
           childTodos: {},
+          childTranscripts: {},
           sessionStatuses: {},
           selectedTaskID: null,
           creatingSession: false,
@@ -3339,6 +3362,10 @@ export const useApp = create<AppState>()((set, get) => ({
         sessionChildren: children,
         childMessages,
         childTodos,
+        knownChildSessions: {
+          ...get().knownChildSessions,
+          ...Object.fromEntries(children.map((child) => [child.id, true])),
+        },
         ...(statuses ? { sessionStatuses: statuses } : {}),
         tasksLoading: false,
       });
@@ -3350,12 +3377,58 @@ export const useApp = create<AppState>()((set, get) => ({
     }
   },
 
+  async loadTaskTranscript(sessionID) {
+    const directory = get().directory;
+    const state = get().childTranscripts[sessionID];
+    if (!directory || !sessionID || state?.loading || state?.loaded) return;
+    set({
+      childTranscripts: {
+        ...get().childTranscripts,
+        [sessionID]: { loading: true, loaded: false, error: null },
+      },
+    });
+    try {
+      const messages = await api.messages(directory, sessionID);
+      if (get().directory !== directory) return;
+      const merged = mergeMessages(
+        messages,
+        get().childMessages[sessionID] ?? [],
+      );
+      const status = get().sessionStatuses[sessionID];
+      const active = status ? isBusyStatus(status) : null;
+      const childMessages =
+        active === null ? merged : markInterruptedMessages(merged, active);
+      set({
+        childMessages: {
+          ...get().childMessages,
+          [sessionID]: childMessages,
+        },
+        childTranscripts: {
+          ...get().childTranscripts,
+          [sessionID]: { loading: false, loaded: true, error: null },
+        },
+      });
+    } catch (error) {
+      if (get().directory !== directory) return;
+      set({
+        childTranscripts: {
+          ...get().childTranscripts,
+          [sessionID]: {
+            loading: false,
+            loaded: false,
+            error: `读取子任务对话失败：${String(error)}`,
+          },
+        },
+      });
+    }
+  },
+
   async refreshAfterReconnect() {
     const { directory, sessionID } = get();
     if (!directory) return;
     try {
       const previousSessions = get().sessions[directory] ?? [];
-      const sessions = await api.sessions(directory);
+      const sessions = rootSessions(await api.sessions(directory));
       if (get().directory !== directory) return;
       sessions.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
       const unreadSessions = withoutUnread(
@@ -3441,11 +3514,24 @@ export const useApp = create<AppState>()((set, get) => ({
     const props = (event.properties ?? {}) as Record<string, any>;
     const currentSession = get().sessionID;
     const eventSession = typeof props.sessionID === "string" ? props.sessionID : "";
-    const isChildSession = (sessionID: string) =>
-      Boolean(sessionID) &&
-      (get().sessionChildren.some((child) => child.id === sessionID) ||
+    const isChildSession = (sessionID: string) => {
+      if (!sessionID) return false;
+      if (
+        get().sessionChildren.some((child) => child.id === sessionID) ||
         Boolean(get().childMessages[sessionID]) ||
-        Boolean(get().childTodos[sessionID]));
+        Boolean(get().childTodos[sessionID]) ||
+        Boolean(get().knownChildSessions[sessionID])
+      ) {
+        return true;
+      }
+      // 子会话刚由后台创建时可能还没进入当前父会话的 children 快照；
+      // 用全局 session.created/updated 已写入的 parentID 兜底，避免误标未读。
+      for (const list of Object.values(get().sessions)) {
+        const session = list.find((item) => item.id === sessionID);
+        if (session) return isSubagentSession(session);
+      }
+      return false;
+    };
     const clearSessionQuestions = (sessionID: string) => {
       if (!sessionID) return {};
       noteQuestionSessionClear(sessionID);
@@ -3638,6 +3724,7 @@ export const useApp = create<AppState>()((set, get) => ({
         const directory = info.directory ?? get().directory;
         if (!directory) break;
         const list = get().sessions[directory] ?? [];
+        const child = isSubagentSession(info);
         const childAdded =
           info.parentID === currentSession &&
           !get().sessionChildren.some((child) => child.id === info.id);
@@ -3654,8 +3741,21 @@ export const useApp = create<AppState>()((set, get) => ({
             ),
         );
         set({
-          sessions: { ...get().sessions, [directory]: upsertSession(list, info) },
-          loadedDirs: { ...get().loadedDirs, [directory]: true },
+          sessions: {
+            ...get().sessions,
+            [directory]: child
+              ? list.filter((item) => item.id !== info.id)
+              : upsertSession(list, info),
+          },
+          ...(child ? {} : { loadedDirs: { ...get().loadedDirs, [directory]: true } }),
+          ...(child
+            ? {
+                knownChildSessions: {
+                  ...get().knownChildSessions,
+                  [info.id]: true,
+                },
+              }
+            : {}),
           ...(info.parentID && info.parentID === currentSession
             ? { sessionChildren: upsertSession(get().sessionChildren, info) }
             : {}),
@@ -4387,7 +4487,9 @@ export const useApp = create<AppState>()((set, get) => ({
     await Promise.all(
       projects.map(async (project) => {
         try {
-          const found = await api.searchSessions(project.worktree, keyword);
+          const found = rootSessions(
+            await api.searchSessions(project.worktree, keyword),
+          );
           if (found.length > 0) results[project.worktree] = found;
         } catch {
           // 单个工作区失败不影响其它结果
@@ -4408,7 +4510,7 @@ export const useApp = create<AppState>()((set, get) => ({
     set({ expanded: next });
     if (open && !get().loadedDirs[directory]) {
       try {
-        const sessions = await api.sessions(directory);
+        const sessions = rootSessions(await api.sessions(directory));
         sessions.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
         set({
           sessions: { ...get().sessions, [directory]: sessions },
@@ -4449,7 +4551,7 @@ export const useApp = create<AppState>()((set, get) => ({
     await Promise.all(
       pending.map(async (project) => {
         try {
-          const list = await api.sessions(project.worktree);
+          const list = rootSessions(await api.sessions(project.worktree));
           list.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
           set({
             sessions: { ...get().sessions, [project.worktree]: list },
@@ -4716,7 +4818,9 @@ export const useApp = create<AppState>()((set, get) => ({
     try {
       // 任一路径读取失败就无法证明会话不存在，整体放弃，避免误删未读标记。
       const lists = await Promise.all(
-        projects.map((project) => api.sessions(project.worktree)),
+        projects.map(async (project) =>
+          rootSessions(await api.sessions(project.worktree)),
+        ),
       );
       const existing = new Set(lists.flat().map((session) => session.id));
       const stale = ids.filter((id) => !existing.has(id));
@@ -4763,6 +4867,7 @@ export const useApp = create<AppState>()((set, get) => ({
           sessionChildren: [],
           childMessages: {},
           childTodos: {},
+          childTranscripts: {},
           sessionStatuses: {},
           selectedTaskID: null,
           tasksLoading: false,
