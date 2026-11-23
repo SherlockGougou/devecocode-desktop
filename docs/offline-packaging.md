@@ -43,6 +43,9 @@ npm run stage:offline-cli -- --target aarch64-apple-darwin
 
 当前实测体积约为 `.app 281MiB`、`.dmg 119MiB`（arm64）；x64 会有差异。
 
+当前发布工作流固定 `@deveco/deveco-code` / 平台包为 `0.2.6`，并显式安装
+`@deveco/deveco-cli` 与 `@deveco/deveco-cli-common` 为 `1.3.12`。
+
 ## 启动流程
 
 1. `.app` 内的资源是只读的，首次启动复制到

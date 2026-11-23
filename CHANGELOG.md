@@ -3,6 +3,16 @@
 版本说明按发布标签维护在 [`docs/releases/`](docs/releases/README.md)。Release workflow
 会读取对应版本的 Markdown 文件，生成 GitHub Release 正文。
 
+## 0.3.0 - 2026-11-23
+
+- Offline 版内置的 `@deveco/deveco-code` 从 `0.2.5` 更新到 `0.2.6`，arm64 与 x64 平台包
+  同步更新；应用内更新 Offline 版会替换内置 CLI。
+- Offline 版与 CI 显式固定 `@deveco/deveco-cli`、`@deveco/deveco-cli-common` 为
+  `1.3.12`，发布流水线的版本变量统一引用同一组值。
+- 同步更新两组 Dependabot 依赖；保留 `0.2.9` 的子代理会话过滤与任务对话详情行为。
+
+完整说明：[v0.3.0](docs/releases/v0.3.0.md)
+
 ## 0.2.9 - 2026-11-16
 
 - 工作区侧栏只展示根会话，子代理会话不再混入会话列表；实时创建、搜索、刷新和未读标记
